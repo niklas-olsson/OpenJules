@@ -1,0 +1,29 @@
+name: OpenJules tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check Docker availability
+        run: docker info
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run the full test suite
+        run: python -m pytest
