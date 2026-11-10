@@ -64,12 +64,13 @@ def test_sandbox_manager_spawn_and_exec():
     mock_client = MagicMock()
     mock_container = MagicMock()
     mock_container.id = "cont-12345"
+    mock_container.attrs = {"State": {"Running": False, "Restarting": False}}
     mock_client.containers.run.return_value = mock_container
     mock_client.containers.get.return_value = mock_container
 
     mock_client.api.exec_create.return_value = {"Id": "exec-abc"}
     mock_client.api.exec_start.return_value = (b"Clone success\n", b"")
-    mock_client.api.exec_inspect.return_value = {"ExitCode": 0}
+    mock_client.api.exec_inspect.return_value = {"ExitCode": 0, "Running": False}
 
     manager = SandboxManager(docker_client=mock_client)
     config = OpenJulesConfig(setup=["echo setting up"])
@@ -90,22 +91,25 @@ def test_sandbox_manager_spawn_and_exec():
     assert "Clone success" in res.stdout
 
     # Cleanup
-    manager.cleanup_sandbox(context.container_id, context.workspace_dir)
+    manager.cleanup_sandbox(
+        context.container_id, context.workspace_dir, artifact_capture_confirmed=True
+    )
     assert not os.path.exists(context.workspace_dir)
     mock_container.stop.assert_called()
-    mock_container.remove.assert_called_with(force=True, v=True)
+    mock_container.remove.assert_called_with(v=True)
 
 
 def test_sandbox_context_manager_teardown():
     mock_client = MagicMock()
     mock_container = MagicMock()
     mock_container.id = "cont-ctx-123"
+    mock_container.attrs = {"State": {"Running": False, "Restarting": False}}
     mock_client.containers.run.return_value = mock_container
     mock_client.containers.get.return_value = mock_container
 
     mock_client.api.exec_create.return_value = {"Id": "exec-id"}
     mock_client.api.exec_start.return_value = (b"OK", b"")
-    mock_client.api.exec_inspect.return_value = {"ExitCode": 0}
+    mock_client.api.exec_inspect.return_value = {"ExitCode": 0, "Running": False}
 
     manager = SandboxManager(docker_client=mock_client)
     config = OpenJulesConfig()
@@ -122,5 +126,10 @@ def test_sandbox_context_manager_teardown():
             raise ValueError("Simulated task failure")
 
     assert ws_dir is not None
-    assert not os.path.exists(ws_dir)
-    mock_container.remove.assert_called_with(force=True, v=True)
+    assert os.path.exists(ws_dir)
+    assert ctx.cleanup_result.termination_confirmed is True
+    assert ctx.cleanup_result.artifact_capture_confirmed is False
+    mock_container.remove.assert_not_called()
+    # The retention assertion above is the behavior under test. Explicitly
+    # acknowledge capture of this fixture's empty directory to release it.
+    manager.cleanup_sandbox(ctx.container_id, ws_dir, artifact_capture_confirmed=True)
