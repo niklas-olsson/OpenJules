@@ -437,6 +437,29 @@ def test_stock_unix_transport_disables_hidden_post_retries_and_redirects(
         client.close()
 
 
+@pytest.mark.parametrize("path", ["/volumes/create", "/containers/create"])
+def test_endpoint_adapter_mount_never_qualifies_for_cleanup(setup_runtime, path):
+    runtime, _, _, _ = setup_runtime
+    client = docker.DockerClient(
+        base_url="unix:///var/run/docker.sock", version="1.45", timeout=5
+    )
+    runtime._client = client
+    try:
+        client.api.max_redirects = 0
+        assert runtime._cleanup_transport() == _CLEANUP_TRANSPORT
+        original = client.api.get_adapter(client.api.base_url)
+        endpoint = client.api._url(path)
+        replacement = requests.adapters.HTTPAdapter(
+            max_retries=Retry(total=1, allowed_methods=None)
+        )
+        client.api.mount(endpoint, replacement)
+        assert client.api.get_adapter(client.api.base_url) is original
+        assert client.api.get_adapter(endpoint) is replacement
+        assert runtime._cleanup_transport() is None
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("stage", ["intent", "container", "completion"])
 def test_process_death_before_progress_commit_reconciles_without_recapture(
     stack, monkeypatch, stage
