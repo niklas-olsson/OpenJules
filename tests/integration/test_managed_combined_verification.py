@@ -205,7 +205,7 @@ def test_passing_children_with_failed_combined_check_retain_capture_without_cand
             receipt = stack.runtime.inspect_attempt(
                 stack.worker_id, stack.spec, root.attempt_id
             )
-            assert receipt.state == "exited" and receipt.exit_code == 3, receipt.log
+            assert receipt.state == "completed" and receipt.exit_code == 3, receipt.log
             assert (
                 receipt.termination_confirmed
                 and receipt.launch_fenced
