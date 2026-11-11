@@ -417,14 +417,20 @@ class ManagedDockerRuntime:
         api = client.api
         if type(api) is not APIClient or api.base_url != "http+docker://localhost":
             return None
+        # Requests selects the longest mounted prefix for each actual URL.
+        # A stock base lookup cannot qualify a customized create-endpoint mount.
+        if tuple(api.adapters) != ("http+docker://",):
+            return None
         adapter = api.get_adapter(api.base_url)
         if (
-            type(adapter) is not UnixHTTPAdapter
+            api.adapters["http+docker://"] is not adapter
+            or type(adapter) is not UnixHTTPAdapter
             or type(adapter.max_retries) is not Retry
             or type(adapter.max_retries.total) is not int
             or adapter.max_retries.total != 0
             or type(api.max_redirects) is not int
             or api.max_redirects != 0
+            or api.auth is not None
             or api.hooks != {"response": []}
         ):
             return None
