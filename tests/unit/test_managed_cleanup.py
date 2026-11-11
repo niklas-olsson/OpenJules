@@ -301,7 +301,16 @@ def test_completed_historical_cleanup_receipt_reopens_without_side_effects(
     result = reopened.cleanup_worker(
         s.worker_id, s.spec, lambda _: pytest.fail("cached receipt reached authority")
     )
-    assert result == completed
+    assert result == {
+        key: completed[key]
+        for key in (
+            "state",
+            "reason",
+            "container_removed",
+            "volume_removed",
+            "archives_retained",
+        )
+    }
     assert s.client.removals == ["container", "volume"]
     assert not s.client.all_containers and not s.client.all_volumes
     assert s.client.created == s.client.executed == 1
