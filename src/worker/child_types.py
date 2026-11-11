@@ -13,7 +13,7 @@ import math
 import re
 from typing import Mapping
 
-from src.polyphony.managed_client import AuthorityUnavailable
+from src.polyphony.managed_client import AuthorityUnavailable, AuthorityUnsupported
 from src.worker.lifecycle import RuntimeCapabilities, WorkerSpec
 
 PROTOCOL = "bounded-children-v1"
@@ -171,14 +171,28 @@ class ChildPolicy:
         if (
             response.get("child_grants") is not True
             or approved != self.canonical_policy
-            or (
-                self.outcome_protocol is not None
-                and (
-                    type(response.get("child_initial_outcome")) is not int
-                    or response["child_initial_outcome"] != 1
-                )
-            )
         ):
+            raise AuthorityUnavailable(
+                "Canonical child policy does not match the approved runtime"
+            )
+        if self.outcome_protocol is not None and (
+            type(response.get("child_initial_outcome")) is not int
+            or response["child_initial_outcome"] != 1
+        ):
+            version = response.get("child_initial_outcome")
+            # This branch already refuses admission. Attribute unsupported only
+            # to a well-typed matching policy, never Python's bool/int aliases.
+            trusted_policy = (
+                isinstance(approved, dict)
+                and type(approved.get("max_children")) is int
+                and type(approved.get("max_child_turns")) is int
+                and finite(approved.get("max_child_seconds"))
+            )
+            unsupported_version = "child_initial_outcome" not in response or (
+                type(version) is int and version > 0 and version != 1
+            )
+            if trusted_policy and unsupported_version:
+                raise AuthorityUnsupported()
             raise AuthorityUnavailable(
                 "Canonical child policy does not match the approved runtime"
             )

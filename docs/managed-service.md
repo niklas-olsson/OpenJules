@@ -137,6 +137,18 @@ returns HTTP 200 from `/health`, an absent or unsupported managed protocol makes
 returns HTTP 503 without reserving or launching a worker. A previous successful
 capability response does not permit later admission after capabilities change.
 
+For an approved `initial-v1` child outcome profile, a valid scoped authority
+response that omits `child_initial_outcome` reports the fixed readiness reason
+`Canonical managed authority is unsupported: child_initial_outcome=1`. A positive
+integer version other than 1 has the same diagnosis. The authority must first pass
+the existing schema, scope, root capability and child policy checks, including
+trustworthy policy types. A timeout, HTTP error, wrong scope or malformed response
+still reports `Canonical managed authority is unavailable`; arbitrary authority
+text is never copied into the diagnostic. Both cases keep admission closed and
+`ensure` returns 503. A later observation revalidates the authority rather than
+reusing an earlier success. Profiles without the optional outcome protocol keep
+their existing behavior.
+
 ## Legacy PR review boundary
 
 The separately enabled standalone webhook and direct `PRReviewHandler` refuse
