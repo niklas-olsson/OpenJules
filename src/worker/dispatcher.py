@@ -5,6 +5,8 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 from fastapi import BackgroundTasks
 
+from src.worker.execution_context import require_legacy_execution
+
 
 class TaskPayload(BaseModel):
     """Payload representing a task triggered by GitHub or Radicle."""
@@ -37,4 +39,5 @@ class BackgroundTasksDispatcher(TaskDispatcher):
         self.task_handler = task_handler
 
     def dispatch(self, task_payload: TaskPayload) -> Any:
+        require_legacy_execution()
         self.background_tasks.add_task(self.task_handler, task_payload)

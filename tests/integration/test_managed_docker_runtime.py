@@ -259,3 +259,47 @@ time.sleep(60)
         if process.is_alive():
             process.kill()
         process.join(timeout=3)
+
+
+def test_legacy_raw_access_cannot_stop_or_modify_a_real_managed_container(
+    provisioned, tmp_path
+):
+    from src.agent.tools import AgentTools
+    from src.sandbox.docker_driver import SandboxManager
+    from src.worker.execution_context import LegacyExecutionRefused
+
+    runtime, profile, spec, worker, client = provisioned
+    assert runtime.ensure(worker, spec).state == "ready"
+    container = client.containers.get(runtime._name(worker))
+    assert container.attrs["Config"]["Labels"]["openjules.managed"] == "1"
+    assert container.attrs["State"]["Running"] is True
+    original_id = container.id
+    workspace = tmp_path / "retained-legacy-path"
+    workspace.mkdir()
+    (workspace / "canary").write_text("preserved")
+    legacy = SandboxManager(client)
+    actions = [
+        lambda: legacy.exec_in_sandbox(original_id, "printf forbidden"),
+        lambda: AgentTools(legacy, original_id).write_file("initial.txt", "forbidden"),
+        lambda: legacy._stop(original_id),
+        lambda: legacy.cleanup_sandbox(
+            original_id, str(workspace), artifact_capture_confirmed=True
+        ),
+    ]
+    for action in actions:
+        with pytest.raises(LegacyExecutionRefused, match="^managed_container_requires_canonical_runtime$"):
+            action()
+        container.reload()
+        assert container.id == original_id and container.attrs["State"]["Running"] is True
+    assert legacy._quarantined == legacy._active_executions == set()
+    assert (workspace / "canary").read_text() == "preserved"
+
+    # Actual canonical-runtime execution remains available after every refusal.
+    # This tests a running idle worker, not a new live authority or model turn.
+    receipt = runtime.execute_attempt(
+        worker, spec, "attempt-after-legacy-refusal", "make the approved change", 20
+    )
+    assert receipt.exit_code == 0
+    assert receipt.termination_confirmed and receipt.launch_fenced and receipt.artifacts_captured
+    assert "+implemented" in receipt.patch and "forbidden" not in receipt.patch
+    assert "real code change" in receipt.log

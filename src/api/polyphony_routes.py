@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from src.worker.execution_context import require_legacy_execution
+
+require_legacy_execution()
+
 from src.polyphony.models import (
     HostSignalStatus,
     HostTelemetrySignal,
@@ -72,6 +76,7 @@ swarm_ws_manager = SwarmWebSocketManager()
 @polyphony_router.post("/cohorts", response_model=Dict[str, Any])
 def create_cohort(config: PolyphonyCohortConfig):
     """Registers and bootstraps a managed Polyphony swarm cohort."""
+    require_legacy_execution()
     if cohort_registry.get_controller(config.swarm_id):
         raise HTTPException(status_code=400, detail=f"Cohort '{config.swarm_id}' already exists")
 
@@ -134,6 +139,7 @@ def get_cohort(swarm_id: str):
 @polyphony_router.post("/cohorts/{swarm_id}/signal")
 async def trigger_signal(swarm_id: str, req: SignalTriggerRequest):
     """Injects a signal and executes immediate reconciliation."""
+    require_legacy_execution()
     ctrl = cohort_registry.get_controller(swarm_id)
     if not ctrl:
         raise HTTPException(status_code=404, detail="Cohort not found")
@@ -169,6 +175,7 @@ async def trigger_signal(swarm_id: str, req: SignalTriggerRequest):
 @polyphony_router.delete("/cohorts/{swarm_id}")
 def delete_cohort(swarm_id: str):
     """Drains and terminates a cohort."""
+    require_legacy_execution()
     success = cohort_registry.remove_cohort(swarm_id, drain_workers=True)
     if not success:
         raise HTTPException(status_code=404, detail="Cohort not found")

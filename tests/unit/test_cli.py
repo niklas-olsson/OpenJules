@@ -15,7 +15,7 @@ def test_cli_polyphony_inspect(capsys):
 
 
 def test_cli_run_task():
-    with patch("src.cli.TaskExecutor.execute_task", return_value=True) as mock_exec:
+    with patch("src.worker.executor.TaskExecutor.execute_task", return_value=True) as mock_exec:
         exit_code = run_cli_task("Add unit tests for auth", "owner/test-repo", "main")
         assert exit_code == 0
         mock_exec.assert_called_once()
@@ -25,6 +25,6 @@ def test_cli_run_task():
 
 
 def test_cli_run_task_failure():
-    with patch("src.cli.TaskExecutor.execute_task", return_value=False):
+    with patch("src.worker.executor.TaskExecutor.execute_task", return_value=False):
         exit_code = run_cli_task("Failing task", "owner/test-repo")
         assert exit_code == 1

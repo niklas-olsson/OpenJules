@@ -39,6 +39,7 @@ from src.git_manager.managed_composition import (
     validate_inputs,
 )
 from src.polyphony.managed_client import ManagedAuthorityClient, token_from_reference
+from src.worker.execution_context import validate_managed_installation
 
 
 class PublicationError(RuntimeError):
@@ -786,6 +787,7 @@ class PublicationService:
 
 
 def configured_service(configuration):
+    validate_managed_installation()
     if (
         not isinstance(configuration, dict)
         or set(configuration)

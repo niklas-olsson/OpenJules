@@ -769,7 +769,12 @@ def test_cleanup_cli_does_not_start_service_or_restore_endpoints(
     stack, monkeypatch, capsys
 ):
     import sys
-    from src.worker import managed_service
+    from src.worker import execution_context, managed_service
+
+    # The CLI normally owns its process. Scope its permanent context latch to
+    # this invocation when running in pytest's shared interpreter.
+    monkeypatch.setattr(execution_context, "_managed_process", False)
+    monkeypatch.setattr(execution_context, "_selector_observed", False)
 
     s = stack
     app = SimpleNamespace(
@@ -805,6 +810,8 @@ def test_cleanup_cli_does_not_start_service_or_restore_endpoints(
     assert result.value.code == 0
     assert json.loads(capsys.readouterr().out)["state"] == "cleaned"
     assert s.client.created == s.client.executed == 1
+    with pytest.raises(execution_context.LegacyExecutionRefused):
+        execution_context.require_legacy_execution()
 
 
 def test_cleanup_app_construction_opens_journals_without_transport_or_execution(

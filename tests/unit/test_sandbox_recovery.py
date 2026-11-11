@@ -26,7 +26,7 @@ def runtime(*, max_pending_exchanges=16):
     client = MagicMock()
     container = MagicMock()
     container.id = "immutable-container"
-    container.attrs = {"State": {"Running": False, "Restarting": False}}
+    container.attrs = {"Config": {"Labels": {}}, "State": {"Running": False, "Restarting": False}}
     client.containers.get.return_value = container
     client.api.exec_create.return_value = {"Id": "exec-one"}
     client.api.exec_start.return_value = (b"useful output", b"")
@@ -155,9 +155,12 @@ def test_unknown_result_keeps_admission_closed_during_caller_handoff(monkeypatch
     class PausedResultQueue(original_queue):
         def get(self, *args, **kwargs):
             result = super().get(*args, **kwargs)
-            result_received.set()
-            if not release_caller.wait(2):
-                raise AssertionError("caller fixture was not released")
+            # Ownership inspection is read-only and precedes execution. Hold
+            # only the actual unknown execution result at the caller handoff.
+            if result[0] is False and isinstance(result[1], SandboxExecutionUnknown):
+                result_received.set()
+                if not release_caller.wait(2):
+                    raise AssertionError("caller fixture was not released")
             return result
 
     monkeypatch.setattr(docker_driver.queue, "Queue", PausedResultQueue)
