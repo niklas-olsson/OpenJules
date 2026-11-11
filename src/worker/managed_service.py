@@ -16,7 +16,12 @@ import stat
 import threading
 
 from src.api.worker_lifecycle import create_worker_app
-from src.polyphony.managed_client import AuthorityUnavailable, ManagedAuthorityClient
+from src.polyphony.managed_client import (
+    AuthorityUnavailable,
+    AuthorityUnsupported,
+    ManagedAuthorityClient,
+    UNSUPPORTED_CHILD_OUTCOME_REASON,
+)
 from src.worker.lifecycle import RuntimeCapabilities, WorkerLifecycle, WorkerScope
 from src.worker.managed_dispatch import ManagedDispatcher
 from src.worker.execution_context import enter_managed_context, validate_managed_installation
@@ -238,6 +243,11 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             )
             if child_policy is not None:
                 child_policy.validate_capabilities(canonical_capabilities)
+        except AuthorityUnsupported:
+            return RuntimeCapabilities(
+                profile_supported=True,
+                reason=UNSUPPORTED_CHILD_OUTCOME_REASON,
+            )
         except AuthorityUnavailable:
             return RuntimeCapabilities(
                 profile_supported=True,
