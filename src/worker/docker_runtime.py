@@ -37,7 +37,9 @@ from .lifecycle import (
 from .source_snapshot import SourceSnapshots
 
 _WATCHDOG_UID = 65534
-_CLEANUP_TRANSPORT = "docker-7.2.0:stock-unix:retry-0:redirect-0"
+# Earlier markers did not exclude endpoint adapters or authenticator hooks.
+# Preserve those historical rows, but never upgrade their creation proof.
+_CLEANUP_TRANSPORT = "v2:docker-7.2.0:stock-unix:retry-0:redirect-0"
 
 
 class CleanupBlocked(RuntimeUnavailable):
