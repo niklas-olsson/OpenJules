@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.api.polyphony_routes import polyphony_router
 from src.api.ui_routes import record_ui_task, ui_router
@@ -147,6 +147,74 @@ def _dispatch_review_event(payload, event, background_tasks):
     }
 
 
+def _dispatch_issue_comment(payload, background_tasks):
+    """Keep PR conversation commands out of the legacy issue-task executor."""
+    invalid = "invalid_issue_comment_source"
+    ignored = {
+        "status": "ignored",
+        "reason": "No relevant OpenJules trigger in webhook payload",
+    }
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail=invalid)
+    action = payload.get("action", "")
+    if not isinstance(action, str):
+        raise HTTPException(status_code=400, detail=invalid)
+    if action != "created":
+        return ignored
+    comment = payload.get("comment", {})
+    if not isinstance(comment, dict):
+        raise HTTPException(status_code=400, detail=invalid)
+    body = comment.get("body", "")
+    if not isinstance(body, str):
+        raise HTTPException(status_code=400, detail=invalid)
+    if "/jules run" not in body and "/openjules run" not in body:
+        return ignored
+
+    issue = payload.get("issue", {})
+    if not isinstance(issue, dict):
+        raise HTTPException(status_code=400, detail=invalid)
+    repository = payload.get("repository", {})
+    installation = payload.get("installation", {})
+    author = comment.get("user", {})
+    if not all(isinstance(value, dict) for value in (repository, installation, author)):
+        raise HTTPException(status_code=400, detail=invalid)
+    if "pull_request" in issue:
+        if not isinstance(issue["pull_request"], dict):
+            raise HTTPException(status_code=400, detail=invalid)
+        # issue_comment has no actual PR head identity. A missing or removed
+        # publication marker cannot make its issue-task execution path safe.
+        raise HTTPException(
+            status_code=409,
+            detail="pull_request_comment_requires_review_event",
+        )
+
+    try:
+        task_payload = TaskPayload(
+            forge="github",
+            issue_id=issue.get("number"),
+            issue_title=issue.get("title", ""),
+            issue_body=issue.get("body", "") or "",
+            repo_full_name=repository.get("full_name", ""),
+            repo_clone_url=repository.get("clone_url", ""),
+            default_branch=repository.get("default_branch", "main"),
+            installation_id=installation.get("id"),
+            sender=author.get("login", ""),
+        )
+    except ValidationError:
+        raise HTTPException(status_code=400, detail=invalid) from None
+    dispatcher = BackgroundTasksDispatcher(
+        background_tasks=background_tasks,
+        task_handler=executor.execute_task,
+    )
+    dispatcher.dispatch(task_payload)
+    return {
+        "status": "dispatched",
+        "forge": "github",
+        "issue_id": task_payload.issue_id,
+        "repo": task_payload.repo_full_name,
+    }
+
+
 @app.get("/health")
 def health_check():
     """Service health probe."""
@@ -175,6 +243,9 @@ async def github_webhook(
     if x_github_event in ("pull_request_review_comment", "pull_request_review"):
         return _dispatch_review_event(payload, x_github_event, background_tasks)
 
+    if x_github_event == "issue_comment":
+        return _dispatch_issue_comment(payload, background_tasks)
+
     action = payload.get("action", "")
     repository = payload.get("repository", {})
     repo_full_name = repository.get("full_name", "")
@@ -202,24 +273,6 @@ async def github_webhook(
                 default_branch=default_branch,
                 installation_id=installation_id,
                 sender=payload.get("sender", {}).get("login", ""),
-            )
-
-    # Case 2: Issue comment containing "/jules run" or "/openjules run"
-    elif x_github_event == "issue_comment" and action == "created":
-        comment = payload.get("comment", {})
-        comment_body = comment.get("body", "")
-        if "/jules run" in comment_body or "/openjules run" in comment_body:
-            issue = payload.get("issue", {})
-            task_payload = TaskPayload(
-                forge="github",
-                issue_id=issue.get("number"),
-                issue_title=issue.get("title", ""),
-                issue_body=issue.get("body", "") or "",
-                repo_full_name=repo_full_name,
-                repo_clone_url=clone_url,
-                default_branch=default_branch,
-                installation_id=installation_id,
-                sender=comment.get("user", {}).get("login", ""),
             )
 
     if task_payload:

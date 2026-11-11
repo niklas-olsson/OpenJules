@@ -45,8 +45,35 @@ configuration or credentials or invoking sandbox, model, commit or push operatio
 Malformed review-event source values return a fixed HTTP 400 reason. Missing or
 null optional PR bodies remain valid absent context.
 
+GitHub general pull-request conversation comments use the
+[`issue_comment` event](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment),
+which identifies the PR through `issue.pull_request` and supplies no actual head
+branch for the review guard. A created comment containing `/jules run` or
+`/openjules run` with that PR indicator now returns HTTP 409 with
+`pull_request_comment_requires_review_event` before constructing a task or
+queuing the legacy executor. An empty object is still a PR indicator. Removing
+or omitting the publication marker or PR body does not enable this issue-task
+path. A null or non-object indicator, or malformed source context consumed by
+the triggered path, returns HTTP 400 with `invalid_issue_comment_source`.
+Responses contain no supplied body, repository output or credentials.
+
+This deliberately ends the previous behavior where a general PR conversation
+run command could start an unrelated legacy issue task. Valid untriggered PR
+comments and other comment actions remain ignored. Ordinary issue run commands
+keep their existing payload and dispatch behavior. The actual
+`pull_request_review` and `pull_request_review_comment` routes retain the branch
+and marker guard above; eligible standalone PR feedback uses those existing
+review events, while managed feedback requires the canonical review path.
+
+A configured `GITHUB_WEBHOOK_SECRET` is checked before JSON parsing or routing.
+The standalone webhook's existing permissive behavior when that secret is empty
+is unchanged. This refusal does not turn that interface into authenticated
+managed admission, and marker absence grants no managed authority. The guard
+tests exercise the actual app with signed payloads and explicit constructor,
+executor and forge fixtures; they do not claim a live GitHub webhook delivery.
+
 Ordinary generated and ad hoc standalone branches retain their existing review
-flow. An ordinary branch with the same branch shape, or text quoting
+event flow. An ordinary branch with the same branch shape, or text quoting
 the literal marker, is conservatively refused. These public signals only reject
 legacy automation; their absence grants no canonical authority. A renamed branch
 with erased provenance is outside this check. Legacy component initialization is
@@ -55,7 +82,7 @@ unchanged. The installed managed service still exposes no legacy review route.
 This boundary does not implement managed PR iteration, authenticated canonical
 webhook enrollment or convergence of other standalone entrypoints. Managed draft
 feedback requires the canonical task/review path; issues #2 and #3 remain open
-for the remaining ingress and admission-race criteria.
+for the remaining ingress criteria.
 
 ## Ownership
 

@@ -27,6 +27,8 @@ MISSING = object()
 SECRET = "synthetic-legacy-review-webhook-secret"
 MANAGED_REASON = "managed_publication_requires_canonical_review"
 INVALID_REASON = "invalid_legacy_review_source"
+COMMENT_REASON = "pull_request_comment_requires_review_event"
+INVALID_COMMENT = "invalid_issue_comment_source"
 EVENTS = ("pull_request_review_comment", "pull_request_review")
 
 
@@ -46,6 +48,29 @@ def payload(event, branch, source_body=MISSING):
     return result
 
 
+
+def issue_comment_payload(
+    body="/jules run", *, pull_request=MISSING, source_body="Ordinary description",
+    repo="owner/project", action="created",
+):
+    issue = {"number": 1, "title": "Requested change"}
+    if pull_request is not MISSING:
+        issue["pull_request"] = pull_request
+    if source_body is not MISSING:
+        issue["body"] = source_body
+    return {
+        "action": action,
+        "repository": {
+            "full_name": repo,
+            "clone_url": f"https://github.com/{repo}.git",
+            "default_branch": "main",
+        },
+        "installation": {"id": 7},
+        "issue": issue,
+        "comment": {"id": 81, "body": body, "user": {"login": "requester"}},
+    }
+
+
 @pytest.fixture
 def route(tmp_path, monkeypatch):
     # The legacy app still initializes its components. Only that preflight is
@@ -56,6 +81,8 @@ def route(tmp_path, monkeypatch):
         from src.api import webhook
 
     callback = Mock(return_value=True)
+    task_callback = Mock(return_value=True)
+    monkeypatch.setattr(webhook, "executor", SimpleNamespace(execute_task=task_callback))
     monkeypatch.setattr(
         webhook,
         "pr_review_handler",
@@ -71,7 +98,10 @@ def route(tmp_path, monkeypatch):
 
     monkeypatch.setattr(BackgroundTasks, "add_task", track)
     with TestClient(webhook.app) as client:
-        yield SimpleNamespace(client=client, callback=callback, queued=queued)
+        yield SimpleNamespace(
+            client=client, callback=callback, task_callback=task_callback,
+            queued=queued, webhook=webhook,
+        )
 
 
 def post(route, event, document):
@@ -125,6 +155,8 @@ def test_actual_publisher_output_is_refused_across_routes_and_direct_calls(
     route, guarded_handler, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("PUBLICATION_TEST_TOKEN", "synthetic-publication-token")
+    task_constructor = Mock(side_effect=AssertionError("task payload constructed"))
+    monkeypatch.setattr(route.webhook, "TaskPayload", task_constructor)
     for index, prefix in enumerate(
         ("openjules/managed/", "custom/", "openjules/task-12-custom/")
     ):
@@ -161,8 +193,22 @@ def test_actual_publisher_output_is_refused_across_routes_and_direct_calls(
             )
             assert response.status_code == 409
             assert response.json() == {"detail": MANAGED_REASON}
+        # General PR conversation comments have no head ref. Even an erased
+        # actual publisher marker cannot authorize this separate issue path.
+        for command in ("/jules run", "/openjules run"):
+            for source_body in (forge.marker, "Edited description", None, MISSING):
+                document = issue_comment_payload(
+                    command, pull_request={"url": "https://api.github.com/repos/owner/project/pulls/1"},
+                    source_body=source_body,
+                )
+                for _ in range(2):
+                    response = post(route, "issue_comment", document)
+                    assert response.status_code == 409
+                    assert response.json() == {"detail": COMMENT_REASON}
     assert not route.queued
     route.callback.assert_not_called()
+    route.task_callback.assert_not_called()
+    task_constructor.assert_not_called()
 
 
 @pytest.mark.parametrize("event", EVENTS)
@@ -319,3 +365,151 @@ def test_direct_ad_hoc_review_keeps_its_existing_effect_path():
     agent.run.assert_called_once()
     git.commit_changes.assert_called_once()
     git.push_branch.assert_called_once_with("fixture-context", "feature/ad-hoc-review")
+
+
+@pytest.mark.parametrize("command", ["/jules run", "/openjules run"])
+def test_pr_comment_indicator_refuses_before_payload_even_without_provenance(
+    route, monkeypatch, command
+):
+    constructor = Mock(side_effect=AssertionError("task payload constructed"))
+    monkeypatch.setattr(route.webhook, "TaskPayload", constructor)
+    for indicator in ({}, {"url": "https://api.github.com/repos/owner/project/pulls/1"}):
+        response = post(
+            route, "issue_comment",
+            issue_comment_payload(command, pull_request=indicator, source_body=None),
+        )
+        assert response.status_code == 409
+        assert response.json() == {"detail": COMMENT_REASON}
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
+    constructor.assert_not_called()
+
+
+def test_malformed_issue_comment_sources_are_bounded_before_payload_or_queue(
+    route, monkeypatch
+):
+    constructor = Mock(side_effect=AssertionError("task payload constructed"))
+    monkeypatch.setattr(route.webhook, "TaskPayload", constructor)
+    original = issue_comment_payload(pull_request={})
+    malformed = [[], None, "private-invalid", True, 7, original | {"action": []}]
+    for key in ("issue", "comment", "repository", "installation"):
+        for value in (None, [], "private-invalid"):
+            malformed.append(original | {key: value})
+    for value in (None, [], {}, 7, True):
+        malformed.append(original | {"comment": original["comment"] | {"body": value}})
+    for value in (None, [], "private-invalid"):
+        malformed.append(original | {"comment": original["comment"] | {"user": value}})
+    for value in (None, [], "private-invalid", 7, True, False):
+        malformed.append(original | {"issue": original["issue"] | {"pull_request": value}})
+    for document in malformed:
+        response = post(route, "issue_comment", document)
+        assert response.status_code == 400
+        assert response.json() == {"detail": INVALID_COMMENT}
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
+    constructor.assert_not_called()
+
+
+@pytest.mark.parametrize("signature", [None, "sha256=" + "0" * 64])
+def test_issue_comment_authentication_precedes_parsing_and_source_refusal(
+    route, monkeypatch, signature
+):
+    constructor = Mock(side_effect=AssertionError("task payload constructed"))
+    monkeypatch.setattr(route.webhook, "TaskPayload", constructor)
+    for raw in (
+        b"{",
+        b"null",
+        json.dumps(issue_comment_payload(pull_request={})).encode(),
+    ):
+        headers = {"Content-Type": "application/json", "X-GitHub-Event": "issue_comment"}
+        if signature is not None:
+            headers["X-Hub-Signature-256"] = signature
+        response = route.client.post("/api/webhook", content=raw, headers=headers)
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Invalid signature"}
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
+    constructor.assert_not_called()
+
+
+def test_issue_comment_invalid_json_is_a_bounded_authenticated_refusal(route):
+    raw = b"{"
+    signature = "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    response = route.client.post(
+        "/api/webhook", content=raw,
+        headers={"X-GitHub-Event": "issue_comment", "X-Hub-Signature-256": signature},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Malformed JSON"}
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
+
+
+def test_valid_untriggered_pr_comments_and_other_actions_stay_ignored(route, monkeypatch):
+    constructor = Mock(side_effect=AssertionError("task payload constructed"))
+    monkeypatch.setattr(route.webhook, "TaskPayload", constructor)
+    documents = [
+        issue_comment_payload(
+            "Ordinary conversation", pull_request={}, source_body="<!-- openjules-publication:example"
+        ),
+        issue_comment_payload("", pull_request={}),
+        issue_comment_payload("/jules run", pull_request={}, action="edited"),
+        issue_comment_payload("/openjules run", pull_request={}, action="deleted"),
+        issue_comment_payload("/jules run", action="edited"),
+    ]
+    for document in documents:
+        response = post(route, "issue_comment", document)
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ignored",
+            "reason": "No relevant OpenJules trigger in webhook payload",
+        }
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
+    constructor.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["/jules run", "/openjules run"])
+def test_ordinary_issue_comments_keep_existing_task_payload_and_dispatch(route, command):
+    for repo in ("owner/project-a", "owner/project-b"):
+        # A quoted marker on an ordinary issue does not make it a PR event.
+        document = issue_comment_payload(
+            command, repo=repo, source_body="Quoted <!-- openjules-publication:example"
+        )
+        response = post(route, "issue_comment", document)
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "dispatched", "forge": "github", "issue_id": 1, "repo": repo
+        }
+        supplied = route.task_callback.call_args.args[0]
+        assert supplied.model_dump() == {
+            "forge": "github", "issue_id": 1, "issue_title": "Requested change",
+            "issue_body": document["issue"]["body"], "repo_full_name": repo,
+            "repo_clone_url": f"https://github.com/{repo}.git",
+            "default_branch": "main", "installation_id": 7, "sender": "requester",
+        }
+    assert len(route.queued) == route.task_callback.call_count == 2
+    route.callback.assert_not_called()
+
+
+def test_malformed_ordinary_issue_task_fields_return_fixed_error_without_dispatch(route):
+    original = issue_comment_payload()
+    malformed = [
+        original | {"issue": original["issue"] | {"number": None}},
+        original | {"issue": original["issue"] | {"title": []}},
+        original | {"repository": original["repository"] | {"full_name": []}},
+        original | {"installation": {"id": {}}},
+        original | {"comment": original["comment"] | {"user": {"login": []}}},
+    ]
+    for document in malformed:
+        response = post(route, "issue_comment", document)
+        assert response.status_code == 400
+        assert response.json() == {"detail": INVALID_COMMENT}
+    assert not route.queued
+    route.task_callback.assert_not_called()
+    route.callback.assert_not_called()
