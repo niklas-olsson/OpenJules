@@ -351,6 +351,8 @@ def child_stack(
     seconds=60,
     child_seconds=40,
     outcome_protocol=None,
+    root_verify_argv=None,
+    child_verify_argv=None,
 ):
     client, image = agent_image
     source, base = make_source(tmp_path)
@@ -369,6 +371,8 @@ def child_stack(
     )
     if sleeping_root:
         command = ("python3", "-I", "-c", "import time;time.sleep(90)")
+    elif root_verify_argv is not None:
+        command += ("--verify-json", json.dumps(root_verify_argv))
     profile = DockerProfile(
         "bounded-children-v1",
         "child-runtime-test",
@@ -388,7 +392,11 @@ def child_stack(
         child_seconds,
         4,
         ("python",),
-        verify_argv=("python3", "-I", "-c", CHILD_VERIFY),
+        verify_argv=(
+            ("python3", "-I", "-c", CHILD_VERIFY)
+            if child_verify_argv is None
+            else child_verify_argv
+        ),
         outcome_protocol=outcome_protocol,
     )
     stack = SimpleNamespace(
