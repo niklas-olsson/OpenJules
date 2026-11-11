@@ -193,6 +193,122 @@ def test_completed_capture_cleanup_reopens_and_never_recreates(stack, monkeypatc
     assert s.client.created == 1 and s.client.executed == 1
 
 
+def reopen_with_historical_transport(s, monkeypatch, columns):
+    historical = "docker-7.2.0:stock-unix:retry-0:redirect-0"
+    with s.runtime._db() as db:
+        for column in columns:
+            db.execute(
+                f"UPDATE workers SET {column}=? WHERE worker_id=?",
+                (historical, s.worker_id),
+            )
+    before = dict(s.runtime._row(s.worker_id, s.spec))
+    reopened = ManagedDockerRuntime(
+        s.runtime.root, [s.profile], s.runtime.readiness, s.client
+    )
+    # A currently qualified fixture transport cannot repair historical proof.
+    monkeypatch.setattr(reopened, "_cleanup_transport", lambda: _CLEANUP_TRANSPORT)
+    assert dict(reopened._row(s.worker_id, s.spec)) == before
+    return reopened, before
+
+
+@pytest.mark.parametrize("column", ["volume_transport", "container_transport"])
+def test_historical_transport_proof_is_not_upgraded_after_reopen(
+    stack, monkeypatch, column
+):
+    s = stack
+    reopened, before = reopen_with_historical_transport(s, monkeypatch, [column])
+    archive = Path(json.loads(before["receipt"])["capture_path"])
+    captured = archive.read_bytes()
+    containers, volumes = set(s.client.all_containers), set(s.client.all_volumes)
+    result = reopened.cleanup_worker(
+        s.worker_id, s.spec, lambda _: pytest.fail("historical proof reached authority")
+    )
+    assert result["state"] == "retained"
+    assert result["reason"] == "resource_creation_unqualified"
+    assert result["container_removed"] is False
+    assert result["volume_removed"] is False
+    assert s.client.removals == []
+    assert set(s.client.all_containers) == containers
+    assert set(s.client.all_volumes) == volumes
+    assert s.client.created == s.client.executed == 1
+    assert dict(reopened._row(s.worker_id, s.spec)) == before
+    assert archive.read_bytes() == captured
+
+
+@pytest.mark.parametrize("failure", ["container_before", "volume_before"])
+def test_historical_transport_proof_blocks_pending_cleanup_after_reopen(
+    stack, monkeypatch, failure
+):
+    s = stack
+    s.client.remove_failure = failure
+    pending = clean(s)
+    assert pending["state"] == "retained"
+    assert pending["reason"] == "cleanup_unresolved"
+    assert pending["container_removed"] is (failure == "volume_before")
+    s.client.remove_failure = None
+    reopened, before = reopen_with_historical_transport(
+        s, monkeypatch, ["volume_transport", "container_transport"]
+    )
+    progress = json.loads(before["cleanup"])
+    assert progress["completed"] is False
+    assert progress["container_removed"] is (failure == "volume_before")
+    assert progress["volume_removed"] is False
+    archive = Path(json.loads(before["receipt"])["capture_path"])
+    captured = archive.read_bytes()
+    removals = list(s.client.removals)
+    containers, volumes = set(s.client.all_containers), set(s.client.all_volumes)
+    result = reopened.cleanup_worker(
+        s.worker_id, s.spec, lambda _: pytest.fail("old intent reached authority")
+    )
+    assert result["state"] == "retained"
+    assert result["reason"] == "resource_creation_unqualified"
+    assert result["container_removed"] is progress["container_removed"]
+    assert result["volume_removed"] is False
+    assert s.client.removals == removals
+    assert set(s.client.all_containers) == containers
+    assert set(s.client.all_volumes) == volumes
+    assert s.client.created == s.client.executed == 1
+    assert dict(reopened._row(s.worker_id, s.spec)) == before
+    assert archive.read_bytes() == captured
+
+
+def test_completed_historical_cleanup_receipt_reopens_without_side_effects(
+    stack, monkeypatch
+):
+    s = stack
+    completed = clean(s)
+    assert completed["state"] == "cleaned"
+    reopened, before = reopen_with_historical_transport(
+        s, monkeypatch, ["volume_transport", "container_transport"]
+    )
+    archive = Path(json.loads(before["receipt"])["capture_path"])
+    captured = archive.read_bytes()
+    monkeypatch.setattr(
+        reopened,
+        "_cleanup_transport",
+        lambda: pytest.fail("completed historical receipt checked transport"),
+    )
+    monkeypatch.setattr(
+        s.client.containers,
+        "get",
+        lambda _: pytest.fail("completed historical receipt touched Docker"),
+    )
+    monkeypatch.setattr(
+        s.client.volumes,
+        "get",
+        lambda _: pytest.fail("completed historical receipt touched volume"),
+    )
+    result = reopened.cleanup_worker(
+        s.worker_id, s.spec, lambda _: pytest.fail("cached receipt reached authority")
+    )
+    assert result == completed
+    assert s.client.removals == ["container", "volume"]
+    assert not s.client.all_containers and not s.client.all_volumes
+    assert s.client.created == s.client.executed == 1
+    assert dict(reopened._row(s.worker_id, s.spec)) == before
+    assert archive.read_bytes() == captured
+
+
 @pytest.mark.parametrize(
     "column,value",
     [
