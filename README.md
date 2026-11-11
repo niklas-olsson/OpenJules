@@ -42,6 +42,13 @@ their own qualification. The older webhook, in-memory collaboration and DinD
 paths described below do not satisfy this managed contract and are never used
 as a readiness fallback.
 
+Standalone legacy PR feedback refuses the branch shape and provenance marker
+produced by [managed publication](docs/managed-publication.md), including custom
+publication prefixes. Those feedback operations cannot enter its direct
+sandbox, model and push loop. Ordinary standalone review remains available; the
+[review boundary](docs/managed-service.md#legacy-pr-review-boundary) documents
+the conservative refusal cases and remaining ingress limits.
+
 ---
 
 ## Architecture Overview

@@ -6,6 +6,7 @@ existing branch, executes a fix loop with tests, and pushes an updated commit.
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -16,6 +17,39 @@ from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import SandboxManager
 
 logger = logging.getLogger(__name__)
+
+
+class ReviewSourceRejected(ValueError):
+    """A legacy feedback operation cannot act on this supplied source."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def require_legacy_review_source(branch_name, *source_texts):
+    """Refuse current managed-publication signals; absence grants no authority.
+
+    PublicationService appends a 64-hex operation to every slash-terminated
+    PublicationPolicy prefix. This also covers custom managed branch prefixes.
+    Public markers can only cause refusal, never authorize legacy execution.
+    """
+    if (
+        not isinstance(branch_name, str)
+        or not branch_name
+        or any(
+            value is not None and not isinstance(value, str) for value in source_texts
+        )
+    ):
+        raise ReviewSourceRejected("invalid_legacy_review_source")
+    if (
+        "/" in branch_name
+        and re.fullmatch(r"[0-9a-f]{64}", branch_name.rsplit("/", 1)[1])
+    ) or any(
+        value is not None and "<!-- openjules-publication:" in value
+        for value in source_texts
+    ):
+        raise ReviewSourceRejected("managed_publication_requires_canonical_review")
 
 
 @dataclass
@@ -49,8 +83,18 @@ class PRReviewHandler:
         comments: List[ReviewComment],
         git_token: Optional[str] = None,
         config: Optional[OpenJulesConfig] = None,
+        *,
+        source_body: Optional[str] = None,
     ) -> bool:
         """Checks out the existing branch, fixes the code based on comments, and pushes updates."""
+        if not isinstance(comments, (list, tuple)) or any(
+            not isinstance(comment, ReviewComment) or not isinstance(comment.body, str)
+            for comment in comments
+        ):
+            raise ReviewSourceRejected("invalid_legacy_review_source")
+        require_legacy_review_source(
+            branch_name, source_body, *(comment.body for comment in comments)
+        )
         cfg = config or OpenJulesConfig()
         effective_token = git_token or os.environ.get("GITHUB_TOKEN")
 

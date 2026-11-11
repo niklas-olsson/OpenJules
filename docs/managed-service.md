@@ -31,6 +31,32 @@ returns HTTP 200 from `/health`, an absent or unsupported managed protocol makes
 returns HTTP 503 without reserving or launching a worker. A previous successful
 capability response does not permit later admission after capabilities change.
 
+## Legacy PR review boundary
+
+The separately enabled standalone webhook and direct `PRReviewHandler` refuse
+feedback whose branch ends in a slash followed by exactly 64 lowercase hexadecimal
+characters, or whose supplied PR body or feedback contains
+`<!-- openjules-publication:`. Every current managed publication policy appends
+its operation digest to a slash-terminated prefix, so the branch check also covers
+custom prefixes. A `/jules` mention cannot override refusal. The webhook returns
+HTTP 409 with `managed_publication_requires_canonical_review` before queuing work;
+the direct handler raises `ReviewSourceRejected` before reading execution
+configuration or credentials or invoking sandbox, model, commit or push operations.
+Malformed review-event source values return a fixed HTTP 400 reason. Missing or
+null optional PR bodies remain valid absent context.
+
+Ordinary generated and ad hoc standalone branches retain their existing review
+flow. An ordinary branch with the same branch shape, or text quoting
+the literal marker, is conservatively refused. These public signals only reject
+legacy automation; their absence grants no canonical authority. A renamed branch
+with erased provenance is outside this check. Legacy component initialization is
+unchanged. The installed managed service still exposes no legacy review route.
+
+This boundary does not implement managed PR iteration, authenticated canonical
+webhook enrollment or convergence of other standalone entrypoints. Managed draft
+feedback requires the canonical task/review path; issues #2 and #3 remain open
+for the remaining ingress and admission-race criteria.
+
 ## Ownership
 
 ZPM owns repository enrollment and the desired number of workers. OpenJules owns
