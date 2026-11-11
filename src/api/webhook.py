@@ -18,7 +18,12 @@ from src.api.ui_routes import record_ui_task, ui_router
 from src.api.ws import ws_manager, ws_router
 from src.worker.dispatcher import BackgroundTasksDispatcher, TaskDispatcher, TaskPayload
 from src.worker.executor import TaskExecutor
-from src.worker.pr_reviewer import PRReviewHandler, ReviewComment
+from src.worker.pr_reviewer import (
+    PRReviewHandler,
+    ReviewComment,
+    ReviewSourceRejected,
+    require_legacy_review_source,
+)
 
 pr_review_handler = PRReviewHandler()
 
@@ -65,6 +70,83 @@ def verify_github_signature(payload_body: bytes, signature_header: Optional[str]
     return hmac.compare_digest(expected_hash, parts[1])
 
 
+def _dispatch_review_event(payload, event, background_tasks):
+    """Validate only the legacy review event before selecting or queuing work."""
+    try:
+        if not isinstance(payload, dict) or not isinstance(payload.get("action"), str):
+            raise ReviewSourceRejected("invalid_legacy_review_source")
+        expected_action = (
+            "created" if event == "pull_request_review_comment" else "submitted"
+        )
+        if payload["action"] != expected_action:
+            return {
+                "status": "ignored",
+                "reason": "No relevant OpenJules review action",
+            }
+        pr_data = payload.get("pull_request")
+        comment = payload.get(
+            "comment" if event == "pull_request_review_comment" else "review"
+        )
+        repository = payload.get("repository")
+        if not all(isinstance(value, dict) for value in (pr_data, comment, repository)):
+            raise ReviewSourceRejected("invalid_legacy_review_source")
+        head = pr_data.get("head")
+        author = comment.get("user", {})
+        if not isinstance(head, dict) or not isinstance(author, dict):
+            raise ReviewSourceRejected("invalid_legacy_review_source")
+        branch = head.get("ref")
+        body = comment.get("body")
+        # Missing/null PR body is valid absent context.
+        source_body = pr_data.get("body")
+        clone_url = repository.get("clone_url")
+        login = author.get("login", "")
+        comment_id = comment.get("id", 0)
+        path, line = comment.get("path"), comment.get("line")
+        if (
+            not isinstance(body, str)
+            or not isinstance(clone_url, str)
+            or not clone_url
+            or not isinstance(login, str)
+            or type(comment_id) not in {int, str}
+            or (path is not None and not isinstance(path, str))
+            or (line is not None and type(line) is not int)
+        ):
+            raise ReviewSourceRejected("invalid_legacy_review_source")
+        require_legacy_review_source(branch, source_body, body)
+    except ReviewSourceRejected as exc:
+        status = (
+            409
+            if exc.reason == "managed_publication_requires_canonical_review"
+            else 400
+        )
+        raise HTTPException(status_code=status, detail=exc.reason) from None
+
+    if "/jules" not in body and not branch.startswith("openjules/"):
+        return {
+            "status": "ignored",
+            "reason": "No relevant OpenJules trigger in webhook payload",
+        }
+    review_comment = ReviewComment(
+        id=comment_id,
+        body=body,
+        path=path,
+        line=line,
+        author=login,
+    )
+    background_tasks.add_task(
+        pr_review_handler.address_review_feedback,
+        repo_clone_url=clone_url,
+        branch_name=branch,
+        comments=[review_comment],
+        source_body=source_body,
+    )
+    return {
+        "status": "review_iteration_dispatched",
+        "branch": branch,
+        "comment_id": comment_id,
+    }
+
+
 @app.get("/health")
 def health_check():
     """Service health probe."""
@@ -89,6 +171,9 @@ async def github_webhook(
         payload: Dict[str, Any] = json.loads(body_bytes)
     except Exception:
         raise HTTPException(status_code=400, detail="Malformed JSON")
+
+    if x_github_event in ("pull_request_review_comment", "pull_request_review"):
+        return _dispatch_review_event(payload, x_github_event, background_tasks)
 
     action = payload.get("action", "")
     repository = payload.get("repository", {})
@@ -119,35 +204,7 @@ async def github_webhook(
                 sender=payload.get("sender", {}).get("login", ""),
             )
 
-    # Case 2: PR Review Comment on code diff
-    elif x_github_event in ("pull_request_review_comment", "pull_request_review") and action in ("created", "submitted"):
-        comment = payload.get("comment", {}) or payload.get("review", {})
-        comment_body = comment.get("body", "")
-        # Trigger if addressed to Jules or on openjules branches
-        pr_data = payload.get("pull_request", {})
-        head_branch = pr_data.get("head", {}).get("ref", "")
-
-        if "/jules" in comment_body or head_branch.startswith("openjules/"):
-            review_comment = ReviewComment(
-                id=comment.get("id", 0),
-                body=comment_body,
-                path=comment.get("path"),
-                line=comment.get("line"),
-                author=comment.get("user", {}).get("login", ""),
-            )
-            background_tasks.add_task(
-                pr_review_handler.address_review_feedback,
-                repo_clone_url=clone_url,
-                branch_name=head_branch,
-                comments=[review_comment],
-            )
-            return {
-                "status": "review_iteration_dispatched",
-                "branch": head_branch,
-                "comment_id": review_comment.id,
-            }
-
-    # Case 3: Issue comment containing "/jules run" or "/openjules run"
+    # Case 2: Issue comment containing "/jules run" or "/openjules run"
     elif x_github_event == "issue_comment" and action == "created":
         comment = payload.get("comment", {})
         comment_body = comment.get("body", "")
