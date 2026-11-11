@@ -18,6 +18,7 @@ from src.sandbox.self_healing import EnvironmentSelfHealer
 from src.sandbox.test_bisection import TestBisectionManager
 from src.worker.auth import get_app_installation_token
 from src.worker.dispatcher import TaskPayload
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class TaskExecutor:
         radicle_provider: Optional[RadicleProvider] = None,
         polyphony_manager: Optional[PolyphonySwarmManager] = None,
     ):
+        require_legacy_execution()
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self.agent_engine = agent_engine or AgentEngine(self.sandbox_manager)
         self.git_manager = git_manager or GitLifecycleManager(self.sandbox_manager)
@@ -60,6 +62,7 @@ class TaskExecutor:
 
     def execute_task(self, payload: TaskPayload, git_token: Optional[str] = None) -> bool:
         """Runs the complete autonomous agent lifecycle."""
+        require_legacy_execution()
         forge = payload.forge.lower()
         provider = self.get_forge_provider(forge)
 

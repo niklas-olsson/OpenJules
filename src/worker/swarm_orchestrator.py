@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from src.polyphony.manager import PolyphonySwarmManager
 from src.worker.dispatcher import TaskPayload
 from src.worker.executor import TaskExecutor
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class MultiRepoOrchestrator:
         limits: Optional[SwarmWorkerLimits] = None,
         polyphony_manager: Optional[PolyphonySwarmManager] = None,
     ):
+        require_legacy_execution()
         self.executor = task_executor or TaskExecutor()
         self.limits = limits or SwarmWorkerLimits()
         self.polyphony_manager = (
@@ -60,6 +62,7 @@ class MultiRepoOrchestrator:
 
     async def execute_task_managed(self, payload: TaskPayload) -> bool:
         """Executes a task under global and per-repository worker concurrency limits."""
+        require_legacy_execution()
         repo_id = payload.repo_full_name.strip().lower()
         task_key = f"{repo_id}:{payload.issue_id}"
         repo_sem = self._get_repo_semaphore(repo_id)

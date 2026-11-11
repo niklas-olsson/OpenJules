@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
+
+from src.worker.execution_context import LegacyExecutionRefused, require_legacy_execution
+
+# Refuse before importing routers that create legacy storage/provisioners.
+require_legacy_execution()
 
 from src.api.polyphony_routes import polyphony_router
 from src.api.ui_routes import record_ui_task, ui_router
@@ -36,6 +41,12 @@ app = FastAPI(
 )
 
 executor = TaskExecutor()
+
+
+@app.exception_handler(LegacyExecutionRefused)
+async def legacy_execution_refused(_request, exc):
+    return JSONResponse(status_code=409, content={"detail": exc.reason})
+
 
 # Include dashboard, UI, and Polyphony endpoints
 app.include_router(ui_router)
@@ -72,6 +83,7 @@ def verify_github_signature(payload_body: bytes, signature_header: Optional[str]
 
 def _dispatch_review_event(payload, event, background_tasks):
     """Validate only the legacy review event before selecting or queuing work."""
+    require_legacy_execution()
     try:
         if not isinstance(payload, dict) or not isinstance(payload.get("action"), str):
             raise ReviewSourceRejected("invalid_legacy_review_source")
@@ -149,6 +161,7 @@ def _dispatch_review_event(payload, event, background_tasks):
 
 def _dispatch_issue_comment(payload, background_tasks):
     """Keep PR conversation commands out of the legacy issue-task executor."""
+    require_legacy_execution()
     invalid = "invalid_issue_comment_source"
     ignored = {
         "status": "ignored",
@@ -235,6 +248,8 @@ async def github_webhook(
     if not verify_github_signature(body_bytes, x_hub_signature_256, webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
+    require_legacy_execution()
+
     try:
         payload: Dict[str, Any] = json.loads(body_bytes)
     except Exception:
@@ -309,6 +324,7 @@ async def radicle_webhook(
     background_tasks: BackgroundTasks,
 ):
     """Webhook adapter for self-hosted or local Radicle node events."""
+    require_legacy_execution()
     label_triggered = any("openjules" in str(l).lower() for l in event.labels) or event.event_type == "openjules:run"
 
     clean_rid = event.rid if event.rid.startswith("rad:") else f"rad:{event.rid}"

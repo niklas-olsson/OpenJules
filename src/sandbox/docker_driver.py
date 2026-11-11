@@ -17,6 +17,7 @@ import docker
 from docker.errors import NotFound
 
 from src.sandbox.config import OpenJulesConfig
+from src.worker.execution_context import LegacyExecutionRefused, require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class SandboxManager:
         operation_timeout: float = 5.0,
         max_pending_exchanges: int = 16,
     ):
+        require_legacy_execution()
         if (
             isinstance(operation_timeout, bool)
             or not isinstance(operation_timeout, (int, float))
@@ -218,19 +220,61 @@ class SandboxManager:
             and state.get("Paused") is not True
         )
 
-    def _stop(self, container_id: str) -> tuple[bool, bool]:
-        """Return (termination confirmed, container already absent)."""
-        def stop():
+    def _legacy_container(self, container_id: str, deadline: float, *, absent_ok=False):
+        """Read ownership before any execution, quarantine or destructive cleanup.
+
+        Docker container labels are creation metadata. Both the guard and the
+        later effect use the same immutable ID, never a mutable name or alias.
+        """
+        require_legacy_execution()
+
+        def inspect():
             try:
                 container = self.client.containers.get(container_id)
-                if container.id != container_id:
-                    raise ValueError("An immutable container ID is required")
+            except NotFound:
+                if absent_ok:
+                    return None
+                raise LegacyExecutionRefused("legacy_container_identity_unverified") from None
+            except Exception:
+                raise LegacyExecutionRefused("legacy_container_identity_unverified") from None
+            if not isinstance(container_id, str) or container.id != container_id:
+                raise LegacyExecutionRefused("legacy_container_identity_unverified")
+            attrs = container.attrs
+            config = attrs.get("Config") if isinstance(attrs, dict) else None
+            if not isinstance(config, dict) or "Labels" not in config:
+                raise LegacyExecutionRefused("legacy_container_identity_unverified")
+            labels = config["Labels"]
+            if labels is not None and (
+                not isinstance(labels, dict)
+                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in labels.items())
+            ):
+                raise LegacyExecutionRefused("legacy_container_identity_unverified")
+            if labels and labels.get("openjules.managed") == "1":
+                raise LegacyExecutionRefused("managed_container_requires_canonical_runtime")
+            return container
+
+        return self._bounded_call(inspect, deadline)
+
+    def _stop_resolved(self, container, container_id: str, deadline: float) -> tuple[bool, bool]:
+        # Only callers that resolved immutable legacy ownership may enter here.
+        def stop():
+            try:
                 container.stop(timeout=2)
-                return self._stopped(container), False
+                stopped = self._stopped(container)
+                return stopped and container.id == container_id, False
             except NotFound:
                 return True, True
 
-        return self._bounded_call(stop, time.monotonic() + self.operation_timeout)
+        return self._bounded_call(stop, deadline)
+
+    def _stop(self, container_id: str) -> tuple[bool, bool]:
+        """Return (termination confirmed, container already absent)."""
+        require_legacy_execution()
+        deadline = time.monotonic() + self.operation_timeout
+        container = self._legacy_container(container_id, deadline, absent_ok=True)
+        if container is None:
+            return True, True
+        return self._stop_resolved(container, container_id, deadline)
 
     @staticmethod
     def _inject_git_token(repo_url: str, git_token: Optional[str]) -> str:
@@ -258,6 +302,7 @@ class SandboxManager:
 
         Resource constraints: mem_limit="4g", nano_cpus=2000000000 (2 CPUs).
         """
+        require_legacy_execution()
         temp_dir = tempfile.mkdtemp(prefix="openjules_ws_", dir=workspace_base_dir)
 
         # Build environment dictionary
@@ -357,11 +402,13 @@ class SandboxManager:
         may prevent confirmation; in that case the exception remains explicit
         and further commands on this sandbox are denied.
         """
+        require_legacy_execution()
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError("timeout must be a positive finite number")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be a positive finite number")
         deadline = time.monotonic() + timeout
+        container = self._legacy_container(container_id, deadline)
 
         def check_dispatch():
             if time.monotonic() >= deadline:
@@ -371,12 +418,9 @@ class SandboxManager:
                     raise SandboxExecutionUnknown("Sandbox command admission is closed", container_id)
 
         def execute():
-            container = self.client.containers.get(container_id)
-            if container.id != container_id:
-                raise ValueError("An immutable container ID is required")
             check_dispatch()
             exec_instance = self.client.api.exec_create(
-                container=container_id,
+                container=container.id,
                 cmd=["/bin/sh", "-c", cmd],
                 workdir=workdir,
                 environment=env,
@@ -444,14 +488,19 @@ class SandboxManager:
         The capture flag is a trusted caller acknowledgement of durable storage,
         not something inferred from a successful command or a model's answer.
         """
+        require_legacy_execution()
         if type(artifact_capture_confirmed) is not bool:
             raise ValueError("artifact_capture_confirmed must be a boolean")
+        deadline = time.monotonic() + self.operation_timeout
+        container = self._legacy_container(container_id, deadline, absent_ok=True)
         with self._state_lock:
             # Cleanup is terminal for this sandbox, even if the stop response
             # or a previously started exec exchange arrives later.
             self._quarantined.add(container_id)
         try:
-            stopped, removed = self._stop(container_id)
+            stopped, removed = (
+                (True, True) if container is None else self._stop_resolved(container, container_id, deadline)
+            )
         except Exception:
             stopped, removed = False, False
         with self._state_lock:
@@ -475,8 +524,9 @@ class SandboxManager:
         if not removed:
             def remove():
                 try:
-                    container = self.client.containers.get(container_id)
-                    if container.id != container_id or not self._stopped(container):
+                    if container.id != container_id:
+                        return False
+                    if not self._stopped(container) or container.id != container_id:
                         return False
                     # Never force deletion across a state race. Docker rejects
                     # ordinary removal if a container has become active again.

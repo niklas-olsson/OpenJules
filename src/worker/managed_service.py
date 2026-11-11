@@ -19,6 +19,7 @@ from src.api.worker_lifecycle import create_worker_app
 from src.polyphony.managed_client import AuthorityUnavailable, ManagedAuthorityClient
 from src.worker.lifecycle import RuntimeCapabilities, WorkerLifecycle, WorkerScope
 from src.worker.managed_dispatch import ManagedDispatcher
+from src.worker.execution_context import enter_managed_context, validate_managed_installation
 
 
 def _read_object(path: Path, *, private: bool = False) -> dict:
@@ -110,6 +111,7 @@ def load_configuration(path: str | Path):
 
 
 def build_app(config: dict, credentials: dict, *, cleanup_only=False):
+    validate_managed_installation()
     # Lazy import keeps the old lifecycle API available without constructing a
     # Docker client. The managed entrypoint always uses the real runtime.
     from src.worker.docker_runtime import DockerProfile, ManagedDockerRuntime
@@ -405,6 +407,7 @@ def main():
     ):
         parser.error("cleanup requires worker, deployment and repository together")
     try:
+        enter_managed_context()
         config, credentials = load_configuration(args.config)
         app = build_app(config, credentials, cleanup_only=bool(args.cleanup_worker))
     except (ValueError, TypeError, KeyError, OSError):

@@ -21,9 +21,115 @@ and palette commands return HTTP 404 on this service. It does not import or star
 the standalone legacy executor, poller or MCP server, or initialize an in-memory
 Polyphony facade. Package exports still load the facade's class definitions.
 The separate `openjules run`, `openjules serve` and `openjules mcp` commands remain
-legacy interfaces. They are not managed task ingress and must not be exposed as
-part of this installation. Converging or explicitly gating those standalone
-interfaces remains tracked in issues #2 and #3.
+legacy interfaces. The managed installation context below now explicitly refuses
+their execution in the dedicated installed interpreter. Use the canonical managed
+entrypoints for protected work and a separate standalone interpreter for ordinary
+legacy operation.
+
+
+## Managed installation context
+
+A new supported ZPM bundle places one private selector at the fixed
+`<sys.prefix>/openjules-managed-installation.json` path in its dedicated
+OpenJules Python environment. Requests, environment variables, repository YAML
+and model output cannot select another path or waive it. The selector is a
+blanket refusal of legacy execution in that interpreter. It does not describe
+task enrollment, grant execution permission or restrict canonical configuration
+to a second repository/profile allowlist.
+
+The selector is a regular non-symlink file with no group/other permissions,
+at most 4096 UTF-8 bytes, containing exactly:
+
+```json
+{
+  "schema_version": 1,
+  "managed_config_path": "/private/installation/config/openjules.json",
+  "managed_config_sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+The original configuration path must be absolute and canonical. Its actual
+private regular-file bytes must match the digest and the existing 1,000,000-byte
+configuration limit. Duplicate or extra fields, boolean versions, invalid
+paths/digests, symlinks, unreadable state and changed original bytes fail closed.
+A malformed marker also refuses legacy work. The reader opens nonblocking
+before checking file type, so a FIFO cannot stall inspection while awaiting a
+writer. Once a process observes managed context, removing the marker or changing
+payload/environment hints cannot make that process standalone.
+
+The actual managed-service command also enters managed process context from
+its required host-selected configuration before service construction. Calling
+the component `build_app` in an unmarked process does not select that global
+mode. Explicit alternate host-supplied managed-service, publication and cleanup
+configs remain supported through their existing private-file, scope, credential
+and canonical checks. They still validate the original selector binding and
+cannot use an alternate config to waive tampering. This allows separate valid
+canonical service configurations without granting any legacy execution.
+
+### Refusal and recovery behavior
+
+| Operation/context | Result |
+| --- | --- |
+| Managed worker HTTP service, legacy webhook/UI routes | HTTP 404, as before. |
+| Legacy run/serve/MCP/swarm command in the installed interpreter | Refused before loading its executor, provider or Docker dependencies; CLI exits 2 with `managed_installation_requires_canonical_ingress`. |
+| Fresh standalone legacy app import in managed context | Refused before global storage, executor/reviewer or cohort provisioner construction. |
+| Previously constructed legacy mutation route after managed context is observed | HTTP 409 with the same fixed reason before storage/queue/effects. GitHub HMAC authentication remains first. |
+| Direct or preconstructed executor/reviewer/MCP/poller/cohort/sandbox object | The shared refusal is rechecked before its effects. Injected dependencies do not waive it. |
+| Separate standalone interpreter with no marker or explicit managed context | Ordinary legacy behavior remains available, including eligible issue/review workflows. |
+| Legacy raw access to an actual managed-labeled container | Read-only ownership inspection is permitted; exec, file write, stop, removal and quarantine are refused. |
+
+Raw legacy container operations require the exact immutable container ID and
+inspect its actual Docker `Config.Labels["openjules.managed"] == "1"` creation
+metadata. A mutable name/alias, missing ownership metadata or unavailable lookup
+does not authorize a mutation. The guard and effect use the same resolved
+immutable ID. Ownership inspection consumes the existing operation deadline.
+A denied or unresolved inspection is outside execution-failure cleanup, so it
+cannot accidentally stop or quarantine a managed worker. Once ordinary legacy
+execution is admitted, its existing timeout, uncertain-result and
+capture-before-deletion behavior remains in force.
+
+ZPM publishes the complete selector atomically without replacing different
+state, validates it, and runs this offline compatibility probe before recording
+bootstrap completion:
+
+```sh
+<installed-openjules-python> -m src.worker.execution_context --probe-managed-installation
+```
+
+The command runs from the pinned OpenJules checkout with a credential-free
+environment and a fixed local deadline. It accepts no config/path/mode override,
+contacts no provider, Docker or authority, and exercises the actual refusal
+predicate. Its successful exit-0 response has exactly three fields:
+
+```json
+{
+  "schema_version": 1,
+  "selector_sha256": "<SHA-256 of the actual selector bytes>",
+  "legacy_execution_allowed": false
+}
+```
+
+Invalid context returns a fixed error and exit 2. An older implementation that
+lacks this helper cannot qualify merely because a new installer wrote a marker.
+The installer independently checks the exact response and original raw-byte
+digest. Repeated bootstrap validates before its completion fast path;
+start/doctor validate read-only. An interrupted new bootstrap can resume only
+with an absent or byte-identical expected selector. A completed bootstrap with
+a missing or changed selector fails without silent repair or standalone
+fallback. Pause, target zero, removal, re-enrollment and authority outage retain
+this binding.
+
+This initial contract applies to fresh paired source-pinned installations.
+Existing pinned bundles are not silently upgraded or adopted. A trusted host
+administrator deleting private state, selecting another interpreter, or running
+arbitrary Python with Docker authority is outside this network/payload boundary.
+
+The regression suite separates real private-file/fresh-process probe checks,
+legacy app/direct-method fixtures, actual HTTP authority plus Docker-preflight
+fixtures, and the opt-in actual Docker managed-label case. The latter preserves
+a running idle managed worker through refused raw operations and then executes
+its original approved command. It does not claim a live provider, live webhook,
+new canonical authority or already-active managed task during the refusal.
 
 Authority liveness is not managed readiness. Even when the configured authority
 returns HTTP 200 from `/health`, an absent or unsupported managed protocol makes
@@ -76,13 +182,16 @@ Ordinary generated and ad hoc standalone branches retain their existing review
 event flow. An ordinary branch with the same branch shape, or text quoting
 the literal marker, is conservatively refused. These public signals only reject
 legacy automation; their absence grants no canonical authority. A renamed branch
-with erased provenance is outside this check. Legacy component initialization is
-unchanged. The installed managed service still exposes no legacy review route.
+with erased provenance is outside this standalone branch/marker check. It does
+not waive the managed-installation refusal above. In a separate unmarked
+standalone interpreter, legacy component initialization is unchanged. The
+installed managed service still exposes no legacy review route.
 
 This boundary does not implement managed PR iteration, authenticated canonical
-webhook enrollment or convergence of other standalone entrypoints. Managed draft
-feedback requires the canonical task/review path; issues #2 and #3 remain open
-for the remaining ingress criteria.
+webhook enrollment. The managed installation explicitly refuses legacy
+entrypoints rather than routing them into a new authority adapter. Managed draft
+feedback continues to require the canonical task/review path. Issue acceptance
+still requires the paired installer and runtime evidence for the delivered set.
 
 ## Ownership
 

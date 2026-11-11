@@ -42,6 +42,15 @@ their own qualification. The older webhook, in-memory collaboration and DinD
 paths described below do not satisfy this managed contract and are never used
 as a readiness fallback.
 
+New ZPM installations bind their dedicated OpenJules interpreter to a
+[managed installation context](docs/managed-service.md#managed-installation-context).
+That interpreter refuses legacy CLI, webhook/UI, MCP, polling and cohort
+execution before queue, model or Docker effects. Canonical service, publication
+and owned cleanup retain their existing authority checks. Separate standalone
+interpreters keep ordinary legacy behavior, but raw legacy access to a Docker
+container labeled as managed is refused in every interpreter. This is an
+installation boundary, not another enrollment or task-authority database.
+
 Standalone legacy PR feedback refuses the branch shape and provenance marker
 produced by [managed publication](docs/managed-publication.md), including custom
 publication prefixes. Those feedback operations cannot enter its direct

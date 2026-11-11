@@ -7,6 +7,7 @@ from src.polyphony.controller import SwarmResourceController
 from src.polyphony.models import PolyphonyCohortConfig
 from src.polyphony.outbox import BaseOutboxBridge, SQLiteOutboxBridge
 from src.polyphony.provisioner import ContainerProvisionerProtocol, DockerContainerProvisioner
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class SwarmCohortRegistry:
     """Registry managing active Polyphony cohort controllers across the OpenJules service."""
 
     def __init__(self, default_provisioner: Optional[ContainerProvisionerProtocol] = None):
+        require_legacy_execution()
         self.default_provisioner = default_provisioner or DockerContainerProvisioner()
         self._controllers: Dict[str, SwarmResourceController] = {}
 
@@ -26,6 +28,7 @@ class SwarmCohortRegistry:
         bootstrap: bool = True,
     ) -> SwarmResourceController:
         """Registers a new cohort and optionally bootstraps its base worker pool."""
+        require_legacy_execution()
         bridge = outbox_bridge or SQLiteOutboxBridge(config.liminal_db_path or f"/tmp/polyphony_{config.swarm_id}.db")
         prov = provisioner or self.default_provisioner
 
@@ -48,6 +51,7 @@ class SwarmCohortRegistry:
         return list(self._controllers.values())
 
     def remove_cohort(self, swarm_id: str, drain_workers: bool = True) -> bool:
+        require_legacy_execution()
         if swarm_id in self._controllers:
             ctrl = self._controllers[swarm_id]
             if drain_workers:

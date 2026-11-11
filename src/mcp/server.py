@@ -14,6 +14,7 @@ from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import SandboxManager
 from src.worker.dispatcher import TaskPayload
 from src.worker.executor import TaskExecutor
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class OpenJulesMCPServer:
         sandbox_manager: Optional[SandboxManager] = None,
         task_executor: Optional[TaskExecutor] = None,
     ):
+        require_legacy_execution()
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self.executor = task_executor or TaskExecutor(sandbox_manager=self.sandbox_manager)
 
@@ -99,6 +101,7 @@ class OpenJulesMCPServer:
 
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatches an MCP tool call to the underlying service."""
+        require_legacy_execution()
         if tool_name == "openjules_read_file":
             tools = AgentTools(self.sandbox_manager, arguments["container_id"])
             out = tools.read_file(

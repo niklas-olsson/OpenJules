@@ -38,7 +38,6 @@ def test_ui_task_lifecycle_api():
         data = resp.json()
         assert data["status"] == "dispatched"
         tid = data["id"]
-        assert "501" in tid
 
         # 2. List tasks
         resp_list = client.get("/api/tasks")

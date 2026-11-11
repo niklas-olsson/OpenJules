@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from src.worker.managed_service import build_app, load_configuration
+from src.worker import execution_context
 from tests.unit.test_managed_docker_runtime import setup_runtime  # noqa: F401
 
 pytestmark = pytest.mark.integration
@@ -147,6 +148,8 @@ async def test_healthy_authority_without_managed_protocol_cannot_admit_or_fallba
     with authority_server(profile) as (endpoint, authority):
         path = configuration(tmp_path, profile, endpoint)
         app = build_app(*load_configuration(path))
+        # An unmarked component builder does not select global managed mode.
+        execution_context.require_legacy_execution()
         # Only Docker is a driver fixture. The app, dispatcher, scope checks,
         # source snapshot, journals and outbound HTTP authority client are real.
         app.state.worker_lifecycle.runtime._client = docker_fixture
@@ -280,3 +283,89 @@ print('managed app built without legacy execution or Docker initialization')
     assert result.stdout.strip() == (
         "managed app built without legacy execution or Docker initialization"
     )
+
+
+@pytest.mark.asyncio
+async def test_original_selector_preserves_alternate_canonical_only_host_configs(
+    tmp_path, monkeypatch, setup_runtime
+):
+    """The selector refuses legacy effects; it is not a managed scope allowlist."""
+    import hashlib
+    from src.worker import execution_context as context
+    from src.worker.managed_publication import configured_service, PublicationService
+    from tests.unit.test_managed_publication import policy
+
+    _, docker_fixture, profile, spec = setup_runtime
+    prefix = tmp_path / "installed-prefix"
+    prefix.mkdir(mode=0o700)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(context, "_managed_process", False)
+    monkeypatch.setattr(context, "_selector_observed", False)
+    monkeypatch.setenv("ADMISSION_RUNTIME_TOKEN", TOKEN)
+    with authority_server(profile) as (endpoint, authority):
+        original_dir = tmp_path / "original"
+        alternate_dir = tmp_path / "alternate"
+        original_dir.mkdir(mode=0o700)
+        alternate_dir.mkdir(mode=0o700)
+        original = configuration(original_dir, profile, endpoint)
+        alternate = configuration(alternate_dir, profile, endpoint)
+        original.chmod(0o600)
+        marker = prefix / context.SELECTOR_NAME
+        marker.write_text(json.dumps({
+            "schema_version": 1,
+            "managed_config_path": str(original.resolve()),
+            "managed_config_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+        }))
+        marker.chmod(0o600)
+        context.enter_managed_context()
+
+        configuration_value, credentials = load_configuration(alternate)
+        app = build_app(configuration_value, credentials)
+        app.state.worker_lifecycle.runtime._client = docker_fixture
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://managed",
+                headers={"Authorization": "Bearer " + WORKER_TOKEN}, trust_env=False,
+            ) as client:
+                response = await client.get(
+                    "/api/workers/capabilities",
+                    params=asdict(spec.scope) | {"profile": spec.profile},
+                )
+                assert response.status_code == 200
+                assert response.json()["managed_dispatch"] is True
+                assert_no_execution(app, docker_fixture)
+        assert authority["requests"] == [
+            ("GET", "/managed/capabilities", "Bearer " + TOKEN)
+        ]
+
+        # The same explicit alternate configuration also constructs the stopped
+        # cleanup entrypoint without starting a dispatcher or opening endpoints.
+        cleanup = build_app(configuration_value, credentials, cleanup_only=True)
+        assert not cleanup.state.managed_dispatcher.running.is_set()
+        assert cleanup.state.model_broker is cleanup.state.child_supervisor is None
+
+        publication = {
+            "schema_version": 1,
+            "state_directory": str(tmp_path / "publication"),
+            "source_path": profile.source_path,
+            "base_commit": profile.base_commit,
+            "authority": {
+                "endpoint": endpoint, "token_ref": "env:ADMISSION_RUNTIME_TOKEN",
+            },
+            "forge": asdict(policy()),
+        }
+        assert isinstance(configured_service(publication), PublicationService)
+        with pytest.raises(context.LegacyExecutionRefused):
+            context.require_legacy_execution()
+
+        # Alternate managed configs do not waive a damaged original binding.
+        original.write_bytes(original.read_bytes() + b" ")
+        invalid_state = tmp_path / "must-not-create"
+        with pytest.raises(context.ManagedInstallationInvalid):
+            build_app(
+                configuration_value | {"state_directory": str(invalid_state)},
+                credentials,
+            )
+        with pytest.raises(context.ManagedInstallationInvalid):
+            configured_service(publication | {"state_directory": str(invalid_state)})
+        assert not invalid_state.exists()

@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Set
 import httpx
 
 from src.worker.dispatcher import TaskDispatcher, TaskPayload
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class RadicleNodePoller:
 
     def poll_repository(self, rid: str) -> List[TaskPayload]:
         """Queries node API for issues on repository and converts labeled issues to TaskPayloads."""
+        require_legacy_execution()
         clean_rid = rid if rid.startswith("rad:") else f"rad:{rid}"
         tasks: List[TaskPayload] = []
         try:
@@ -77,6 +79,7 @@ class RadicleNodePoller:
 
     def poll_all_repositories(self) -> List[TaskPayload]:
         """Polls all configured repositories and dispatches new tasks."""
+        require_legacy_execution()
         all_tasks = []
         for rid in self.tracked_repos:
             tasks = self.poll_repository(rid)
@@ -88,6 +91,7 @@ class RadicleNodePoller:
 
     async def run_loop(self):
         """Asynchronous polling loop."""
+        require_legacy_execution()
         self._running = True
         logger.info(f"Started Radicle Node poller on {self.node_url} (interval: {self.poll_interval}s)")
         while self._running:
