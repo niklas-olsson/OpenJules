@@ -37,4 +37,4 @@ jobs:
           docker build --build-arg PYTHON_BASE=python:3.12-slim --iidfile managed-agent-image.id -f docker/Dockerfile.managed-agent .
           echo "OPENJULES_MANAGED_AGENT_IMAGE_ID=$(cat managed-agent-image.id)" >> "$GITHUB_ENV"
       - name: Run the full test suite
-        run: python -m pytest
+        run: python -m pytest -x
