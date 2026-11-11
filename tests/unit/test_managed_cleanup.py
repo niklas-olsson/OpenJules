@@ -460,6 +460,29 @@ def test_endpoint_adapter_mount_never_qualifies_for_cleanup(setup_runtime, path)
         client.close()
 
 
+def test_authenticator_response_hooks_never_qualify_for_cleanup(setup_runtime):
+    runtime, _, _, _ = setup_runtime
+    client = docker.DockerClient(
+        base_url="unix:///var/run/docker.sock", version="1.45", timeout=5
+    )
+    runtime._client = client
+    try:
+        client.api.max_redirects = 0
+        assert runtime._cleanup_transport() == _CLEANUP_TRANSPORT
+        authentication = requests.auth.HTTPDigestAuth(
+            "fixture-user", "fixture-password"
+        )
+        client.api.auth = authentication
+        prepared = client.api.prepare_request(
+            requests.Request("POST", client.api._url("/containers/create"), json={})
+        )
+        assert client.api.hooks == {"response": []}
+        assert authentication.handle_401 in prepared.hooks["response"]
+        assert runtime._cleanup_transport() is None
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("stage", ["intent", "container", "completion"])
 def test_process_death_before_progress_commit_reconciles_without_recapture(
     stack, monkeypatch, stage

@@ -430,6 +430,7 @@ class ManagedDockerRuntime:
             or adapter.max_retries.total != 0
             or type(api.max_redirects) is not int
             or api.max_redirects != 0
+            or api.auth is not None
             or api.hooks != {"response": []}
         ):
             return None
