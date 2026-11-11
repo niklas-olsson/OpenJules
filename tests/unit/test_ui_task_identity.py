@@ -62,6 +62,8 @@ def test_repository_records_survive_reopen_without_rewriting_legacy_ids(
     first_id = ui_routes.record_ui_task(first)
     second_id = ui_routes.record_ui_task(second)
     assert len({first_id, second_id, legacy["id"]}) == 3
+    # Every key made by the old formatter contains its literal hyphen separator.
+    assert all("-" not in task_id for task_id in (first_id, second_id))
 
     updated = first.model_copy(update={"issue_body": "A updated"})
     assert ui_routes.record_ui_task(updated) == first_id

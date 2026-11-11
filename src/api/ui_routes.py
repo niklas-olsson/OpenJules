@@ -42,7 +42,7 @@ def _ui_task_id(payload: TaskPayload) -> str:
         str(payload.issue_id),
     ]
     encoded = json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("ascii")
-    return "task-v1-" + hashlib.sha256(encoded).hexdigest()
+    return "task_v1_" + hashlib.sha256(encoded).hexdigest()
 
 
 def record_ui_task(payload: TaskPayload) -> str:
