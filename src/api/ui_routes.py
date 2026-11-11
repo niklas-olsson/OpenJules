@@ -1,5 +1,7 @@
 """REST and UI endpoints for the OpenJules 3-pane dashboard."""
 
+import hashlib
+import json
 import logging
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -29,9 +31,23 @@ class ReviewCommentRequest(BaseModel):
     line_number: Optional[int] = Field(default=None, description="Target line number")
 
 
+def _ui_task_id(payload: TaskPayload) -> str:
+    """Key dashboard state by its exact source identity, never task authority."""
+    identity = [
+        "openjules.ui-task",
+        1,
+        payload.forge,
+        payload.repo_full_name,
+        "issue",
+        str(payload.issue_id),
+    ]
+    encoded = json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return "task-v1-" + hashlib.sha256(encoded).hexdigest()
+
+
 def record_ui_task(payload: TaskPayload) -> str:
     """Registers task into dashboard state and persistent storage."""
-    tid = f"{payload.forge}-{payload.issue_id}"
+    tid = _ui_task_id(payload)
     task_dict = {
         "id": tid,
         "forge": payload.forge,
