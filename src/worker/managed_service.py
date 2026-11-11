@@ -109,7 +109,7 @@ def load_configuration(path: str | Path):
     return config, scopes
 
 
-def build_app(config: dict, credentials: dict):
+def build_app(config: dict, credentials: dict, *, cleanup_only=False):
     # Lazy import keeps the old lifecycle API available without constructing a
     # Docker client. The managed entrypoint always uses the real runtime.
     from src.worker.docker_runtime import DockerProfile, ManagedDockerRuntime
@@ -172,7 +172,8 @@ def build_app(config: dict, credentials: dict):
             peer_uids={key: profile_by_scope[key].uid for key in model_policies},
         )
         try:
-            model_broker.check_ready()
+            if not cleanup_only:
+                model_broker.check_ready()
         except BaseException:
             model_broker.close()
             raise
@@ -392,14 +393,39 @@ def build_app(config: dict, credentials: dict):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--cleanup-worker",
+        help="explicitly clean one fully captured executed worker while service is stopped",
+    )
+    parser.add_argument("--deployment-id")
+    parser.add_argument("--repository")
     args = parser.parse_args()
+    if bool(args.cleanup_worker) != bool(args.deployment_id and args.repository) or (
+        not args.cleanup_worker and (args.deployment_id or args.repository)
+    ):
+        parser.error("cleanup requires worker, deployment and repository together")
     try:
         config, credentials = load_configuration(args.config)
-        app = build_app(config, credentials)
+        app = build_app(config, credentials, cleanup_only=bool(args.cleanup_worker))
     except (ValueError, TypeError, KeyError, OSError):
         parser.error(
             "managed service configuration is invalid; check schema, private files and runtime prerequisites"
         )
+    if args.cleanup_worker:
+        try:
+            result = app.state.managed_dispatcher.cleanup_worker(
+                WorkerScope(args.deployment_id, args.repository), args.cleanup_worker
+            )
+            print(json.dumps(result, sort_keys=True))
+        finally:
+            if app.state.child_supervisor is not None:
+                app.state.child_supervisor.close()
+            if app.state.model_broker is not None:
+                app.state.model_broker.close()
+            client = app.state.managed_dispatcher.runtime._client
+            if client is not None:
+                client.close()
+        raise SystemExit(0 if result["state"] == "cleaned" else 1)
     import uvicorn
 
     uvicorn.run(

@@ -1,8 +1,8 @@
 """A single-host, one-attempt Docker worker runtime.
 
 The host is trusted. Task processes receive neither its Docker socket nor its
-authority credentials. Containers and volumes are retained as durable recovery
-evidence; this driver deliberately has no garbage-collection operation.
+authority credentials. Resources are retained by default. Explicit host cleanup
+requires qualified creation, canonical capture and verified termination.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import tarfile
 import time
 from typing import Callable, Mapping
@@ -36,6 +37,18 @@ from .lifecycle import (
 from .source_snapshot import SourceSnapshots
 
 _WATCHDOG_UID = 65534
+_CLEANUP_TRANSPORT = "docker-7.2.0:stock-unix:retry-0:redirect-0"
+
+
+class CleanupBlocked(RuntimeUnavailable):
+    """A fixed public cleanup condition, never a backend exception message."""
+
+
+def require_cleanup(condition, reason):
+    if not condition:
+        raise CleanupBlocked(reason)
+
+
 _MODEL_ENV = {
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -292,6 +305,22 @@ class ManagedDockerRuntime:
                     deployment_id TEXT NOT NULL,repository TEXT NOT NULL,name TEXT NOT NULL,fingerprint TEXT,
                     PRIMARY KEY(deployment_id,repository,name));
             """)
+            # Existing rows have no proof covering volume creation or hidden
+            # transport replay. Never infer that proof from retained resources.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
+            for name, definition in {
+                "creation_version": "INTEGER NOT NULL DEFAULT 0",
+                "volume_creates": "INTEGER NOT NULL DEFAULT 0",
+                "volume_create_acks": "INTEGER NOT NULL DEFAULT 0",
+                "volume_transport": "TEXT",
+                "volume_identity": "TEXT",
+                "container_creates": "INTEGER NOT NULL DEFAULT 0",
+                "container_create_acks": "INTEGER NOT NULL DEFAULT 0",
+                "container_transport": "TEXT",
+                "cleanup": "TEXT",
+            }.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE workers ADD COLUMN {name} {definition}")
             for profile in profiles:
                 key = (profile.deployment_id, profile.repository, profile.name)
                 old = db.execute(
@@ -371,7 +400,64 @@ class ManagedDockerRuntime:
                     "managed runtime requires a local Docker Unix socket"
                 )
             self._client = docker.DockerClient(base_url=host, timeout=5)
+            # A redirect could repeat a resource-creating POST inside one SDK
+            # invocation. The stock Unix adapter already has zero retries.
+            self._client.api.max_redirects = 0
         return self._client
+
+    def _cleanup_transport(self):
+        """Qualify the actual transport before creation, not retroactively."""
+        from docker.api.client import APIClient
+        from docker.transport.unixconn import UnixHTTPAdapter
+        from urllib3.util.retry import Retry
+
+        client = self.client
+        if type(client) is not docker.DockerClient or docker.__version__ != "7.2.0":
+            return None
+        api = client.api
+        if type(api) is not APIClient or api.base_url != "http+docker://localhost":
+            return None
+        adapter = api.get_adapter(api.base_url)
+        if (
+            type(adapter) is not UnixHTTPAdapter
+            or type(adapter.max_retries) is not Retry
+            or type(adapter.max_retries.total) is not int
+            or adapter.max_retries.total != 0
+            or type(api.max_redirects) is not int
+            or api.max_redirects != 0
+            or api.hooks != {"response": []}
+        ):
+            return None
+        return _CLEANUP_TRANSPORT
+
+    def _creating(self, worker_id, resource):
+        if resource not in {"volume", "container"}:
+            raise ValueError("unsupported runtime resource")
+        proof = self._cleanup_transport() or ""
+        with self._db() as db:
+            db.execute(
+                f"UPDATE workers SET {resource}_creates={resource}_creates+1,"
+                f"{resource}_transport=CASE WHEN {resource}_creates=0 THEN ? "
+                f"WHEN {resource}_transport=? THEN {resource}_transport ELSE '' END "
+                "WHERE worker_id=?",
+                (proof, proof, worker_id),
+            )
+
+    def _created(self, worker_id, resource, *, identity):
+        if resource not in {"volume", "container"}:
+            raise ValueError("unsupported runtime resource")
+        field = "volume_identity" if resource == "volume" else "container_id"
+        with self._db() as db:
+            db.execute(
+                f"UPDATE workers SET {resource}_create_acks={resource}_create_acks+1,"
+                f"{field}=? WHERE worker_id=?",
+                (identity, worker_id),
+            )
+
+    @staticmethod
+    def _volume_identity(volume):
+        fields = ("Name", "CreatedAt", "Driver", "Scope", "Labels", "Options")
+        return {key: volume.attrs.get(key) for key in fields}
 
     def _profile(self, spec: WorkerSpec) -> DockerProfile:
         profile = self.profiles.get((spec.deployment_id, spec.repository, spec.profile))
@@ -442,7 +528,7 @@ class ManagedDockerRuntime:
             ).fetchone()
             if row is None and create:
                 db.execute(
-                    "INSERT INTO workers(worker_id,spec,profile_fingerprint) VALUES (?,?,?)",
+                    "INSERT INTO workers(worker_id,spec,profile_fingerprint,creation_version) VALUES (?,?,?,1)",
                     (worker_id, payload, profile.fingerprint),
                 )
                 row = db.execute(
@@ -507,6 +593,7 @@ class ManagedDockerRuntime:
             "start_confirmed",
             "retired",
             "receipt",
+            "cleanup",
         }
         if not values.keys() <= allowed:
             raise ValueError("invalid journal update")
@@ -580,10 +667,14 @@ class ManagedDockerRuntime:
         )
         labels = self._labels(worker_id, spec)
         volume_name = "openjules-work-" + _digest(worker_id)[:40]
+        self._creating(worker_id, "volume")
         volume = self.client.volumes.create(name=volume_name, labels=labels)
         volume.reload()
         if any(volume.attrs.get("Labels", {}).get(k) != v for k, v in labels.items()):
             raise LifecycleConflict("workspace volume ownership mismatch")
+        self._created(
+            worker_id, "volume", identity=_json(self._volume_identity(volume))
+        )
         volumes = {
             str(source): {"bind": "/source", "mode": "ro"},
             volume_name: {"bind": "/workspace", "mode": "rw"},
@@ -602,7 +693,8 @@ class ManagedDockerRuntime:
 
             watchdog = CHILD_WATCHDOG
         self._update(worker_id, create_dispatched=1)
-        return self.client.containers.create(
+        self._creating(worker_id, "container")
+        container = self.client.containers.create(
             profile.image,
             name=self._name(worker_id),
             labels=labels,
@@ -632,6 +724,8 @@ class ManagedDockerRuntime:
             ),
             environment={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},
         )
+        self._created(worker_id, "container", identity=container.id)
+        return container
 
     def ensure(self, worker_id: str, spec: WorkerSpec) -> RuntimeObservation:
         with self._lock(worker_id) as locked:
@@ -1232,6 +1326,224 @@ class ManagedDockerRuntime:
         )
         self._update(worker_id, receipt=_json(asdict(receipt)))
         return receipt
+
+    @staticmethod
+    def _cleanup_result(progress=None, reason=""):
+        progress = progress or {}
+        return {
+            "state": "cleaned" if progress.get("completed") is True else "retained",
+            "reason": reason,
+            "container_removed": progress.get("container_removed") is True,
+            "volume_removed": progress.get("volume_removed") is True,
+            "archives_retained": True,
+        }
+
+    def _cleanup_capture(self, worker_id, spec, row):
+        require_cleanup(bool(row["retired"] and row["receipt"]), "capture_unresolved")
+        receipt = ExecutionReceipt(**json.loads(row["receipt"]))
+        require_cleanup(
+            receipt.termination_confirmed is True
+            and receipt.artifacts_captured is True
+            and receipt.launch_fenced is True
+            and (not row["start_dispatched"] or row["start_confirmed"]),
+            "termination_unresolved",
+        )
+        attempt = self._attempt(worker_id)
+        require_cleanup(attempt is not None, "executed_capture_required")
+        manifest = json.loads(receipt.manifest)
+        capture = self.root / "captures" / (_digest(worker_id) + ".tar")
+        require_cleanup(
+            receipt.capture_path == str(capture)
+            and manifest.get("worker_id") == worker_id
+            and manifest.get("attempt_id") == attempt["attempt_id"]
+            and manifest.get("container_id") == row["container_id"]
+            and manifest.get("profile") == spec.profile
+            and manifest.get("base_commit") == self._profile(spec).base_commit
+            and manifest.get("profile_fingerprint") == row["profile_fingerprint"]
+            and manifest.get("termination_confirmed") is True
+            and manifest.get("launch_fenced") is True,
+            "capture_identity_mismatch",
+        )
+        maximum = self._profile(spec).max_archive_bytes
+        with os.fdopen(
+            os.open(capture, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb"
+        ) as source:
+            info = os.fstat(source.fileno())
+            require_cleanup(
+                stat.S_ISREG(info.st_mode) and 0 < info.st_size <= maximum,
+                "capture_invalid",
+            )
+            digest, total = hashlib.sha256(), 0
+            for chunk in iter(lambda: source.read(65536), b""):
+                total += len(chunk)
+                require_cleanup(total <= maximum, "capture_invalid")
+                digest.update(chunk)
+        require_cleanup(
+            digest.hexdigest() == receipt.capture_sha256
+            and manifest.get("archive_sha256") == receipt.capture_sha256
+            and type(manifest.get("archive_bytes")) is int
+            and manifest["archive_bytes"] == total == info.st_size,
+            "capture_changed",
+        )
+        return receipt
+
+    def _cleanup_container(self, worker_id, spec, container_id, volume_name):
+        container = self.client.containers.get(container_id)
+        container.reload()
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        state = container.attrs.get("State", {})
+        require_cleanup(
+            container.id == container_id
+            and all(
+                labels.get(k) == v for k, v in self._labels(worker_id, spec).items()
+            ),
+            "container_identity_mismatch",
+        )
+        require_cleanup(
+            state.get("Running") is False
+            and state.get("Restarting", False) is False
+            and state.get("Paused", False) is False
+            and state.get("Status") in {"created", "exited", "dead"},
+            "container_not_stopped",
+        )
+        workspace = [
+            mount
+            for mount in container.attrs.get("Mounts", [])
+            if mount.get("Destination") == "/workspace"
+        ]
+        require_cleanup(
+            len(workspace) == 1
+            and workspace[0].get("Type") == "volume"
+            and workspace[0].get("Name") == volume_name,
+            "workspace_identity_mismatch",
+        )
+        return container
+
+    def _cleanup_volume(self, worker_id, spec, identity):
+        volume = self.client.volumes.get(identity["Name"])
+        volume.reload()
+        labels = volume.attrs.get("Labels", {}) or {}
+        require_cleanup(
+            self._volume_identity(volume) == identity
+            and all(
+                labels.get(k) == v for k, v in self._labels(worker_id, spec).items()
+            ),
+            "volume_identity_mismatch",
+        )
+        return volume
+
+    def cleanup_worker(self, worker_id, spec, canonical_proof):
+        """Remove one qualified incarnation; caller holds service/lifecycle locks.
+
+        The trusted dispatcher supplies a fresh canonical proof callback. No
+        task-facing interface accepts cleanup permission or a boolean shortcut.
+        """
+        with self._lock(worker_id) as locked:
+            if not locked:
+                return self._cleanup_result(reason="runtime_operation_busy")
+            row = self._row(worker_id, spec)
+            require_cleanup(row is not None, "runtime_worker_unknown")
+            progress = json.loads(row["cleanup"]) if row["cleanup"] else None
+            if progress and progress.get("completed") is True:
+                return self._cleanup_result(progress)
+            try:
+                require_cleanup(
+                    row["creation_version"] == 1
+                    and row["volume_creates"] == row["volume_create_acks"] == 1
+                    and row["container_creates"] == row["container_create_acks"] == 1
+                    and row["volume_transport"] == _CLEANUP_TRANSPORT
+                    and row["container_transport"] == _CLEANUP_TRANSPORT,
+                    "resource_creation_unqualified",
+                )
+                require_cleanup(
+                    self._cleanup_transport() == _CLEANUP_TRANSPORT,
+                    "cleanup_transport_unqualified",
+                )
+                receipt = self._cleanup_capture(worker_id, spec, row)
+                proof = canonical_proof(receipt)
+                require_cleanup(isinstance(proof, dict), "canonical_capture_unresolved")
+                identity = json.loads(row["volume_identity"])
+                volume_name = "openjules-work-" + _digest(worker_id)[:40]
+                require_cleanup(
+                    identity.get("Name") == volume_name
+                    and isinstance(identity.get("CreatedAt"), str)
+                    and bool(identity["CreatedAt"])
+                    and identity.get("Driver") == "local"
+                    and identity.get("Scope") == "local"
+                    and identity.get("Options") in (None, {}),
+                    "volume_identity_unqualified",
+                )
+                target = {
+                    "schema_version": 1,
+                    "worker_id": worker_id,
+                    "spec_sha256": _digest(_json(asdict(spec))),
+                    "container_id": row["container_id"],
+                    "volume_identity": identity,
+                    "archive_sha256": receipt.capture_sha256,
+                    "canonical_proof": proof,
+                }
+                if progress is None:
+                    # Before intent, absence is external uncertainty. After
+                    # intent, exact absence can reconcile a lost delete reply.
+                    try:
+                        self._cleanup_container(
+                            worker_id, spec, row["container_id"], volume_name
+                        )
+                        self._cleanup_volume(worker_id, spec, identity)
+                    except NotFound:
+                        raise CleanupBlocked("owned_resource_missing") from None
+                    progress = target | {
+                        "container_removed": False,
+                        "volume_removed": False,
+                        "completed": False,
+                    }
+                    self._update(worker_id, cleanup=_json(progress))
+                else:
+                    require_cleanup(
+                        all(progress.get(k) == v for k, v in target.items()),
+                        "cleanup_proof_changed",
+                    )
+                try:
+                    container = self._cleanup_container(
+                        worker_id, spec, row["container_id"], volume_name
+                    )
+                except NotFound:
+                    container = None
+                if container is not None:
+                    require_cleanup(
+                        not progress["container_removed"], "container_reappeared"
+                    )
+                    container.remove(force=False, v=False)
+                    try:
+                        self.client.containers.get(row["container_id"])
+                    except NotFound:
+                        pass
+                    else:
+                        raise CleanupBlocked("container_removal_unresolved")
+                progress = progress | {"container_removed": True}
+                self._update(worker_id, cleanup=_json(progress))
+                try:
+                    volume = self._cleanup_volume(worker_id, spec, identity)
+                except NotFound:
+                    volume = None
+                if volume is not None:
+                    volume.remove(force=False)
+                    try:
+                        self.client.volumes.get(volume_name)
+                    except NotFound:
+                        pass
+                    else:
+                        raise CleanupBlocked("volume_removal_unresolved")
+                completed = progress | {"volume_removed": True, "completed": True}
+                self._update(worker_id, cleanup=_json(completed))
+                progress = completed
+                return self._cleanup_result(progress)
+            except CleanupBlocked as exc:
+                return self._cleanup_result(progress, str(exc))
+            except Exception:
+                # Failure is not an acknowledgement. Keep every original
+                # receipt/archive and the exact remaining cleanup target.
+                return self._cleanup_result(progress, "cleanup_unresolved")
 
 
 @contextmanager

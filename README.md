@@ -13,6 +13,12 @@ preserves capture before release, and recovers delivery intents after restart.
 Source snapshots contain only the approved commit's objects; ignored host files
 and local Git configuration are excluded.
 
+An explicit [host cleanup command](docs/managed-docker-runtime.md#explicit-host-cleanup)
+can remove a qualified executed worker's owned Docker resources after complete
+root/child canonical capture. It retains host archives and journals, refuses
+legacy or uncertain creations, and requires the managed service to be stopped.
+Resources remain retained by default.
+
 An optional [coding agent and model broker](docs/managed-model-broker.md) connects
 that root execution to an explicitly configured provider. The broker retains
 provider credentials on the trusted host, binds requests to canonical permission

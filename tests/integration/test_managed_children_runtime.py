@@ -5,8 +5,10 @@ or a live model provider. Once opted in, unavailable Docker/socket access fails.
 """
 
 from contextlib import contextmanager
+from dataclasses import asdict
 import hashlib
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -51,6 +53,7 @@ class RootAuthorityFixture(FixtureAuthority):
         self.requirements = "ROOT_COMPOSE: delegate left.txt and right.txt to two bounded children, apply both returned patches, and verify the result."
         self.child_authority = None
         self.events = []
+        self.terminal_receipt = None
 
     def call(self, operation, scope, **data):
         if operation == "capture":
@@ -63,6 +66,15 @@ class RootAuthorityFixture(FixtureAuthority):
                 value["terminal"] for value in self.child_authority.records.values()
             )
             self.events.append(("root_terminal", data["attempt_id"]))
+            self.terminal_receipt = {
+                name: data[name]
+                for name in (
+                    "state",
+                    "termination_confirmed",
+                    "launch_fenced",
+                    "artifacts",
+                )
+            }
         result = super().call(operation, scope, **data)
         if operation in {"claim", "permission"}:
             result["binding"]["deadline"] = self.deadline
@@ -71,6 +83,33 @@ class RootAuthorityFixture(FixtureAuthority):
                 max(0, self.cutoff - time.monotonic()) if self.allowed else 0
             )
             result["launch_allowed"] = self.allowed and result["remaining_seconds"] > 0
+            if self.terminal_receipt is not None:
+                result["launch_allowed"] = False
+                result["attempt"].update(
+                    runtime_binding=result["binding"],
+                    state=self.terminal_receipt["state"],
+                    termination_confirmed=True,
+                    launch_fenced=True,
+                    captured_artifacts=self.terminal_receipt["artifacts"],
+                    runtime_receipt=self.terminal_receipt,
+                    child_admission_closed=self.child_authority.closed,
+                    child_lineage=sorted(
+                        [
+                            {
+                                "child_id": record["response"]["binding"]["child_id"],
+                                "grant_digest": record["response"]["binding"][
+                                    "grant_digest"
+                                ],
+                                "artifacts": {
+                                    kind: text_hash(content)
+                                    for kind, content in record["artifacts"].items()
+                                },
+                            }
+                            for record in self.child_authority.records.values()
+                        ],
+                        key=lambda value: value["child_id"],
+                    ),
+                )
         return result
 
 
@@ -498,6 +537,69 @@ def reopen_stack(stack, tmp_path):
     stack.runtime.restore_model_endpoints()
 
 
+def _cleanup_subprocess(directory, payload, crash_after_container):
+    """Fresh real process and journals; reuse the explicit canonical fixture."""
+    profile = DockerProfile(**payload["profile"])
+    spec = WorkerSpec(**payload["spec"])
+    key = (spec.deployment_id, spec.repository, spec.profile)
+    client = docker.from_env(timeout=5)
+    client.api.max_redirects = 0
+    authority = RootAuthorityFixture(1)
+    authority.binding = payload["binding"]
+    authority.requirements = payload["requirements"]
+    authority.deadline = payload["binding"]["deadline"]
+    authority.terminal_receipt = payload["terminal"]
+    child_authority = SimpleNamespace(records=payload["children"], closed=True)
+    authority.child_authority = child_authority
+    stack = SimpleNamespace(
+        client=client,
+        profile=profile,
+        spec=spec,
+        key=key,
+        policy=ChildPolicy(**payload["policy"]),
+        broker=SimpleNamespace(policies={key: ModelPolicy(**payload["model"])}),
+        authority=authority,
+        child_authority=child_authority,
+        worker_id=payload["worker_id"],
+        dispatcher=None,
+    )
+    reopen_stack(stack, directory)
+    try:
+        assert not stack.broker.endpoints and not stack.children.endpoints.controls
+        if crash_after_container:
+            original_update = stack.runtime._update
+
+            def interrupted(worker_id, **values):
+                if "cleanup" in values:
+                    progress = json.loads(values["cleanup"])
+                    if progress["container_removed"] and not progress["completed"]:
+                        # The real Docker container is absent; intentionally die
+                        # before acknowledging that progress durably. No unwind.
+                        os._exit(91)
+                return original_update(worker_id, **values)
+
+            stack.runtime._update = interrupted
+        result = stack.dispatcher.cleanup_worker(spec.scope, stack.worker_id)
+        assert result["state"] == "cleaned", result
+    finally:
+        stack.children.close()
+        stack.broker.close()
+        client.close()
+
+
+def cleanup_process(directory, payload, *, crash=False):
+    process = multiprocessing.get_context("spawn").Process(
+        target=_cleanup_subprocess, args=(directory, payload, crash)
+    )
+    process.start()
+    process.join(30)
+    if process.is_alive():
+        process.kill()  # Only this test-owned cleanup process.
+        process.join(5)
+        pytest.fail("test-owned cleanup process did not finish")
+    assert process.exitcode == (91 if crash else 0)
+
+
 def test_two_real_children_use_unique_uids_share_allowance_and_compose_root(
     tmp_path, monkeypatch, agent_image
 ):
@@ -505,6 +607,9 @@ def test_two_real_children_use_unique_uids_share_allowance_and_compose_root(
     child_turns = {"left": 0, "right": 0}
     child_ids = []
     patches = []
+    # Qualify creation through the same stock no-retry/no-redirect Unix
+    # transport used by the production managed runtime.
+    agent_image[0].api.max_redirects = 0
 
     def deterministic(handler, requests):
         nonlocal root_turn
@@ -651,6 +756,69 @@ def test_two_real_children_use_unique_uids_share_allowance_and_compose_root(
                 == stack.policy.fingerprint
             )
             assert container.attrs["HostConfig"]["CapDrop"] == ["ALL"]
+            original_id = container.id
+            volume_name = next(
+                mount["Name"]
+                for mount in container.attrs["Mounts"]
+                if mount["Destination"] == "/workspace"
+            )
+            archive_bytes = Path(receipt.capture_path).read_bytes()
+            retained_children = {
+                child["child_id"]: child["capture"] for child in children
+            }
+            bound = json.loads(stack.dispatcher.journal.get(stack.worker_id)["binding"])
+            payload = {
+                "profile": asdict(stack.profile),
+                "spec": asdict(stack.spec),
+                "policy": asdict(stack.policy),
+                "model": asdict(stack.broker.policies[stack.key]),
+                "worker_id": stack.worker_id,
+                "binding": bound["binding"],
+                "requirements": bound["requirements"],
+                "terminal": stack.authority.terminal_receipt,
+                "children": stack.child_authority.records,
+            }
+            stack.children.close()
+            stack.broker.close()
+            cleanup_process(tmp_path, payload, crash=True)
+            with pytest.raises(docker.errors.NotFound):
+                stack.client.containers.get(original_id)
+            assert stack.client.volumes.get(volume_name)
+            interrupted = json.loads(
+                stack.runtime._row(stack.worker_id, stack.spec)["cleanup"]
+            )
+            assert interrupted["container_removed"] is False
+            assert Path(receipt.capture_path).read_bytes() == archive_bytes
+            cleanup_process(tmp_path, payload)
+            reopen_stack(stack, tmp_path)
+            assert not stack.broker.endpoints and not stack.children.endpoints.controls
+            cleaned = stack.dispatcher.cleanup_worker(stack.spec.scope, stack.worker_id)
+            assert cleaned["state"] == "cleaned", cleaned
+            with pytest.raises(docker.errors.NotFound):
+                stack.client.containers.get(original_id)
+            with pytest.raises(docker.errors.NotFound):
+                stack.client.volumes.get(volume_name)
+            assert Path(receipt.capture_path).read_bytes() == archive_bytes
+            assert {
+                child["child_id"]: child["capture"]
+                for child in stack.children.journal.children(stack.worker_id)
+            } == retained_children
+            stack.children.close()
+            stack.broker.close()
+            reopen_stack(stack, tmp_path)
+            assert (
+                stack.dispatcher.cleanup_worker(stack.spec.scope, stack.worker_id)
+                == cleaned
+            )
+            assert stack.runtime.ensure(stack.worker_id, stack.spec).state == "stopped"
+            assert (
+                stack.runtime.inspect_attempt(
+                    stack.worker_id, stack.spec, root.attempt_id
+                )
+                == receipt
+            )
+            assert len(requests) == 10 and len(stack.child_authority.turns) == 4
+            assert Path(receipt.capture_path).read_bytes() == archive_bytes
 
 
 def test_real_siblings_and_root_cannot_read_private_artifacts_or_use_other_sockets(
@@ -715,11 +883,14 @@ def test_real_siblings_and_root_cannot_read_private_artifacts_or_use_other_socke
             )
             container.reload()
             assert container.attrs["State"]["Running"] is True
-            assert len(
-                stack.lifecycle.observe_worker(stack.spec.scope, stack.worker_id)[
-                    "active_executions"
-                ]
-            ) == 3
+            assert (
+                len(
+                    stack.lifecycle.observe_worker(stack.spec.scope, stack.worker_id)[
+                        "active_executions"
+                    ]
+                )
+                == 3
+            )
             contexts = []
             for name, child in zip(turns, records):
                 directory = "/workspace/children/" + child["child_id"]
