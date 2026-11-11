@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
+from src.worker.execution_context import require_legacy_execution
+
+require_legacy_execution()
+
 from src.worker.dispatcher import BackgroundTasksDispatcher, TaskPayload
 from src.worker.executor import TaskExecutor
 
@@ -47,6 +51,7 @@ def _ui_task_id(payload: TaskPayload) -> str:
 
 def record_ui_task(payload: TaskPayload) -> str:
     """Registers task into dashboard state and persistent storage."""
+    require_legacy_execution()
     tid = _ui_task_id(payload)
     task_dict = {
         "id": tid,
@@ -86,6 +91,7 @@ def create_ui_task(
     background_tasks: BackgroundTasks,
 ):
     """Dispatches a task initiated directly from the dashboard."""
+    require_legacy_execution()
     from src.api.webhook import executor
 
     tid = record_ui_task(payload)
@@ -131,6 +137,7 @@ def get_task_diff(task_id: str):
 @ui_router.post("/api/tasks/{task_id}/comments")
 def add_review_comment(task_id: str, req: ReviewCommentRequest):
     """Adds a human review comment to the task thought stream for agent guidance."""
+    require_legacy_execution()
     if task_id not in tasks_db:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -160,6 +167,7 @@ def add_review_comment(task_id: str, req: ReviewCommentRequest):
 @ui_router.post("/api/tasks/{task_id}/command")
 def execute_palette_command(task_id: str, req: PaletteCommandRequest):
     """Executes a quick action from the command palette under the diff."""
+    require_legacy_execution()
     if task_id not in tasks_db:
         raise HTTPException(status_code=404, detail="Task not found")
 

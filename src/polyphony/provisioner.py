@@ -17,6 +17,7 @@ from src.polyphony.bootstrap import WorkerBootstrapBuilder, WorkerBootstrapPacka
 from src.polyphony.models import PolyphonyCohortConfig, WorkerContainerInfo
 from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import SandboxManager
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class DockerContainerProvisioner(ContainerProvisionerProtocol):
     """Production provisioner backed by Docker SandboxManager."""
 
     def __init__(self, sandbox_manager: Optional[SandboxManager] = None):
+        require_legacy_execution()
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self._workers: Dict[str, WorkerContainerInfo] = {}
 
@@ -67,6 +69,7 @@ class DockerContainerProvisioner(ContainerProvisionerProtocol):
         target_task_ids: Optional[List[str]] = None,
         is_burst: bool = False,
     ) -> WorkerContainerInfo:
+        require_legacy_execution()
         bootstrap_pkg = WorkerBootstrapBuilder.build(
             config=config,
             actor_id=actor_id,
@@ -107,6 +110,7 @@ class DockerContainerProvisioner(ContainerProvisionerProtocol):
         return info
 
     def stop_worker(self, container_id: str) -> bool:
+        require_legacy_execution()
         if container_id in self._workers:
             info = self._workers[container_id]
             self.sandbox_manager.cleanup_sandbox(container_id, info.workspace_dir)

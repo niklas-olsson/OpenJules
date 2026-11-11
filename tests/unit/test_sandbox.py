@@ -64,7 +64,7 @@ def test_sandbox_manager_spawn_and_exec():
     mock_client = MagicMock()
     mock_container = MagicMock()
     mock_container.id = "cont-12345"
-    mock_container.attrs = {"State": {"Running": False, "Restarting": False}}
+    mock_container.attrs = {"Config": {"Labels": {}}, "State": {"Running": False, "Restarting": False}}
     mock_client.containers.run.return_value = mock_container
     mock_client.containers.get.return_value = mock_container
 
@@ -103,7 +103,7 @@ def test_sandbox_context_manager_teardown():
     mock_client = MagicMock()
     mock_container = MagicMock()
     mock_container.id = "cont-ctx-123"
-    mock_container.attrs = {"State": {"Running": False, "Restarting": False}}
+    mock_container.attrs = {"Config": {"Labels": {}}, "State": {"Running": False, "Restarting": False}}
     mock_client.containers.run.return_value = mock_container
     mock_client.containers.get.return_value = mock_container
 

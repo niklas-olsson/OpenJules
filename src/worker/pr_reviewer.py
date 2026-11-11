@@ -15,6 +15,7 @@ from src.forge.github import GitHubProvider
 from src.git_manager.lifecycle import GitLifecycleManager
 from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import SandboxManager
+from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class PRReviewHandler:
         agent_engine: Optional[AgentEngine] = None,
         git_manager: Optional[GitLifecycleManager] = None,
     ):
+        require_legacy_execution()
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self.agent_engine = agent_engine or AgentEngine(self.sandbox_manager)
         self.git_manager = git_manager or GitLifecycleManager(self.sandbox_manager)
@@ -87,6 +89,7 @@ class PRReviewHandler:
         source_body: Optional[str] = None,
     ) -> bool:
         """Checks out the existing branch, fixes the code based on comments, and pushes updates."""
+        require_legacy_execution()
         if not isinstance(comments, (list, tuple)) or any(
             not isinstance(comment, ReviewComment) or not isinstance(comment.body, str)
             for comment in comments

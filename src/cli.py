@@ -8,19 +8,16 @@ from pathlib import Path
 # Ensure repo root is on sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import uvicorn
-
-from src.agent.engine import AgentEngine
-from src.polyphony.client import PolyphonyClient, derive_repo_swarm_key
-from src.mcp.server import OpenJulesMCPServer
-from src.sandbox.config import OpenJulesConfig, load_config_from_file
-from src.sandbox.docker_driver import SandboxManager
-from src.worker.dispatcher import TaskPayload
-from src.worker.executor import TaskExecutor
+from src.worker.execution_context import LegacyExecutionRefused, require_legacy_execution
 
 
 def run_cli_task(prompt: str, repo: str, branch: str = "main", test_cmd: str = None):
     """Executes an agent task directly in the specified repository."""
+    require_legacy_execution()
+    from src.sandbox.config import OpenJulesConfig
+    from src.worker.dispatcher import TaskPayload
+    from src.worker.executor import TaskExecutor
+
     print(f"🚀 OpenJules CLI: Launching task on '{repo}'...")
     print(f"Prompt: {prompt}\n")
 
@@ -55,12 +52,17 @@ def run_cli_task(prompt: str, repo: str, branch: str = "main", test_cmd: str = N
 
 def serve_dashboard(host: str = "0.0.0.0", port: int = 8000):
     """Starts the OpenJules API server and 3-pane web interface."""
+    require_legacy_execution()
+    import uvicorn
+
     print(f"🌐 Starting OpenJules Control Plane & Dashboard on http://{host}:{port}")
     uvicorn.run("src.api.webhook:app", host=host, port=port, reload=False)
 
 
 def inspect_polyphony(repo: str):
     """Inspects the Keystone Polyphony swarm status for a repository."""
+    from src.polyphony.client import PolyphonyClient, derive_repo_swarm_key
+
     swarm_key = derive_repo_swarm_key(repo)
     client = PolyphonyClient(repo, swarm_key=swarm_key)
     print(f"📡 Keystone Polyphony Swarm for '{repo}':")
@@ -73,6 +75,7 @@ def inspect_polyphony(repo: str):
 
 def handle_swarm_cli(args):
     """Handles 'openjules swarm' subcommands."""
+    require_legacy_execution()
     from src.polyphony.models import PolyphonyCohortConfig, HostTelemetrySignal, SignalType
     from src.polyphony.registry import cohort_registry
 
@@ -182,6 +185,11 @@ def main():
     mcp_parser = subparsers.add_parser("mcp", help="Run OpenJules Model Context Protocol (MCP) server")
 
     args = parser.parse_args()
+    if args.command in {"run", "serve", "mcp", "swarm"}:
+        try:
+            require_legacy_execution()
+        except LegacyExecutionRefused as exc:
+            parser.error(exc.reason)
 
     if args.command == "run":
         sys.exit(run_cli_task(args.prompt, args.repo, args.branch, args.test_cmd))
@@ -192,6 +200,8 @@ def main():
     elif args.command == "swarm":
         handle_swarm_cli(args)
     elif args.command == "mcp":
+        from src.mcp.server import OpenJulesMCPServer
+
         mcp = OpenJulesMCPServer()
         print(f"OpenJules MCP Server active with {len(mcp.get_tool_list())} tools.")
     else:
