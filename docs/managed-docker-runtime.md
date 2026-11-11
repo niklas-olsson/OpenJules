@@ -132,8 +132,10 @@ labels. A lost create response is discovered by that name, then bound to its
 full immutable Docker container ID. Foreign labels or changed IDs are rejected.
 Containers and volumes are never automatically deleted, renamed or pruned.
 Their retained names prevent delayed duplicate creates from becoming a second
-container. Operator cleanup must stop the service and reconcile its journal;
-deleting its fences while requests might still arrive invalidates recovery.
+container. The [explicit host cleanup operation](#explicit-host-cleanup) supports
+only newly tracked, fully acknowledged resource creation and complete canonical
+capture. Legacy or uncertain creates keep their name fences. Manual removal
+while requests might still arrive invalidates recovery.
 
 Docker start is dispatched at most once. Its intent is persisted first. If the
 response is lost and Docker still shows a zero `StartedAt`, the driver preserves
@@ -164,6 +166,91 @@ The manifest explicitly identifies that provenance and whether each file was
 present. A killed command can have a useful preserved workspace without a final
 patch. The canonical integration must retain that distinction and must not
 fabricate a verified commit or PR from it.
+
+## Explicit host cleanup
+
+After an executed worker's entire container has stopped and its root and child
+artifacts have reached Polyphony, the host operator can remove that worker's
+container and workspace volume. Stop the managed OpenJules service through its
+supervisor first; leave the canonical authority available. Use the same private
+configuration and the exact scoped worker identity returned by discovery:
+
+```sh
+python -m src.worker.managed_service \
+  --config /private/installation/config/openjules.json \
+  --cleanup-worker WORKER_ID \
+  --deployment-id DEPLOYMENT_ID \
+  --repository github:github.com/owner/repository
+```
+
+The command performs no stop, launch, model call or endpoint restoration. It has
+no HTTP/task-facing equivalent. Existing service, dispatcher, lifecycle and
+runtime locks exclude concurrent work. A busy dispatcher, lifecycle or runtime
+lock returns a retained JSON result. Model and child service ownership is checked
+when constructing the command; a busy service lock refuses configuration with
+exit status 2 before cleanup begins. The JSON result reports `cleaned` or
+`retained`, a fixed reason, and confirmed container/volume removal progress.
+Exit status is zero only for completed cleanup. Retry the same scoped worker
+after a transient failure.
+
+Cleanup requires all of the following evidence:
+
+- A new creation-tracking journal record with exactly one dispatched and one
+  durably acknowledged volume create, and the same for container creation.
+  Tracking precedes each create, including volume-first failures. Observation
+  cannot replace a lost acknowledgement. Existing records migrate as ineligible.
+- Creation through Docker SDK **7.2.0**, its stock local Unix-socket client/API
+  and adapter, zero adapter retries, zero redirects and no response hooks. This
+  transport proof is recorded separately at each resource creation. The managed
+  runtime disables redirects before using its own client. Other SDK/custom
+  transports may execute under the existing contract but remain ineligible for
+  this cleanup qualification. The same qualified transport is required to delete.
+- Terminal local execution references and a complete dispatch delivery. A fresh
+  canonical permission read must return the original immutable binding and
+  complete terminal root capture. Every child must have a resolved grant, closed
+  admission, completed immutable capture and matching canonical child lineage.
+- A bounded regular, non-symlink host archive whose actual bytes still match the
+  capture receipt and manifest. Its worker, attempt, profile and container identity
+  must agree. Missing or changed capture blocks further deletion.
+- The exact stopped container ID and ownership labels, its recorded workspace
+  mount, and the original volume name, creation timestamp, local driver/scope,
+  options and ownership labels. A changed same-name resource is refused.
+
+The operation first journals its exact targets, archive hash and canonical proof.
+It removes the container without force or implicit volume deletion and verifies
+its original ID is absent. Only then does it revalidate and remove the single
+owned volume without force. In-use volumes remain retained. No arbitrary path,
+foreign resource, source snapshot, host archive, journal, model record or lock is
+removed. The original worker/attempt tombstones and execution receipt remain.
+
+Progress survives a lost delete response or a process crash. Absence can complete
+an interrupted step only after its matching cleanup intent exists; absence before
+intent remains unresolved. Partial replay rechecks capture, canonical proof and
+resource identity. Canonical unavailability can therefore leave a volume retained
+after its container was removed. A completed replay returns its historical receipt
+without touching later resources, and old ensure/execute/stop requests cannot
+recreate the cleaned incarnation.
+
+This first slice intentionally retains idle workers, incomplete claims, legacy
+records, and every lost/retried/partially acknowledged resource create. It is not
+automatic garbage collection, archive expiry or a disk quota. The trusted-host
+contract permanently reserves managed resource names, including after completed
+cleanup or a lost delete response. Never manually recycle those names. Docker
+volumes have no container-like immutable ID, and a delayed timed-out delete cannot
+distinguish a later manually created replacement. Original tombstones prevent
+the supported runtime from reusing names. Do not manually remove name fences or
+edit journals to make an ineligible worker qualify.
+
+`tests/unit/test_managed_cleanup.py` exercises adverse evidence, transport
+redirects, creation uncertainty, deletion response loss, simulated journal-commit
+crash boundaries, child receipt completeness, locks and replay with deterministic
+fixtures. The actual two-child Docker trial also starts a fresh cleanup process
+and deliberately exits it after physical container deletion, before durable
+progress acknowledgement. Another fresh process reopens the journals and finishes
+only the remaining volume deletion. The test verifies unchanged archives and
+child captures, preserved receipts and zero additional model calls. Its canonical
+authority and provider remain explicit fixtures. Only the mandatory opted-in
+Docker CI run qualifies those runtime effects; local fixtures cannot establish them.
 
 ## Verification
 

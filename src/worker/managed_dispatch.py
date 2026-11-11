@@ -560,6 +560,198 @@ class ManagedDispatcher:
         )
         self.lifecycle.observe_worker(spec.scope, worker_id)
 
+    def _cleanup_proof(self, worker_id, spec, receipt):
+        from .docker_runtime import CleanupBlocked, require_cleanup
+
+        worker = self.lifecycle._current(spec.scope, worker_id)
+        require_cleanup(
+            worker["state"] in {"stopped", "failed"}
+            and worker["termination_confirmed"] is True
+            and worker["artifacts_captured"] is True
+            and not worker["active_executions"],
+            "execution_references_unresolved",
+        )
+        row = self.journal.get(worker_id)
+        require_cleanup(
+            row is not None
+            and row["phase"] == "completed"
+            and row["spec"] == _json(asdict(spec))
+            and row["binding"],
+            "canonical_delivery_incomplete",
+        )
+        bound = json.loads(row["binding"])
+        profile = self.profile(spec)
+        attempt_id = json.loads(receipt.manifest)["attempt_id"]
+        self._verify_binding(bound, spec, worker_id, profile, attempt_id)
+        contents = {
+            "patch": receipt.patch,
+            "log": receipt.log,
+            "manifest": receipt.manifest,
+        }
+        require_cleanup(
+            all(isinstance(v, str) for v in contents.values()), "capture_invalid"
+        )
+        artifacts = {
+            kind: hashlib.sha256(value.encode()).hexdigest()
+            for kind, value in contents.items()
+        }
+        require_cleanup(
+            json.loads(row["artifacts"]) == artifacts, "root_capture_incomplete"
+        )
+        expected = {
+            "state": "timed_out" if receipt.state == "timed_out" else "exited",
+            "termination_confirmed": True,
+            "launch_fenced": True,
+            "artifacts": artifacts,
+        }
+        try:
+            response = self.authority.call(
+                "permission", spec.scope, attempt_id=attempt_id
+            )
+            self._verify_binding(response, spec, worker_id, profile, attempt_id)
+        except AuthorityUnavailable:
+            raise CleanupBlocked("canonical_capture_unresolved") from None
+        terminal = response["attempt"]
+        require_cleanup(
+            response["binding"] == bound["binding"]
+            and response["requirements"] == bound["requirements"]
+            and response.get("launch_allowed") is False
+            and terminal.get("runtime_binding") == bound["binding"]
+            and terminal.get("termination_confirmed") is True
+            and terminal.get("launch_fenced") is True
+            and terminal.get("state") == expected["state"]
+            and terminal.get("captured_artifacts") == artifacts
+            and terminal.get("runtime_receipt") == expected,
+            "canonical_root_incomplete",
+        )
+        lineage = []
+        if self.child_supervisor is not None and self.child_supervisor.enabled(spec):
+            from .child_types import verify_grant
+
+            children = self.child_supervisor
+            child_worker = children.journal.worker(worker_id)
+            root = children.journal.context(worker_id)
+            require_cleanup(
+                child_worker["closed"]
+                and child_worker["close_delivered"]
+                and root.spec == spec
+                and root.worker_id == worker_id
+                and root.attempt_id == attempt_id
+                and child_worker["spec"] == _json(asdict(spec))
+                and child_worker["policy_digest"] == children.policy(spec).fingerprint
+                and terminal.get("child_admission_closed") is True,
+                "child_admission_unresolved",
+            )
+            known = children.journal.children(worker_id)
+            known_ids = {child["child_id"] for child in known}
+            require_cleanup(
+                all(
+                    intent["status"] == "rejected"
+                    or (intent["status"] == "bound" and intent["child_id"] in known_ids)
+                    for intent in children.journal.intents(worker_id)
+                ),
+                "child_grant_unresolved",
+            )
+            for child in known:
+                require_cleanup(
+                    child["phase"] == "completed" and child["capture"],
+                    "child_capture_incomplete",
+                )
+                saved = json.loads(child["capture"])["contents"]
+                require_cleanup(
+                    set(saved) == {"patch", "log", "manifest"}
+                    and all(isinstance(v, str) for v in saved.values()),
+                    "child_capture_incomplete",
+                )
+                hashes = {
+                    kind: hashlib.sha256(value.encode()).hexdigest()
+                    for kind, value in saved.items()
+                }
+                saved_grant = json.loads(child["grant_json"])
+                verify_grant(saved_grant, root, children.policy(spec))
+                grant = saved_grant["binding"]
+                manifest = json.loads(saved["manifest"])
+                require_cleanup(
+                    json.loads(child["artifacts"]) == hashes
+                    and manifest.get("child_id") == child["child_id"]
+                    and manifest.get("root_attempt_id") == attempt_id
+                    and manifest.get("worker_id") == worker_id
+                    and manifest.get("grant_digest") == grant.get("grant_digest")
+                    and isinstance(grant.get("grant_digest"), str)
+                    and manifest.get("archive_sha256") == receipt.capture_sha256
+                    and manifest.get("root_manifest_sha256") == artifacts["manifest"]
+                    and manifest.get("termination_confirmed") is True
+                    and manifest.get("launch_fenced") is True,
+                    "child_capture_changed",
+                )
+                lineage.append(
+                    {
+                        "child_id": child["child_id"],
+                        "grant_digest": grant["grant_digest"],
+                        "artifacts": hashes,
+                    }
+                )
+        lineage.sort(key=lambda value: value["child_id"])
+        require_cleanup(
+            terminal.get("child_lineage", []) == lineage,
+            "canonical_child_lineage_mismatch",
+        )
+        with self.lifecycle._transaction() as db:
+            execution_ids = {
+                row[0]
+                for row in db.execute(
+                    "SELECT execution_id FROM worker_executions WHERE worker_id=?",
+                    (worker_id,),
+                )
+            }
+        require_cleanup(
+            execution_ids <= {attempt_id} | {child["child_id"] for child in lineage},
+            "execution_lineage_mismatch",
+        )
+        return {
+            "binding": bound["binding"],
+            "runtime_receipt": expected,
+            "child_lineage": lineage,
+        }
+
+    def cleanup_worker(self, scope, worker_id):
+        """Explicit host operation for a stopped service, never a dispatch tick."""
+        from .docker_runtime import CleanupBlocked, ManagedDockerRuntime
+
+        result = {
+            "schema_version": 1,
+            "deployment_id": scope.deployment_id,
+            "repository": scope.repository,
+            "worker_id": worker_id,
+        }
+        try:
+            worker = self.lifecycle._current(
+                scope, worker_id
+            )  # Scope before lock paths.
+            spec = self._spec(worker)
+            with self.journal.lock("service") as service:
+                if not service:
+                    raise CleanupBlocked("managed_service_running")
+                with self.journal.lock(worker_id) as dispatch:
+                    if not dispatch:
+                        raise CleanupBlocked("dispatch_operation_busy")
+                    with self.lifecycle._runtime_lock(worker_id) as lifecycle:
+                        if not lifecycle:
+                            raise CleanupBlocked("lifecycle_operation_busy")
+                        return result | self.runtime.cleanup_worker(
+                            worker_id,
+                            spec,
+                            lambda receipt: self._cleanup_proof(
+                                worker_id, spec, receipt
+                            ),
+                        )
+        except CleanupBlocked as exc:
+            return result | ManagedDockerRuntime._cleanup_result(reason=str(exc))
+        except Exception:
+            return result | ManagedDockerRuntime._cleanup_result(
+                reason="cleanup_binding_unresolved"
+            )
+
     def _tick_safely(self, worker):
         try:
             self.tick_worker(worker)

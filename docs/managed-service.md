@@ -140,10 +140,14 @@ and capture, including the separately enabled child Docker qualification. They
 do not prove live-provider behavior, model quality, independent review or forge
 publication.
 
-Durable archives, stopped containers and volumes are retained for recovery.
-There is no automatic garbage collection or per-volume disk quota. The trusted
-host's storage capacity remains an operational limit. Do not delete recovery
-evidence to make an unknown reservation appear terminated.
+Durable archives, stopped containers and volumes are retained by default. An
+[explicit host cleanup command](managed-docker-runtime.md#explicit-host-cleanup)
+can remove one qualified, fully captured executed worker's owned container and
+volume while the service is stopped. Its original archives, journals and launch
+tombstones remain. Idle, legacy, uncertain-create and incomplete-capture workers
+stay retained. There is no automatic garbage collection or per-volume disk quota;
+host storage remains an operational limit. Do not delete recovery evidence to
+make an unknown reservation appear terminated.
 
 ## Admission qualification
 
