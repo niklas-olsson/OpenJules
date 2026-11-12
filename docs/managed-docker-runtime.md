@@ -77,7 +77,16 @@ that different-UID process. The host writes a single monotonic-clock deadline
 before dispatch. The watchdog reads it once and exits at that deadline. Exiting
 PID 1 terminates the entire PID namespace, including background descendants,
 even when the host supervisor dies. This requires the supported local Linux
-daemon topology and its shared monotonic clock. Idle containers expire after
+daemon topology and its shared monotonic clock.
+
+PID 1 also reaps adopted children that have already exited, returning their PID
+slots to the unchanged container allowance. Each existing 50-millisecond loop
+performs at most 128 nonblocking waits and checks the original deadline before
+each wait. It does not signal live descendants or change their grants, execution
+status or capture obligations. Reaping is process bookkeeping; whole-container
+termination and verified capture remain the release boundary.
+
+Idle containers expire after
 24 hours. The trusted dispatch daemon calls `recover_idle(worker_id, spec)` for
 an idle worker that becomes unknown. Recovery confirms the exact owned
 container is stopped, the original start committed and no attempt exists before
@@ -257,7 +266,7 @@ Docker CI run qualifies those runtime effects; local fixtures cannot establish t
 Run the focused adversarial unit contracts:
 
 ```sh
-python -m pytest tests/unit/test_managed_docker_runtime.py tests/unit/test_source_snapshot.py
+python -m pytest tests/unit/test_managed_docker_runtime.py tests/unit/test_source_snapshot.py tests/unit/test_watchdog_reaping.py
 ```
 
 They model late create/start, process restart, conflicting identities, capture
@@ -276,6 +285,11 @@ fixture or accepts `OPENJULES_MANAGED_IMAGE_ID`. It executes an actual Git chang
 captures the patch, checks container configuration, kills a supervising host
 process and verifies that the watchdog still terminates the container. Task
 code also attempts and fails to signal the watchdog or overwrite its control
-file. Fixture code does real work but is not an LLM agent, a child-agent swarm
+file. A parametrized native test runs each actual PID 1 watchdog script, requiring
+256 adopted exits to be reaped under the unchanged 128-PID limit while an adopted
+live descendant continues running until the normal whole-worker fence. This
+tests the scripts directly; the separate managed-child tests qualify child-policy
+routing and the earliest armed deadline after supervisor shutdown.
+Fixture code does real work but is not an LLM agent, a child-agent swarm
 or proof of canonical authority integration. The combined installation gate
 must exercise those service boundaries separately.
