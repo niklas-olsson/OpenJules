@@ -110,7 +110,10 @@ class NamedAuthority(FixtureAuthority):
     def call(self, operation, scope, attempt_id, **payload):
         result = super().call(operation, scope, attempt_id, **payload)
         if "binding" in result:
-            return result | {"remaining_seconds": max(0, min(40, self.root.deadline - time.time()))}
+            remaining = min(
+                result["binding"]["allocated_seconds"], self.root.deadline - time.time(),
+            )
+            return result | {"remaining_seconds": max(0, remaining)}
         if operation == "observe":
             manifest = json.loads(self.artifacts[(payload["child_id"], "manifest")])
             outcome = manifest.get("work_outcome")
