@@ -41,6 +41,18 @@ while True:
     except (OSError,ValueError):
         os._exit(1)
     if time.monotonic()>=deadline: os._exit(0)
+    # Reparented exited children consume the worker's PID allowance until
+    # PID 1 reaps them. Live descendants retain their original deadline.
+    for _ in range(128):
+        if time.monotonic()>=deadline: os._exit(0)
+        try:
+            exited,_status=os.waitpid(-1,os.WNOHANG)
+        except ChildProcessError:
+            break
+        except InterruptedError:
+            continue
+        if exited==0:
+            break
     time.sleep(.05)
 """
 

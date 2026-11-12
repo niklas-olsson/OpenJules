@@ -148,6 +148,101 @@ def test_real_git_change_capture_and_stopped_incarnation(provisioned):
     )
 
 
+@pytest.mark.parametrize("watchdog_kind", ["root", "children"])
+def test_native_watchdog_scripts_reap_orphans_and_preserve_live_descendant(
+    provisioned, monkeypatch, watchdog_kind
+):
+    """Actual PID1 scripts; the child-stack tests separately qualify routing."""
+    from dataclasses import replace
+    from src.worker import docker_runtime
+    from src.worker.child_runtime import CHILD_WATCHDOG
+
+    runtime, original, spec, worker, client = provisioned
+    if watchdog_kind == "children":
+        monkeypatch.setattr(docker_runtime, "_WATCHDOG", CHILD_WATCHDOG)
+    program = r'''import json,os,time
+from pathlib import Path
+assert os.getuid()==os.getgid()==65532
+directory=Path('/workspace/run/orphan-reaping')
+directory.mkdir(mode=0o700)
+def identity(pid):
+    try:
+        fields=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+        return {'pid':pid,'state':fields[0],'parent':int(fields[1]),'start':fields[19]}
+    except FileNotFoundError:
+        return None
+def adopted(name,live=False):
+    deadline=time.monotonic()+3
+    while os.getppid()!=1:
+        assert time.monotonic()<deadline
+        time.sleep(.005)
+    record=identity(os.getpid())
+    assert record['parent']==1
+    pending=directory/(name+'.pending')
+    pending.write_text(json.dumps(record))
+    pending.rename(directory/name)
+    if live:
+        tick=0
+        while True:
+            tick+=1
+            (directory/'heartbeat').write_text(str(tick))
+            time.sleep(.02)
+    os._exit(0)
+def spawn(names,live=False):
+    parent=os.fork()
+    if parent==0:
+        for name in names:
+            if os.fork()==0:
+                adopted(name,live)
+        os._exit(0)
+    assert os.waitpid(parent,0)==(parent,0)
+    cutoff=time.monotonic()+3
+    while not all((directory/name).exists() for name in names):
+        assert time.monotonic()<cutoff
+        time.sleep(.005)
+    return [json.loads((directory/name).read_text()) for name in names]
+sentinel=spawn(['sentinel'],True)[0]
+cutoff=time.monotonic()+3
+while not (directory/'heartbeat').exists():
+    assert time.monotonic()<cutoff
+    time.sleep(.005)
+first_heartbeat=(directory/'heartbeat').stat().st_mtime_ns
+records=[]
+for batch in range(16):
+    records+=spawn(['orphan-'+str(batch*16+index) for index in range(16)])
+    time.sleep(.1)
+assert len(records)==256 and len({(r['pid'],r['start']) for r in records})==256
+cutoff=time.monotonic()+3
+while True:
+    retained=[r for r in records if (identity(r['pid']) or {}).get('start')==r['start']]
+    if not retained:break
+    assert time.monotonic()<cutoff,'adopted exited children were not reaped'
+    time.sleep(.01)
+current=identity(sentinel['pid'])
+assert current and current['start']==sentinel['start'] and current['parent']==1
+assert current['state'] not in {'Z','X'}
+assert (directory/'heartbeat').stat().st_mtime_ns>first_heartbeat
+print('ORPHAN_REAPING_VERIFIED '+json.dumps({'adopted_exits':len(records),'retained_exits':len(retained),'live_sentinel':True}),flush=True)
+# The live orphan is intentionally retained until the ordinary whole-worker fence.
+'''
+    profile = replace(original, name="orphan-reaping-v1", command=("python3", "-I", "-c", program))
+    spec = replace(spec, profile=profile.name)
+    runtime = ManagedDockerRuntime(runtime.root, [profile], ready, client)
+    assert profile.pids_limit == 128
+    assert runtime.ensure(worker, spec).state == "ready"
+    container = client.containers.get(runtime._name(worker))
+    assert container.attrs["HostConfig"]["PidsLimit"] == 128
+    receipt = runtime.execute_attempt(worker, spec, "orphan-reaping", "", 20)
+    assert receipt.exit_code == 0, receipt.log
+    assert receipt.termination_confirmed and receipt.artifacts_captured and receipt.launch_fenced
+    summaries = [line.removeprefix("ORPHAN_REAPING_VERIFIED ") for line in receipt.log.splitlines()
+                 if line.startswith("ORPHAN_REAPING_VERIFIED ")]
+    assert len(summaries) == 1
+    assert json.loads(summaries[0]) == {"adopted_exits": 256, "retained_exits": 0, "live_sentinel": True}
+    container.reload()
+    assert not container.attrs["State"]["Running"]
+
+
 def test_real_stopped_idle_worker_is_captured_and_released(provisioned):
     runtime, profile, spec, worker, client = provisioned
     assert runtime.ensure(worker, spec).state == "ready"

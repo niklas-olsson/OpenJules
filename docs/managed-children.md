@@ -405,6 +405,11 @@ signal arbitrary task UIDs individually. Instead it remains container PID1 and
 exits at the earliest armed child or root deadline. Container termination fences
 all descendants, including a process that outlived its Docker exec.
 
+The child watchdog also uses the [bounded orphan reaping loop](managed-docker-runtime.md#container-and-deadline-boundary)
+to reclaim PID slots from adopted children that have already exited. Each
+nonblocking wait checks the same earliest deadline. Live descendants, grants,
+reservations and final capture obligations remain governed by the original fence.
+
 An exec return is never a final termination receipt. Child deadlines stay armed
 after an exec returns. No live UID scan or process exit is used to release child
 or root reservations. A lost exec-create or exec-start reply retains the original

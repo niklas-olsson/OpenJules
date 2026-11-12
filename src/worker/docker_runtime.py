@@ -71,6 +71,19 @@ while True:
             pass
     if time.monotonic()>=(deadline if deadline is not None else idle_deadline):
         os._exit(0)
+    # PID 1 owns orphaned descendants after their original parent exits.
+    # Reap only exited children, without delaying the original deadline.
+    for _ in range(128):
+        if time.monotonic()>=(deadline if deadline is not None else idle_deadline):
+            os._exit(0)
+        try:
+            exited,_status=os.waitpid(-1,os.WNOHANG)
+        except ChildProcessError:
+            break
+        except InterruptedError:
+            continue
+        if exited==0:
+            break
     time.sleep(.05)
 """
 _SET_DEADLINE = """import os,sys

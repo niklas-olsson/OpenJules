@@ -89,12 +89,16 @@ code.
 
 ### Qualified installed revision set
 
-The current installed qualification uses the dedicated
+The recorded installed qualification uses the dedicated
 `polyphony-public-conversation` profile-v1 service with this revision set:
 
 - ZPM: `8c3cb83504fc8878eb82a660614f64939262e045`
 - OpenJules: `c925dee46765d2b22c9e38b55f614fc29f8068c1`
 - Polyphony: `0cf8b4772b04269505e3e1cd41324e41409b80f9`
+
+Use the [ZPM installation guide](https://github.com/niklas-olsson/zero-point-modulator/blob/main/docs/single-host-installation.md)
+for current installation pins and subsequent acceptance records. The evidence
+below remains tied to its recorded revisions.
 
 The [ZPM #35 delivery record](https://github.com/niklas-olsson/zero-point-modulator/pull/35#issuecomment-6824429010) and its successful
 [actual-main run](https://github.com/niklas-olsson/zero-point-modulator/actions/runs/43221845468) retain the installed qualification.
