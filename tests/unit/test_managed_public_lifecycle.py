@@ -192,8 +192,11 @@ def test_original_body_error_or_cancellation_survives_cleanup_acknowledgement_fa
             await asyncio.sleep(0)
 
     if interruption == "application":
-        with pytest.raises(DiscussionError, match="^invalid_context$"):
+        with pytest.raises(DiscussionError) as error:
             asyncio.run(run())
+        assert error.value.code == "invalid_context"
+        assert error.value.args == ("invalid_context",)
+        assert "owned discussion context cleanup also failed" in error.value.__notes__
     else:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(run())

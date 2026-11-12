@@ -690,7 +690,10 @@ class PublicClient:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise PublicError("expired", key)
+                    # A local timeout does not establish a conclusive host
+                    # refusal of an original pending operation. Keep it fatal
+                    # to the agent loop, like the other transport deadlines.
+                    raise PublicError("transport_unavailable", key)
                 try:
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                         remaining = deadline - time.monotonic()

@@ -324,7 +324,7 @@ def test_explicit_key_keeps_original_deadline_but_fresh_observation_is_possible(
         time.sleep(0.06)
         with pytest.raises(public.PublicError) as error:
             client.request("public_pending", request_id="mpub1:original")
-        assert error.value.code == "expired"
+        assert error.value.code == "transport_unavailable"
         assert client._requests["mpub1:original"]["deadline"] == original
         assert len(fixture.requests) == 1
         assert client.request("public_pending", request_id="mpub1:fresh")["slots"] == []
@@ -414,11 +414,114 @@ def test_known_retry_deadline_has_one_key_and_no_timeout_fallback():
         )
         with pytest.raises(public.PublicError) as error:
             client.request("public_pending", request_id="mpub1:retry")
-        assert error.value.code in {"expired", "transport_unavailable"}
+        assert error.value.code == "transport_unavailable"
         assert fixture.requests
         assert {r["request_id"] for r in fixture.requests} == {"mpub1:retry"}
         assert len(set(fixture.raw_requests)) == 1
         assert len(fixture.requests) <= 5
+
+
+@pytest.mark.parametrize("role", ["root", "child"])
+@pytest.mark.parametrize("code", [
+    "canonical_pending", "retry_later", "publication_uncertain", "expired",
+])
+def test_only_conclusive_host_expiry_can_resume_agent_loop(
+    role, code, monkeypatch, tmp_path,
+):
+    """Exercise the actual client, tool adapter and agent with framed fixtures."""
+    from src.agent import managed_runner
+
+    clock = [100.0]
+    requests, raw_requests, histories = [], [], []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def settimeout(self, seconds):
+            assert 0 < seconds <= 0.15 + 1e-10
+
+        def connect(self, path):
+            assert path == "/fixture/public.sock"
+
+        def sendall(self, value):
+            assert struct.unpack("!I", value[:4])[0] == len(value[4:])
+            request = json.loads(value[4:])
+            requests.append(request)
+            raw_requests.append(value)
+            self.reply = frame(canonical(refusal(request, code)))
+
+        def recv(self, size):
+            value, self.reply = self.reply[:size], self.reply[size:]
+            return value
+
+    operation = "public_turn" if role == "root" else "public_pull"
+    fields = selection() if role == "root" else {"slot_id": SLOT}
+
+    def complete(messages):
+        histories.append(copy.deepcopy(messages))
+        if len(histories) == 1:
+            name, arguments = operation, fields
+        else:
+            assert len(histories) == 2
+            name, arguments = "finish", {"summary": "Conclusive host refusal received."}
+        return {"role": "assistant", "content": None, "tool_calls": [{
+            "id": f"call-{len(histories)}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }]}
+
+    monkeypatch.setattr(public, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    ))
+    monkeypatch.setattr(public, "socket", SimpleNamespace(
+        AF_UNIX=1, SOCK_STREAM=1, socket=lambda *_: Connection(),
+    ))
+    client = public.PublicClient(
+        "/fixture/public.sock", role=role, timeout_seconds=0.15,
+        retry_delay_seconds=0.1,
+    )
+    adapter = public.PublicTools(managed_runner.LocalTools(tmp_path), client)
+
+    def run():
+        return managed_runner.run_agent(
+            SimpleNamespace(complete=complete), adapter,
+            "Approved public contribution fixture.", max_turns=2,
+        )
+
+    if code == "expired":
+        assert run() == 0
+        assert len(histories) == 2
+        assert [json.loads(message["content"]) for message in histories[-1]
+                if message["role"] == "tool"] == [{"ok": False, "error": "expired"}]
+        assert len(requests) == 1
+    else:
+        expected = "publication_uncertain" if code == "publication_uncertain" else "transport_unavailable"
+        with pytest.raises(public.PublicError) as error:
+            run()
+        assert error.value.code == expected
+        assert error.value.request_id == requests[0]["request_id"]
+        assert len(histories) == 1
+        assert all(message["role"] != "tool" for message in histories[0])
+        assert len(requests) == (1 if code == "publication_uncertain" else 2)
+
+    assert len(client._requests) == 1
+    assert len(set(raw_requests)) == 1
+    key = requests[0]["request_id"]
+    assert requests[0]["operation"] == operation
+    assert client._requests[key]["deadline"] == pytest.approx(100.15)
+    if code in {"canonical_pending", "retry_later"}:
+        assert clock[0] == pytest.approx(100.15)
+        # Re-entry keeps the original cutoff and cannot dispatch another RPC.
+        with pytest.raises(public.PublicError) as error:
+            client.request(operation, request_id=key, **fields)
+        assert error.value.code == "transport_unavailable"
+        assert error.value.request_id == key
+        assert len(requests) == 2
+        assert client._requests[key]["deadline"] == pytest.approx(100.15)
 
 
 @pytest.mark.parametrize("case", [
