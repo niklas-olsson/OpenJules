@@ -770,9 +770,10 @@ def provider_request(policy, turn, context, tokens):
 
 
 def public_provider_request(*, model, persona, instruction, context, tokens,
-                            token_parameter="max_tokens"):
+                            token_parameter="max_tokens", token_limit=4096):
     """Pure public request bytes shared by explicitly approved host callers."""
-    integer(tokens, 1, 4096, "private_state_invalid")
+    integer(token_limit, 1, 32768, "private_state_invalid")
+    integer(tokens, 1, token_limit, "private_state_invalid")
     text(model, 256, nonempty=True)
     if any(character.isspace() for character in model):
         raise DiscussionError("invalid_policy")
