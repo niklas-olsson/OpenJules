@@ -214,6 +214,9 @@ class ChildBroker:
             old = self.controls.get(worker_id)
             if old is None or not old.thread.is_alive():
                 self.controls[worker_id] = _ControlEndpoint(self, worker_id, expected)
+        public = getattr(self.supervisor, "public_supervisor", None)
+        if public is not None and public.enabled(spec):
+            public.endpoints.prepare_root(worker_id, spec, expected)
 
     def prepare_child(self, root, child):
         child_id = child["child_id"]
@@ -268,6 +271,9 @@ class ChildBroker:
                             raise RuntimeUnavailable("root model broker is closed")
                         self.model.endpoints["/child-outcome/" + child_id] = outcome
                     self.outcomes[child_id] = outcome
+        public = getattr(self.supervisor, "public_supervisor", None)
+        if public is not None and public.enabled(root.spec):
+            public.endpoints.prepare_child(root, child, directory)
 
     def stop_child_model(self, root, child_id):
         """Request stop and sample ownership, without joining under a lock."""

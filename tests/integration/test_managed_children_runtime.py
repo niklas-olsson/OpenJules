@@ -352,6 +352,7 @@ def child_stack(
     child_seconds=40,
     outcome_protocol=None,
     session_protocol=None,
+    public_discussion=None,
     root_verify_argv=None,
     child_verify_argv=None,
 ):
@@ -370,6 +371,8 @@ def child_stack(
         "--max-turns",
         "10",
     )
+    if public_discussion is not None:
+        command += ("--public-socket", "/run/openjules-model/public.sock")
     if sleeping_root:
         command = ("python3", "-I", "-c", "import time;time.sleep(90)")
     elif root_verify_argv is not None:
@@ -400,6 +403,7 @@ def child_stack(
         ),
         outcome_protocol=outcome_protocol,
         session_protocol=session_protocol,
+        public_discussion=public_discussion,
     )
     stack = SimpleNamespace(
         client=client,
@@ -455,6 +459,14 @@ def child_stack(
     stack.children.authority = stack.child_authority
     stack.children.endpoints = ChildBroker(stack.children, stack.broker)
     stack.runtime.child_supervisor = stack.broker.child_supervisor = stack.children
+    if stack.policy.public_discussion is not None:
+        from src.worker.managed_public import PublicSupervisor
+        from src.worker.managed_public_broker import PublicBroker
+
+        public = PublicSupervisor(stack.children)
+        stack.children.public_supervisor = public
+        public.endpoints = PublicBroker(public)
+        stack.broker.public_supervisor = public
     stack.dispatcher = ManagedDispatcher(
         stack.lifecycle,
         stack.runtime,
@@ -535,6 +547,14 @@ def reopen_stack(stack, tmp_path):
     stack.children.authority = stack.child_authority
     stack.children.endpoints = ChildBroker(stack.children, stack.broker)
     stack.runtime.child_supervisor = stack.broker.child_supervisor = stack.children
+    if stack.policy.public_discussion is not None:
+        from src.worker.managed_public import PublicSupervisor
+        from src.worker.managed_public_broker import PublicBroker
+
+        public = PublicSupervisor(stack.children)
+        stack.children.public_supervisor = public
+        public.endpoints = PublicBroker(public)
+        stack.broker.public_supervisor = public
     stack.dispatcher = ManagedDispatcher(
         stack.lifecycle,
         stack.runtime,

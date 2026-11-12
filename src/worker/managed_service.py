@@ -35,9 +35,28 @@ def _read_object(path: Path, *, private: bool = False) -> dict:
         raise ValueError("credential file must have mode 0600")
     if info.st_size > 1_000_000:
         raise ValueError("configuration file is too large")
-    data = json.loads(path.read_text())
+    duplicate = False
+
+    def pairs(items):
+        nonlocal duplicate
+        result = {}
+        for key, value in items:
+            if key in result:
+                duplicate = True
+            result[key] = value
+        return result
+
+    data = json.loads(path.read_text(), object_pairs_hook=pairs)
     if not isinstance(data, dict):
         raise ValueError("configuration must be an object")
+    children = data.get("children")
+    if duplicate and isinstance(children, list) and any(
+        isinstance(item, dict) and isinstance(item.get("policy"), dict)
+        and "public_discussion" in item["policy"] for item in children
+    ):
+        # Omitted profiles retain the previous loader's last-value semantics.
+        # Explicit public approval cannot be constructed from ambiguous JSON.
+        raise ValueError("managed public configuration has duplicate JSON fields")
     return data
 
 
@@ -216,10 +235,24 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
                     and item["policy"]["session_protocol"] != "cold-clarification-v1"
                 ):
                     raise ValueError("unsupported explicit child session protocol")
+                if (
+                    "public_discussion" in item["policy"]
+                    and not isinstance(item["policy"]["public_discussion"], dict)
+                ):
+                    raise ValueError("unsupported explicit public discussion policy")
                 child_policies[key] = ChildPolicy(**item["policy"])
                 child_policies[key].validate_root(
                     profile_by_scope[key].uid, profile_by_scope[key].max_seconds
                 )
+                if child_policies[key].public_discussion is not None:
+                    from src.worker.managed_public_types import (
+                        PublicPolicy, validate_root_command,
+                    )
+
+                    validate_root_command(profile_by_scope[key].command)
+                    PublicPolicy.parse(
+                        child_policies[key].public_discussion
+                    ).check_server()
     except BaseException:
         if model_broker is not None:
             model_broker.close()
@@ -327,6 +360,14 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             child_supervisor.endpoints = ChildBroker(child_supervisor, model_broker)
             runtime.child_supervisor = child_supervisor
             model_broker.child_supervisor = child_supervisor
+            if any(policy.public_discussion is not None for policy in child_policies.values()):
+                from src.worker.managed_public import PublicSupervisor
+                from src.worker.managed_public_broker import PublicBroker
+
+                public = PublicSupervisor(child_supervisor)
+                child_supervisor.public_supervisor = public
+                public.endpoints = PublicBroker(public)
+                model_broker.public_supervisor = public
         dispatcher = ManagedDispatcher(
             lifecycle,
             runtime,

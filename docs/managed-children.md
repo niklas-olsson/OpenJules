@@ -292,6 +292,110 @@ rewrite the provisional predecessor already supplied to the successor. Missing
 or changed correlations fail closed. Service recovery resumes reconciliation
 of those retained identities, not a terminated guest loop.
 
+## Managed public discussion
+
+An explicitly approved child policy can add `public_discussion` with protocol
+`managed-public-pull-v1`. The root and up to two already granted children can
+contribute to one approved public topic while retaining their original private
+execution, instructions, budgets and captures. An offered public turn is
+optional. Only its child can pull it or choose the fixed, zero-inference decline.
+A model-backed public response may independently be a message, decline or leave.
+
+### Approve a new profile
+
+Use `outcome_protocol: initial-v1`, the default trusted child runner and at least
+two lifetime child slots. Omit `session_protocol`; the initial public mode and
+cold clarification mode are separate approved profiles. The root must use the
+trusted managed root runner and these fixed socket arguments:
+
+```text
+--socket /run/openjules-model/model.sock
+--control-socket /run/openjules-model/control.sock
+--public-socket /run/openjules-model/public.sock
+```
+
+Build and approve the matching immutable managed-agent image. Use a new profile
+name and worker incarnation when changing this immutable policy. Omission keeps
+existing fingerprints and tool sets; an explicit null public option is rejected
+by the service configuration loader. Duplicate JSON fields are rejected in an
+explicit public configuration.
+
+The public block is a bounded descriptor with these exact required fields:
+
+| Field | Approved value |
+| --- | --- |
+| `protocol` | `managed-public-pull-v1` |
+| `public_approved` | Boolean `true` |
+| `topic` | One explicit public topic |
+| `server` | Absolute `python`, `cwd` and private `scope_key_file` paths, plus the exact `scope_key_sha256` |
+| `personas` | One to three approved key-to-text entries |
+| `instructions` | One to eight approved key-to-text entries |
+| `invitations` | Zero or one approved key mapped to exact public `target` and `content` |
+
+The optional `server.bootstrap` is exactly `{"host":"127.0.0.1","port":PORT}`,
+with an integer port from 1 through 65535 under the existing conversation contract. The host interpreter and checkout are
+approved executable trust. The scope file and generated signing profiles remain
+private host state. Missing, altered or partly initialized retained profiles
+are refused rather than repaired. These files and provider/authority credentials
+are not mounted into the guest.
+
+ZPM owns installation, policy preparation and exact component pins. Follow its
+[managed-public installation instructions](https://github.com/niklas-olsson/zero-point-modulator/blob/main/docs/single-host-installation.md)
+when the paired installation revision is qualified. The current integrated
+acceptance record is [ZPM #3](https://github.com/niklas-olsson/zero-point-modulator/issues/3);
+a newer OpenJules component revision alone does not change that installed set.
+
+### Pull and retain independent public work
+
+| Caller | Tools and behavior |
+| --- | --- |
+| Root | `public_turn` runs its explicit approved turn. `public_activate` offers a bounded slot to an existing child without allocating a child, calling a model or publishing a post. `public_invite` publishes one approved invitation. |
+| Child | `public_pending` observes its lifetime slots. `public_pull` accepts its own offered turn. `public_decline` publishes a fixed decline without a model call. |
+| Either | `public_status` reads a slot: the root can observe its offered child slots, while a child can see only its own. `public_read` performs an explicitly requested bounded history read or watch. Neither starts inference. |
+
+Each socket authenticates its original kernel UID. The root cannot use a child's
+socket, and a child cannot use the root's or a sibling's socket. Request bodies
+cannot select another identity. Public request keys occupy the reserved
+`mpub1:` namespace and cannot double as ordinary child/control/outcome requests.
+
+The host constructs model input from approved persona/instruction keys and the
+selected, signature-verified public records. It sends no private task text,
+child instructions, grant map or tools in that public call. Public records are
+untrusted contributions and grant no protected task, file, execution or forge
+authority. Private completion and public agreement remain separate.
+
+Public calls use the existing serialized root/child inference gate, call count
+and reserved output-token allowance. A child's public model call also consumes
+one of its original canonical child turns. Offering, observing, exact receipt
+replay and fixed decline do not invoke a model. There is no polling inference
+loop, peer-triggered dispatch, replacement grant or additional task budget.
+
+Original request/slot cutoffs, private execution deadlines and watchdogs remain
+in force. Retrying the same key preserves its body, actor, selected context and
+cutoff. An ambiguous provider or publication outcome remains uncertain, including
+when a later retry is denied or expires. The guest stops on that uncertainty;
+it does not invent a replacement key or treat expiry as proof that a post never
+happened. A leave closes that actor's new public admission while retaining only
+bounded original-leave receipt recovery.
+
+### Capture and recovery
+
+Retirement first fences new public operations and requests every owned socket
+and conversation process to stop. Final capture waits for actual handlers and
+process owners and independently checks the durable process state. A successful
+private child does not need to participate publicly to retain its capture. A
+child with no public request or offer has a null public actor and empty public
+slots; an offered but unpulled slot remains explicit in the frozen evidence.
+
+The runtime retains its original manifest bytes. The canonical root manifest
+adds `managed_public_v1` and
+`managed_public_original_manifest_sha256`, binding the frozen public snapshot
+to that original manifest. Child captures bind the effective canonical root
+manifest hash and retain only their own private public-actor mapping. The root
+public projection excludes the private UID/exec/grant map. Unresolved public
+effects remain visible in the frozen evidence; they do not become success during
+cleanup or reopening.
+
 ## Deadlines, cancellation and final capture
 
 **A child deadline or cancellation retires the entire worker, including the root
@@ -357,7 +461,8 @@ journal recovery after host listeners stop:
 OPENJULES_MANAGED_DOCKER_TESTS=1 \
   python -m pytest tests/integration/test_managed_children_runtime.py \
     tests/integration/test_managed_child_outcomes_runtime.py \
-    tests/integration/test_managed_cold_sessions_runtime.py
+    tests/integration/test_managed_cold_sessions_runtime.py \
+    tests/integration/test_managed_public_runtime.py
 ```
 
 The direct sibling regression runs two actual child agents, then probes their
@@ -392,6 +497,14 @@ bounded guest replies and the predecessor fence. The Docker scenario uses the
 real trusted runners for two rounds and retains both children through final
 capture. These tests keep logical completion, exec return, model fencing and
 whole-worker termination as separate observations.
+
+The focused public Docker scenario uses one real root and one granted child,
+actual public-socket UID refusals, selected signed proposal/decline records,
+original-key replay, shared inference accounting and private completion. It
+checks the original/effective root manifest relation, the child's canonical
+root hash, actual resource cleanup and service reopening. Its stdio conversation
+service and retained local transcript are explicitly named fixtures. The full
+two-child installed public scene is a separate qualification.
 
 These OpenJules tests use explicitly named canonical-authority and model
 fixtures. They do not establish real Polyphony service interoperability or live

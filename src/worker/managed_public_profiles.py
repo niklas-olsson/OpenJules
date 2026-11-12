@@ -655,11 +655,11 @@ class OwnedProfiles:
                     entry.stopping.set()
                     self.loop.call_soon_threadsafe(entry.stop)
 
-    def quiescent(self, worker_id):
+    def quiescent(self, worker_id, *, who=None):
         with self.guard:
             return all(
                 entry.done.is_set() for (owner, _who), entry in self.entries.items()
-                if owner == worker_id
+                if owner == worker_id and (who is None or _who == who)
             )
 
     def release_worker(self, worker_id):

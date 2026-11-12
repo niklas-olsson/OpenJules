@@ -27,6 +27,7 @@ from src.polyphony.managed_client import (
 )
 from src.worker.lifecycle import (
     LifecycleConflict,
+    RuntimeUnavailable,
     WorkerLifecycle,
     WorkerScope,
     WorkerSpec,
@@ -480,6 +481,12 @@ class ManagedDispatcher:
             self._publish_capture(worker_id, spec, attempt_id, row, receipt)
 
     def _publish_capture(self, worker_id, spec, attempt_id, row, receipt):
+        public = (
+            None if self.child_supervisor is None
+            else getattr(self.child_supervisor, "public_supervisor", None)
+        )
+        if public is not None and public.enabled(spec):
+            receipt = public.effective_receipt(worker_id, receipt, prepare=True)
         if self.child_supervisor is not None and self.child_supervisor.enabled(spec):
             # A canonical root terminal cannot precede any allocated child,
             # including a grant whose reply was lost before local binding.
@@ -563,6 +570,15 @@ class ManagedDispatcher:
     def _cleanup_proof(self, worker_id, spec, receipt):
         from .docker_runtime import CleanupBlocked, require_cleanup
 
+        public = (
+            None if self.child_supervisor is None
+            else getattr(self.child_supervisor, "public_supervisor", None)
+        )
+        if public is not None and public.enabled(spec):
+            try:
+                receipt = public.effective_receipt(worker_id, receipt, prepare=False)
+            except RuntimeUnavailable:
+                raise CleanupBlocked("public_capture_unresolved") from None
         worker = self.lifecycle._current(spec.scope, worker_id)
         require_cleanup(
             worker["state"] in {"stopped", "failed"}
@@ -671,6 +687,11 @@ class ManagedDispatcher:
                 verify_grant(saved_grant, root, children.policy(spec))
                 grant = saved_grant["binding"]
                 manifest = json.loads(saved["manifest"])
+                if public is not None and public.enabled(spec):
+                    try:
+                        public.validate_child_capture(root, child["child_id"], manifest)
+                    except (RuntimeUnavailable, LifecycleConflict):
+                        raise CleanupBlocked("public_capture_unresolved") from None
                 require_cleanup(
                     json.loads(child["artifacts"]) == hashes
                     and manifest.get("child_id") == child["child_id"]

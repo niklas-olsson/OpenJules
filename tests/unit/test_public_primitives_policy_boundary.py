@@ -1,4 +1,4 @@
-"""Shared public primitives do not enable an unfinished managed child mode.
+"""Malformed public policy is refused before managed worker effects.
 
 The raw configuration loader and ordinary model journal/lock are real. The
 runtime constructor is an explicit stop fixture. These cases prove admission
@@ -7,13 +7,12 @@ and cleanup boundaries, not Docker, native transport or provider readiness.
 
 from contextlib import closing
 from copy import deepcopy
-import hashlib
-import json
 import sqlite3
 
 import pytest
 
 import src.worker.managed_service as service_module
+from src.worker.managed_public_types import PROTOCOL, PublicPolicy
 from src.worker.model_broker import ModelBroker
 from tests.unit.test_child_session_policy import (
     RuntimeBoundaryReached,
@@ -26,38 +25,20 @@ from tests.unit.test_child_session_policy import (
 
 
 def public_document(tmp_path):
-    """Representative generated shape; no public runtime is installed here."""
-    approved = {
+    """Valid current shape except for its unsupported protocol value."""
+    return {
         "protocol": "managed-public-discussion-v1",
         "public_approved": True,
         "topic": "public-policy-boundary",
-        "roles": [
-            {
-                "id": "proposer",
-                "persona": "An independent proposer.",
-                "slots": [{"id": "proposal", "instruction": "Propose a change."}],
-            },
-            {
-                "id": "critic",
-                "persona": "An independent critic.",
-                "slots": [{"id": "criticism", "instruction": "You may decline."}],
-            },
-        ],
-    }
-    raw = json.dumps(
-        approved, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode()
-    return {
-        **approved,
-        "approval_sha256": hashlib.sha256(raw).hexdigest(),
-        "host": {
+        "server": {
             "python": str(tmp_path / "polyphony-python"),
             "cwd": str(tmp_path / "polyphony-source"),
-            "revision": "1" * 40,
             "scope_key_file": str(tmp_path / "public-scope"),
-            "scope_sha256": "2" * 64,
-            "state_directory": str(tmp_path / "public-state"),
+            "scope_key_sha256": "2" * 64,
         },
+        "personas": {"independent": "An independent public participant."},
+        "instructions": {"proposal": "Discuss this approved public question."},
+        "invitations": {},
     }
 
 
@@ -72,6 +53,9 @@ def test_raw_public_policy_refuses_before_worker_effects_and_releases_broker(
     if mode == "ordinary":
         policy.pop("outcome_protocol")
     policy["public_discussion"] = public_document(tmp_path)
+    # Changing only the protocol yields a valid shape without reading host files.
+    valid_shape = policy["public_discussion"] | {"protocol": PROTOCOL}
+    assert PublicPolicy.parse(valid_shape).document == valid_shape
 
     def unexpected_authority(*_args, **_kwargs):
         pytest.fail("configuration admission must not contact authority")
@@ -85,11 +69,9 @@ def test_raw_public_policy_refuses_before_worker_effects_and_releases_broker(
     monkeypatch.setattr(ModelBroker, "_forward", unexpected_provider)
     path, original_bytes, loaded, credentials = load_file(tmp_path, config)
     original_loaded = deepcopy(loaded)
-    # Bind refusal to the unsupported field itself, not a later failure to
-    # validate this fixture's intentionally uninstalled host references.
-    with pytest.raises(
-        TypeError, match="unexpected keyword argument 'public_discussion'"
-    ):
+    # Bind refusal to the unsupported protocol, before public prerequisites or
+    # validation of this fixture's intentionally uninstalled host references.
+    with pytest.raises(ValueError, match="^invalid managed public discussion policy$"):
         service_module.build_app(loaded, credentials)
 
     assert loaded == original_loaded
@@ -105,7 +87,7 @@ def test_raw_public_policy_refuses_before_worker_effects_and_releases_broker(
         assert db.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
     assert not (tmp_path / "public-state").exists()
 
-    # Removing only the unsupported option reuses the same real journal/lock
+    # Removing only the malformed public option reuses the same real journal/lock
     # and reaches the ordinary runtime boundary with the selected old mode.
     policy.pop("public_discussion")
     _, _, corrected, credentials = load_file(tmp_path, config)

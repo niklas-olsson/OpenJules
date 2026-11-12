@@ -232,6 +232,11 @@ class ChildRuntime:
                             "--outcome-socket",
                             f"/run/openjules-model/children/{child_id}/outcome.sock",
                         ]
+                    if getattr(policy, "public_discussion", None) is not None:
+                        command += [
+                            "--public-socket",
+                            f"/run/openjules-model/children/{child_id}/public.sock",
+                        ]
                     if policy.verify_argv:
                         command += ["--verify-json", canonical(policy.verify_argv)]
                     journal.update(root.worker_id, child_id, phase="creating")
@@ -437,6 +442,9 @@ class ChildRuntime:
                 json.loads(child["outcome_report"]) if child["outcome_report"] else None
             )
             manifest["work_outcome"] = work_outcome(grant["binding"], report)
+        public = getattr(self.supervisor, "public_supervisor", None)
+        if public is not None and public.enabled(root.spec):
+            manifest = public.child_manifest(root, child["child_id"], manifest)
         return {
             "patch": selected.get("patch", ""),
             "log": selected.get("log", ""),
