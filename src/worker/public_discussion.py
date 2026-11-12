@@ -20,8 +20,8 @@ from .bounded_http import HTTPResponseRejected, post_bounded_json
 from .discussion_journal import DiscussionJournal
 from .discussion_types import (
     CLEANUP_SECONDS, Deadline, DiscussionError, KEY, Policy,
-    PROVIDER_RESPONSE_LIMIT, Turn, canonical, fields, integer, matches,
-    read_private_bytes, strict_json, text, validate_output,
+    PROVIDER_RESPONSE_LIMIT, Turn, canonical, integer, matches,
+    provider_output as _provider_output, read_private_bytes,
 )
 
 
@@ -50,42 +50,6 @@ def _secret_present(value, token):
     if isinstance(value, (list, tuple)):
         return any(_secret_present(item, token) for item in value)
     return False
-
-
-def _provider_output(raw):
-    try:
-        value = strict_json(raw, PROVIDER_RESPONSE_LIMIT, "provider_rejected")
-        choices = value.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1:
-            raise DiscussionError("provider_rejected")
-        choice = choices[0]
-        fields(choice, {"message", "finish_reason"}, {"index", "logprobs"},
-               code="provider_rejected")
-        if choice["finish_reason"] != "stop":
-            raise DiscussionError("provider_rejected")
-        if "index" in choice:
-            integer(choice["index"], 0, 0, "provider_rejected")
-        message = choice["message"]
-        fields(message, {"role", "content"}, {
-            "tool_calls", "function_call", "refusal",
-        }, code="provider_rejected")
-        if (
-            message["role"] != "assistant"
-            or message.get("tool_calls") not in (None, [])
-            or message.get("function_call") is not None
-            or message.get("refusal") is not None
-        ):
-            raise DiscussionError("provider_rejected")
-        text(message["content"], PROVIDER_RESPONSE_LIMIT, nonempty=True,
-             code="provider_rejected")
-        return validate_output(strict_json(
-            message["content"].encode("utf-8"),
-            PROVIDER_RESPONSE_LIMIT, "provider_rejected",
-        ))
-    except DiscussionError:
-        raise
-    except Exception:
-        raise DiscussionError("provider_rejected") from None
 
 
 async def _provider(policy, request, token, deadline):

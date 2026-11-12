@@ -7,6 +7,7 @@ cannot choose them. No ordinary Polyphony server fallback or task callback exist
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 import os
 from pathlib import Path
@@ -20,7 +21,8 @@ from mcp.shared.message import SessionMessage
 from mcp.types import Implementation, JSONRPCMessage
 
 from ..worker.discussion_types import (
-    CHILD_ENVIRONMENT, CLEANUP_SECONDS, CONTEXT_LIMIT, Deadline, DiscussionError,
+    CHILD_ENVIRONMENT, CLEANUP_SECONDS, CONTEXT_LIMIT, ConversationLaunch,
+    Deadline, DiscussionError, Policy,
     FRAME_LIMIT, RPC_SECONDS, STARTUP_SECONDS, STDERR_LIMIT, TOOLS, WIRE_LIMIT,
     absolute_path, canonical, fields, integer, strict_json, text,
     validate_history, validate_status,
@@ -204,6 +206,53 @@ def _application(result):
     return strict_json(item["text"].encode("utf-8"), FRAME_LIMIT, "transport_invalid")
 
 
+@dataclass(frozen=True)
+class CleanupResult:
+    attempted_processes: int
+    cleaned_processes: int
+    active_processes: int
+    failed: bool
+
+    @property
+    def confirmed(self):
+        return (
+            not self.failed and self.active_processes == 0
+            and self.cleaned_processes == self.attempted_processes
+        )
+
+
+class CleanupObserver:
+    """Inspect aggregate cleanup after the owned context exits, even on error.
+
+    The observer owns no process and cannot signal or adopt one. Only the
+    existing owner reports positive close completion. Failed or interrupted
+    cleanup is sticky across every probe/profile lifetime observed here.
+    """
+
+    def __init__(self):
+        self._attempted = 0
+        self._cleaned = 0
+        self._active = 0
+        self._failed = False
+
+    @property
+    def result(self):
+        return CleanupResult(
+            self._attempted, self._cleaned, self._active, self._failed,
+        )
+
+    def _begin(self):
+        self._attempted += 1
+        self._active += 1
+
+    def _finish(self, confirmed):
+        self._active -= 1
+        if confirmed:
+            self._cleaned += 1
+        else:
+            self._failed = True
+
+
 class _OwnedProcess:
     """Retain the leader PID until all group signals have been delivered."""
 
@@ -216,6 +265,7 @@ class _OwnedProcess:
             start_new_session=True, close_fds=True, bufsize=0,
         )
         self.closed = False
+        self.cleanup_confirmed = False
 
     def configure(self):
         for handle in (self.process.stdin, self.process.stdout, self.process.stderr):
@@ -308,6 +358,7 @@ class _OwnedProcess:
             self.closed = True
         if failure is not None:
             raise failure
+        self.cleanup_confirmed = True
 
 
 async def _read(handle, maximum=4096):
@@ -331,9 +382,12 @@ async def _write(handle, raw):
 
 
 @asynccontextmanager
-async def _owned(argv, cwd, *, deadline=None):
+async def _owned(argv, cwd, *, deadline=None, cleanup=None):
     process = None
     primary = None
+    confirmed = False
+    if cleanup is not None:
+        cleanup._begin()
     try:
         process = _OwnedProcess(argv, cwd)
         process.configure()
@@ -342,21 +396,34 @@ async def _owned(argv, cwd, *, deadline=None):
         primary = error
         raise
     finally:
-        if process is not None:
-            with anyio.CancelScope(shield=True):
-                try:
-                    cutoff = None if deadline is None else (
-                        deadline.monotonic_cutoff + CLEANUP_SECONDS
-                    )
-                    await process.close(cutoff)
-                except Exception:
-                    if primary is not None:
-                        primary.add_note("owned discussion process cleanup failed")
-                    else:
-                        raise DiscussionError("process_cleanup_failed") from None
+        try:
+            if process is not None:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        cutoff = None if deadline is None else (
+                            deadline.monotonic_cutoff + CLEANUP_SECONDS
+                        )
+                        await process.close(cutoff)
+                        if not process.cleanup_confirmed:
+                            raise DiscussionError("process_cleanup_failed")
+                        confirmed = True
+                    except BaseException as error:
+                        if primary is not None:
+                            primary.add_note("owned discussion process cleanup failed")
+                        elif not isinstance(error, Exception):
+                            # Cleanup cancellation/interruption is not an
+                            # ordinary transport error. Without an earlier
+                            # primary, preserve that original control flow.
+                            raise
+                        else:
+                            raise DiscussionError("process_cleanup_failed") from None
+        finally:
+            if cleanup is not None:
+                cleanup._finish(confirmed)
 
 
-async def probe_interpreter(policy, startup):
+async def probe_interpreter(launch, startup, *, cleanup=None):
+    launch.check_binding()
     raw = bytearray()
     stderr_bytes = 0
 
@@ -381,8 +448,8 @@ async def probe_interpreter(policy, startup):
 
     with anyio.fail_after(startup.remaining()):
         async with _owned(
-            [policy.server["python"], "-I", "-c", PROBE], policy.server["cwd"],
-            deadline=startup,
+            [launch.python, "-I", "-c", PROBE], launch.cwd,
+            deadline=startup, cleanup=cleanup,
         ) as process:
             process.process.stdin.close()
             async with anyio.create_task_group() as group:
@@ -402,14 +469,14 @@ async def probe_interpreter(policy, startup):
                 result["resolved_executable"], executable=True, code="unsupported_profile"
             )
             prefix = absolute_path(result["prefix"], code="unsupported_profile")
-            launch = Path(policy.server["python"])
+            launch_path = Path(launch.python)
             if (
-                str(resolved) != str(launch.resolve(strict=True))
+                str(resolved) != str(launch_path.resolve(strict=True))
                 or not prefix.is_dir()
             ):
                 raise DiscussionError("unsupported_profile")
             return {
-                "schema_version": 1, "launch_path": str(launch),
+                "schema_version": 1, "launch_path": str(launch_path),
                 "resolved_executable": str(resolved), "prefix": str(prefix),
             }
 
@@ -482,8 +549,9 @@ class _Wire:
 
 
 @asynccontextmanager
-async def _transport(policy, deadline):
+async def _transport(launch, deadline, *, cleanup=None):
     deadline.remaining()
+    launch.check_binding()
     wire = _Wire()
     incoming, receive = anyio.create_memory_object_stream(1)
     send, outgoing = anyio.create_memory_object_stream(1)
@@ -540,9 +608,9 @@ async def _transport(policy, deadline):
             raise
 
     async with _owned(
-        [policy.server["python"], "-m", "src.liminal_bridge.conversation_server",
-         "--config", policy.server["config"]],
-        policy.server["cwd"], deadline=deadline,
+        [launch.python, "-m", "src.liminal_bridge.conversation_server",
+         "--config", launch.config],
+        launch.cwd, deadline=deadline, cleanup=cleanup,
     ) as process:
         try:
             async with incoming, receive, send, outgoing:
@@ -561,9 +629,9 @@ async def _transport(policy, deadline):
 
 
 class ConversationClient:
-    def __init__(self, session, policy, deadline, wire, interpreter):
+    def __init__(self, session, launch, deadline, wire, interpreter):
         self.session = session
-        self.policy = policy
+        self.launch = launch
         self.deadline = deadline
         self.wire = wire
         self.interpreter = interpreter
@@ -594,7 +662,7 @@ class ConversationClient:
     async def check_status(self, expected=None):
         value = validate_status(
             await self._call("conversation_status", {}),
-            self.policy.document["topic"],
+            self.launch.topic,
         )
         if expected is not None and canonical(value) != canonical(expected):
             raise DiscussionError("state_conflict")
@@ -685,21 +753,37 @@ class ConversationClient:
 
 
 @asynccontextmanager
-async def connect(policy, deadline, *, expected_status=None, expected_interpreter=None):
+async def connect(policy, deadline, *, expected_status=None, expected_interpreter=None,
+                  cleanup=None):
+    """Connect through a validated launch; optional cleanup survives any exit.
+
+    Pass a CleanupObserver created before entry to inspect both owned lifetimes
+    after this context finishes. A transport/application error and a positive
+    cleanup result are independent facts.
+    """
+    launch = policy.launch if isinstance(policy, Policy) else policy
+    if not isinstance(launch, ConversationLaunch):
+        raise DiscussionError("invalid_policy")
+    if cleanup is None:
+        cleanup = CleanupObserver()
+    elif not isinstance(cleanup, CleanupObserver):
+        raise DiscussionError("invalid_policy")
     startup = Deadline(
         min(time.time() + STARTUP_SECONDS, deadline.expires_at),
         min(time.monotonic() + STARTUP_SECONDS, deadline.monotonic_cutoff),
     )
     trusted_body_error = None
     try:
-        interpreter = await probe_interpreter(policy, startup)
+        interpreter = await probe_interpreter(launch, startup, cleanup=cleanup)
         if (
             expected_interpreter is not None
             and canonical(interpreter) != canonical(expected_interpreter)
         ):
             raise DiscussionError("state_conflict")
         startup.remaining()
-        async with _transport(policy, deadline) as (receive, send, wire, process):
+        async with _transport(launch, deadline, cleanup=cleanup) as (
+            receive, send, wire, process,
+        ):
             async with ClientSession(
                 receive, send, read_timeout_seconds=timedelta(seconds=RPC_SECONDS),
                 client_info=Implementation(name="openjules-public-discussion", version="1"),
@@ -709,7 +793,7 @@ async def connect(policy, deadline, *, expected_status=None, expected_interprete
                         await session.initialize()
                         # Cache only the raw-validated six tools before status.
                         await session.list_tools()
-                        client = ConversationClient(session, policy, deadline, wire, interpreter)
+                        client = ConversationClient(session, launch, deadline, wire, interpreter)
                         await client.check_status(expected_status)
                     yield client
                 except (DiscussionError, KeyboardInterrupt, SystemExit) as error:

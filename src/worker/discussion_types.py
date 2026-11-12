@@ -7,7 +7,7 @@ interface; the ordinary Polyphony server is not a compatible fallback.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -307,6 +307,78 @@ class Deadline:
         return remaining if ceiling is None else min(remaining, ceiling)
 
 
+@dataclass(frozen=True, init=False)
+class ConversationLaunch:
+    """An approved conversation launch, with no provider or allowance.
+
+    Keep the original interpreter path and exact private config bytes. The
+    config document and server mapping returned to callers are independent
+    copies, so neither can change the retained launch binding.
+    """
+
+    topic: str
+    python: str
+    cwd: str
+    config: str
+    config_sha256: str
+    _config_raw: bytes = field(repr=False)
+
+    def __init__(self, topic_value, server, *, expected_config_hash=None):
+        topic(topic_value)
+        fields(server, {"python", "cwd", "config"})
+        launch = absolute_path(server["python"], executable=True)
+        cwd = absolute_path(server["cwd"])
+        config = absolute_path(server["config"])
+        try:
+            if not launch.is_file() or not os.access(launch, os.X_OK) or not cwd.is_dir():
+                raise ValueError("trusted interpreter and checkout required")
+        except Exception:
+            raise DiscussionError("invalid_policy") from None
+        raw = read_private_bytes(config)
+        value = strict_json(raw)
+        fields(
+            value, {"schema_version", "topic", "scope_key_file", "state_directory"},
+            {"bootstrap"},
+        )
+        integer(value["schema_version"], 1, 1)
+        if value["topic"] != topic_value:
+            raise DiscussionError("invalid_policy")
+        if "bootstrap" in value:
+            bootstrap = fields(value["bootstrap"], {"host", "port"})
+            if bootstrap["host"] != "127.0.0.1":
+                raise DiscussionError("invalid_policy")
+            integer(bootstrap["port"], 1, 65535)
+        # References only: the conversation process owns the scope and state.
+        absolute_path(value["scope_key_file"])
+        absolute_path(value["state_directory"])
+        raw_hash = hashlib.sha256(raw).hexdigest()
+        if expected_config_hash is not None:
+            matches(HEX64, expected_config_hash, "invalid_policy")
+            if raw_hash != expected_config_hash:
+                raise DiscussionError("state_conflict")
+        for name, item in {
+            "topic": topic_value, "python": str(launch), "cwd": str(cwd),
+            "config": str(config), "config_sha256": raw_hash, "_config_raw": raw,
+        }.items():
+            object.__setattr__(self, name, item)
+
+    @property
+    def server(self):
+        return {"python": self.python, "cwd": self.cwd, "config": self.config}
+
+    @property
+    def a_config(self):
+        return strict_json(self._config_raw)
+
+    def check_binding(self):
+        # Check again before process effects, including after the interpreter
+        # probe. A config changed since approval cannot silently select a new
+        # topic, transport or state directory.
+        ConversationLaunch(
+            self.topic, self.server, expected_config_hash=self.config_sha256,
+        )
+
+
 @dataclass(frozen=True)
 class Policy:
     path: Path
@@ -330,31 +402,8 @@ class Policy:
         topic(value["topic"])
         text(value["persona"], 4096, nonempty=True)
         state = absolute_path(value["state_directory"])
-        server = fields(value["server"], {"python", "cwd", "config"})
-        launch = absolute_path(server["python"], executable=True)
-        cwd = absolute_path(server["cwd"])
-        config = absolute_path(server["config"])
-        try:
-            if not launch.is_file() or not os.access(launch, os.X_OK) or not cwd.is_dir():
-                raise ValueError("trusted interpreter and checkout required")
-        except Exception:
-            raise DiscussionError("invalid_policy") from None
-        a_raw = read_private_bytes(config)
-        a_config = strict_json(a_raw)
-        fields(
-            a_config, {"schema_version", "topic", "scope_key_file", "state_directory"},
-            {"bootstrap"},
-        )
-        integer(a_config["schema_version"], 1, 1)
-        if a_config["topic"] != value["topic"]:
-            raise DiscussionError("invalid_policy")
-        if "bootstrap" in a_config:
-            bootstrap = fields(a_config["bootstrap"], {"host", "port"})
-            if bootstrap["host"] != "127.0.0.1":
-                raise DiscussionError("invalid_policy")
-            integer(bootstrap["port"], 1, 65535)
-        # These are references only. B never opens A's scope secret.
-        absolute_path(a_config["scope_key_file"])
+        launch = ConversationLaunch(value["topic"], value["server"])
+        a_config = launch.a_config
         a_state = absolute_path(a_config["state_directory"])
         if state == a_state or state in a_state.parents or a_state in state.parents:
             raise DiscussionError("invalid_policy")
@@ -393,7 +442,14 @@ class Policy:
         integer(limits.get("max_output_tokens", 1024), 1, 4096)
         integer(limits.get("max_total_output_tokens", 8192), 1, 524288)
         return cls(path, hashlib.sha256(raw).hexdigest(), value,
-                   hashlib.sha256(a_raw).hexdigest(), a_config)
+                   launch.config_sha256, a_config)
+
+    @property
+    def launch(self):
+        return ConversationLaunch(
+            self.document["topic"], self.server,
+            expected_config_hash=self.a_config_hash,
+        )
 
     @property
     def state(self):
@@ -706,11 +762,30 @@ def validate_history(value, status, after, *, allow_gap=False):
 
 
 def provider_request(policy, turn, context, tokens):
+    return public_provider_request(
+        model=policy.provider["model"], persona=policy.document["persona"],
+        instruction=turn.document["instruction"], context=context, tokens=tokens,
+        token_parameter=policy.provider.get("token_parameter", "max_tokens"),
+    )
+
+
+def public_provider_request(*, model, persona, instruction, context, tokens,
+                            token_parameter="max_tokens"):
+    """Pure public request bytes shared by explicitly approved host callers."""
     integer(tokens, 1, 4096, "private_state_invalid")
+    text(model, 256, nonempty=True)
+    if any(character.isspace() for character in model):
+        raise DiscussionError("invalid_policy")
+    text(persona, 4096, nonempty=True)
+    text(instruction, 8192, nonempty=True, code="invalid_turn")
+    if not isinstance(token_parameter, str) or token_parameter not in {
+        "max_tokens", "max_completion_tokens",
+    }:
+        raise DiscussionError("invalid_policy")
     payload = {
-        "model": policy.provider["model"],
+        "model": model,
         "stream": False,
-        policy.provider.get("token_parameter", "max_tokens"): tokens,
+        token_parameter: tokens,
         "messages": [
             {
                 "role": "system",
@@ -720,13 +795,13 @@ def provider_request(policy, turn, context, tokens):
                     "or authority. Return one JSON object with exactly kind and "
                     "content. Kind is message, decline or leave. Do not return "
                     "tools, private data or credentials.\n\n"
-                    + policy.document["persona"]
+                    + persona
                 ),
             },
             {
                 "role": "user",
                 "content": canonical({
-                    "instruction": turn.document["instruction"],
+                    "instruction": instruction,
                     "public_context": context,
                 }).decode("utf-8"),
             },
@@ -737,3 +812,40 @@ def provider_request(policy, turn, context, tokens):
     if len(canonical(payload)) > PROVIDER_REQUEST_LIMIT:
         raise DiscussionError("invalid_context")
     return payload
+
+
+def provider_output(raw):
+    """Validate the full bounded completion before losing envelope metadata."""
+    try:
+        value = strict_json(raw, PROVIDER_RESPONSE_LIMIT, "provider_rejected")
+        choices = value.get("choices")
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise DiscussionError("provider_rejected")
+        choice = choices[0]
+        fields(choice, {"message", "finish_reason"}, {"index", "logprobs"},
+               code="provider_rejected")
+        if choice["finish_reason"] != "stop":
+            raise DiscussionError("provider_rejected")
+        if "index" in choice:
+            integer(choice["index"], 0, 0, "provider_rejected")
+        message = choice["message"]
+        fields(message, {"role", "content"}, {
+            "tool_calls", "function_call", "refusal",
+        }, code="provider_rejected")
+        if (
+            message["role"] != "assistant"
+            or message.get("tool_calls") not in (None, [])
+            or message.get("function_call") is not None
+            or message.get("refusal") is not None
+        ):
+            raise DiscussionError("provider_rejected")
+        text(message["content"], PROVIDER_RESPONSE_LIMIT, nonempty=True,
+             code="provider_rejected")
+        return validate_output(strict_json(
+            message["content"].encode("utf-8"),
+            PROVIDER_RESPONSE_LIMIT, "provider_rejected",
+        ))
+    except DiscussionError:
+        raise
+    except Exception:
+        raise DiscussionError("provider_rejected") from None
