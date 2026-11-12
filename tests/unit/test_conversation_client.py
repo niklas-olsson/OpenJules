@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 import pytest
 
-from src.polyphony.conversation_client import connect
+from src.polyphony.conversation_client import CleanupObserver, connect
 from src.worker.discussion_types import (
     CHILD_ENVIRONMENT, Deadline, DiscussionError, Policy, canonical, publication_intent,
 )
@@ -240,7 +240,10 @@ def short_deadline(seconds=3):
     return Deadline(time.time() + seconds, time.monotonic() + seconds)
 
 
-def test_real_sdk_exact_tools_status_environment_and_original_venv_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["policy", "launch"])
+def test_real_sdk_exact_tools_status_environment_and_original_venv_path(
+    tmp_path, monkeypatch, source,
+):
     policy, _, status = fixture_policy(tmp_path)
     prefix = tmp_path / "approved-venv"
     venv.EnvBuilder(
@@ -263,15 +266,26 @@ def test_real_sdk_exact_tools_status_environment_and_original_venv_path(tmp_path
     monkeypatch.setenv("HTTPS_PROXY", "http://private-proxy-canary")
     monkeypatch.setenv("DISCUSSION_FIXTURE_TOKEN", "private-provider-canary")
     monkeypatch.setenv("PYTHONPATH", "private-pythonpath-canary")
+    cleanup = CleanupObserver()
 
     async def run():
-        async with connect(policy, Deadline.observe(), expected_status=status) as client:
+        approved = policy if source == "policy" else policy.launch
+        async with connect(
+            approved, Deadline.observe(), expected_status=status, cleanup=cleanup,
+        ) as client:
             assert client.status == status
             assert client.interpreter == interpreter
+            assert cleanup.result.attempted_processes == 2
+            assert cleanup.result.cleaned_processes == 1
+            assert cleanup.result.active_processes == 1
+            assert cleanup.result.confirmed is False
             assert await client.check_status(status) == status
             assert (await client.history())["messages"] == []
 
     asyncio.run(run())
+    assert cleanup.result.confirmed is True
+    assert cleanup.result.attempted_processes == 2
+    assert cleanup.result.cleaned_processes == 2
     state = Path(policy.a_config["state_directory"])
     assert json.loads((state / "environment.json").read_bytes()) == CHILD_ENVIRONMENT
     requests = server_requests(policy)
