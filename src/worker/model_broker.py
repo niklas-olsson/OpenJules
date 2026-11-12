@@ -478,6 +478,9 @@ class ModelBroker:
         self.endpoints = {}
         self.inference_locks = {}
         self.child_supervisor = None
+        self.public_supervisor = None
+        self.public_calls = 0
+        self.public_condition = threading.Condition(self.guard)
         self.closed = False
         self._service_lock = (self.root / "service.lock").open("a")
         try:
@@ -778,7 +781,153 @@ class ModelBroker:
             raise BrokerDenied("not_authorized")
         return self._serialized_complete(worker_id, payload, child_id)
 
-    def _serialized_complete(self, worker_id, payload, child_id=None):
+    def complete_public(self, worker_id, payload, *, child_id=None):
+        """Trusted host entry only; public guest sockets never select this mode."""
+        with self.public_condition:
+            if (
+                self.closed or self.public_supervisor is None
+                or (child_id is not None and self.child_supervisor is None)
+            ):
+                raise BrokerDenied("not_authorized")
+            self.public_calls += 1
+        try:
+            return self._serialized_complete(worker_id, payload, child_id, public=True)
+        except BrokerDenied:
+            raise
+        except Exception:
+            raise BrokerDenied("uncertain") from None
+        finally:
+            with self.public_condition:
+                self.public_calls -= 1
+                self.public_condition.notify_all()
+
+    def inspect_public(self, worker_id, attempt_id, payload, *, child_id=None):
+        """Read an original public call without permission refresh or dispatch."""
+        binding = self._public_bound(worker_id, child_id, payload, admission=False)
+        from .managed_public_types import canonical
+        normalized = canonical(payload).decode()
+        with self.connection() as db:
+            worker = self._worker(db, worker_id)
+            if (
+                worker["attempt_id"] != attempt_id
+                or binding["actor"]["identity"]["root_attempt_id"] != attempt_id
+            ):
+                raise BrokerDenied("conflict")
+            row = db.execute(
+                "SELECT * FROM calls WHERE worker_id=? AND attempt_id=? AND request_id=?",
+                (worker_id, attempt_id, payload["request_id"]),
+            ).fetchone()
+        if row is None:
+            return {"status": "missing", "result": None}
+        if row["payload_hash"] != _hash(normalized) or row["status"] not in {
+            "child_authorizing", "reserved", "uncertain", "complete",
+        }:
+            raise BrokerDenied("conflict")
+        result = None
+        if row["status"] == "complete":
+            try:
+                result = json.loads(row["response"], object_pairs_hook=_pairs)
+                if _json(result) != row["response"]:
+                    raise ValueError("noncanonical retained response")
+                self._public_result(result, payload, binding)
+            except BrokerDenied:
+                raise
+            except Exception:
+                raise BrokerDenied("uncertain") from None
+        elif row["response"] is not None:
+            raise BrokerDenied("conflict")
+        return {"status": row["status"], "result": result}
+
+    def _public_bound(self, worker_id, child_id, payload, *, admission):
+        from .managed_public_types import (
+            PublicPolicy, canonical, digest, finite, public_model_payload,
+        )
+        if self.public_supervisor is None:
+            raise BrokerDenied("not_authorized")
+        try:
+            # This trusted callback reads original local actor/slot state only.
+            # It must not acquire an operation lease or make a network call.
+            binding = self.public_supervisor.model_binding(
+                worker_id, child_id, payload, admission=admission,
+            )
+            if (
+                not isinstance(binding, dict)
+                or set(binding) != {"policy", "actor", "slot", "cutoff"}
+                or not isinstance(binding["policy"], PublicPolicy)
+            ):
+                raise BrokerDenied("not_authorized")
+            finite(binding["cutoff"], 0, 1e15)
+            actor, slot = binding["actor"], binding["slot"]
+            if (
+                actor["identity"]["worker_id"] != worker_id
+                or actor["identity"]["child_id"] != child_id
+                or actor["identity"]["role"] != ("root" if child_id is None else "child")
+                or slot["actor_id"] != ("root" if child_id is None else child_id)
+                or binding["cutoff"] > slot["monotonic_cutoff"]
+            ):
+                raise BrokerDenied("not_authorized")
+            expected = public_model_payload(binding["policy"], actor, slot)
+            if canonical(payload) != canonical(expected) or slot["model_call_digest"] != digest(expected):
+                raise BrokerDenied("conflict")
+            if admission and binding["cutoff"] <= time.monotonic():
+                raise BrokerDenied("not_authorized")
+            return binding
+        except BrokerDenied:
+            raise
+        except Exception:
+            raise BrokerDenied("not_authorized") from None
+
+    @staticmethod
+    def _public_body(policy, binding, payload, tokens):
+        from .discussion_types import public_provider_request
+        from .managed_public_types import canonical
+        approved, slot = binding["policy"].document, binding["slot"]
+        body = public_provider_request(
+            model=policy.model,
+            persona=approved["personas"][slot["persona_key"]],
+            instruction=approved["instructions"][slot["instruction_key"]],
+            context=slot["context"], tokens=tokens,
+            token_parameter=policy.token_parameter, token_limit=policy.max_output_tokens,
+        )
+        if (
+            body["messages"] != payload["messages"]
+            or len(canonical(body)) > min(131072, policy.max_request_bytes)
+        ):
+            raise BrokerDenied("invalid_request")
+        return body
+
+    @staticmethod
+    def _public_result(result, payload, binding):
+        from .discussion_types import validate_output
+        from .managed_public_types import publication_key, signed_intent
+        if (
+            not isinstance(result, dict) or type(result.get("schema_version")) is not int
+            or result["schema_version"] != 1 or result.get("request_id") != payload["request_id"]
+            or type(result.get("ok")) is not bool
+        ):
+            raise BrokerDenied("uncertain")
+        if result["ok"] is False:
+            if set(result) != {"schema_version", "request_id", "ok", "error"} or result["error"] != "not_authorized":
+                raise BrokerDenied("uncertain")
+            return result
+        if set(result) != {"schema_version", "request_id", "ok", "output"}:
+            raise BrokerDenied("uncertain")
+        try:
+            output = validate_output(result["output"])
+            slot = binding["slot"]
+            if slot["response"] is not None and slot["response"] != output:
+                raise BrokerDenied("conflict")
+            signed_intent(
+                binding["actor"]["status"], publication_key(slot["slot_id"]),
+                output["kind"], output["content"], reply_to=slot["reply_to"],
+            )
+        except BrokerDenied:
+            raise
+        except Exception:
+            raise BrokerDenied("uncertain") from None
+        return result
+
+    def _serialized_complete(self, worker_id, payload, child_id=None, *, public=False):
         # A known live call is busy, not a lost provider outcome. No journal or
         # canonical turn effects occur before this common root/child gate.
         with self.connection() as db:
@@ -803,6 +952,8 @@ class ModelBroker:
                     admission_open = False
                 if not admission_open:
                     raise BrokerDenied("not_authorized")
+            if public:
+                return self._complete_serial(worker_id, payload, child_id, public=True)
             return self._complete_serial(worker_id, payload, child_id)
         finally:
             gate.release()
@@ -861,44 +1012,71 @@ class ModelBroker:
             raise BrokerDenied("not_authorized")
         return row, policy, deadline
 
-    def _complete_serial(self, worker_id: str, payload: dict, child_id=None) -> dict:
-        if (
-            not isinstance(payload, dict)
-            or set(payload) != {"schema_version", "request_id", "messages"}
-            or type(payload["schema_version"]) is not int
-            or payload["schema_version"] != 1
-            or not isinstance(payload["request_id"], str)
-            or not _IDENTIFIER.fullmatch(payload["request_id"])
-        ):
-            raise BrokerDenied("invalid_request")
-        definitions = TOOL_DEFINITIONS
-        if self.child_supervisor is not None:
-            with self.connection() as db:
-                spec = WorkerSpec(**json.loads(self._worker(db, worker_id)["spec"]))
-            if child_id is None and self.child_supervisor.enabled(spec):
-                from src.agent.child_tools import CHILD_TOOL_DEFINITIONS
-
-                definitions = [*TOOL_DEFINITIONS, *CHILD_TOOL_DEFINITIONS]
-                if self.child_supervisor.policy(spec).session_protocol is not None:
-                    from src.agent.child_tools import SESSION_TOOL_DEFINITIONS
-
-                    definitions = [*definitions, *SESSION_TOOL_DEFINITIONS]
-            elif (
-                child_id is not None
-                and self.child_supervisor.policy(spec).outcome_protocol is not None
+    def _complete_serial(self, worker_id: str, payload: dict, child_id=None, *, public=False) -> dict:
+        binding = None
+        if public:
+            binding = self._public_bound(worker_id, child_id, payload, admission=True)
+            definitions = None
+        else:
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"schema_version", "request_id", "messages"}
+                or type(payload["schema_version"]) is not int
+                or payload["schema_version"] != 1
+                or not isinstance(payload["request_id"], str)
+                or not _IDENTIFIER.fullmatch(payload["request_id"])
             ):
-                from src.agent.child_outcome import OUTCOME_TOOL_DEFINITIONS
+                raise BrokerDenied("invalid_request")
+            definitions = TOOL_DEFINITIONS
+            if self.child_supervisor is not None:
+                with self.connection() as db:
+                    spec = WorkerSpec(**json.loads(self._worker(db, worker_id)["spec"]))
+                if child_id is None and self.child_supervisor.enabled(spec):
+                    from src.agent.child_tools import CHILD_TOOL_DEFINITIONS
 
-                definitions = [*TOOL_DEFINITIONS, *OUTCOME_TOOL_DEFINITIONS]
-        tool_names = {item["function"]["name"] for item in definitions}
-        _messages(payload["messages"], tool_names)
+                    definitions = [*TOOL_DEFINITIONS, *CHILD_TOOL_DEFINITIONS]
+                    if self.child_supervisor.policy(spec).session_protocol is not None:
+                        from src.agent.child_tools import SESSION_TOOL_DEFINITIONS
+
+                        definitions = [*definitions, *SESSION_TOOL_DEFINITIONS]
+                elif (
+                    child_id is not None
+                    and self.child_supervisor.policy(spec).outcome_protocol is not None
+                ):
+                    from src.agent.child_outcome import OUTCOME_TOOL_DEFINITIONS
+
+                    definitions = [*TOOL_DEFINITIONS, *OUTCOME_TOOL_DEFINITIONS]
+            tool_names = {item["function"]["name"] for item in definitions}
+            _messages(payload["messages"], tool_names)
+            if self.public_supervisor is not None:
+                with self.connection() as db:
+                    spec = WorkerSpec(**json.loads(self._worker(db, worker_id)["spec"]))
+                if self.public_supervisor.enabled(spec) and payload["request_id"].startswith("mpub1:"):
+                    raise BrokerDenied("invalid_request")
         row, policy, deadline = self._context_permission(worker_id, child_id)
-        normalized = _json(payload)
-        if len(normalized.encode()) > policy.max_request_bytes:
+        if public:
+            from .managed_public_types import canonical
+            normalized = canonical(payload).decode()
+            if binding["actor"]["identity"]["root_attempt_id"] != row["attempt_id"]:
+                raise BrokerDenied("not_authorized")
+            deadline = min(deadline, binding["cutoff"])
+            # Authority transport must not spend an already expired public slot.
+            if deadline <= time.monotonic():
+                raise BrokerDenied("not_authorized")
+            # Check the complete no-tools body before any durable allocation.
+            try:
+                self._public_body(policy, binding, payload, policy.max_output_tokens)
+            except BrokerDenied:
+                raise
+            except Exception:
+                raise BrokerDenied("invalid_request") from None
+        else:
+            normalized = _json(payload)
+        if len(normalized.encode()) > policy.max_request_bytes or (public and len(normalized.encode()) > 131072):
             raise BrokerDenied("invalid_request")
         stored_id = (
             payload["request_id"]
-            if child_id is None
+            if public or child_id is None
             else "/child/" + _hash(_json([child_id, payload["request_id"]]))
         )
         identity = (worker_id, row["attempt_id"], stored_id)
@@ -911,7 +1089,10 @@ class ModelBroker:
                 current["revoked"]
                 or current["attempt_id"] != row["attempt_id"]
                 or current["deadline"] <= time.monotonic()
+                or (public and deadline <= time.monotonic())
             ):
+                # BEGIN IMMEDIATE can wait. Use the original sampled cutoff,
+                # without a public-journal callback under this write lock.
                 raise BrokerDenied("not_authorized")
             prior = db.execute(
                 "SELECT * FROM calls WHERE worker_id=? AND attempt_id=? AND request_id=?",
@@ -921,7 +1102,12 @@ class ModelBroker:
                 if prior["payload_hash"] != digest:
                     raise BrokerDenied("conflict")
                 if prior["status"] == "complete":
-                    cached = json.loads(prior["response"])
+                    cached = (
+                        json.loads(prior["response"], object_pairs_hook=_pairs)
+                        if public else json.loads(prior["response"])
+                    )
+                    if public and _json(cached) != prior["response"]:
+                        raise BrokerDenied("uncertain")
                 elif child_id is None or prior["status"] != "child_authorizing":
                     raise BrokerDenied("uncertain")
                 tokens = prior["reserved_tokens"]
@@ -945,6 +1131,8 @@ class ModelBroker:
                 if count >= policy.max_calls or available <= 0:
                     raise BrokerDenied("budget_exhausted")
                 tokens = min(policy.max_output_tokens, available)
+                if public and deadline <= time.monotonic():
+                    raise BrokerDenied("not_authorized")
                 db.execute(
                     "INSERT INTO calls VALUES(?,?,?,?,?,?,NULL)",
                     (
@@ -956,18 +1144,35 @@ class ModelBroker:
                 )
         if cached is not None:
             self._context_permission(worker_id, child_id)
+            if public:
+                self._public_bound(worker_id, child_id, payload, admission=True)
+                self._public_result(cached, payload, binding)
             return cached
         if child_id is not None:
-            from .child_supervisor import ChildDenied
+            from .child_supervisor import ChildDenied, ChildTurnExpired
             from src.polyphony.child_client import ChildRejected
             from src.polyphony.managed_client import AuthorityUnavailable
 
+            if public and deadline <= time.monotonic():
+                # Keep any original authorizing reservation unresolved. Expiry
+                # grants no canonical retry and is not a canonical denial reply.
+                raise BrokerDenied("not_authorized")
             try:
-                turn_deadline = self.child_supervisor.reserve_turn(
-                    worker_id, child_id, payload["request_id"], digest
-                )
+                if public:
+                    turn_deadline = self.child_supervisor.reserve_turn(
+                        worker_id, child_id, payload["request_id"], digest,
+                        admission_cutoff=deadline,
+                    )
+                else:
+                    turn_deadline = self.child_supervisor.reserve_turn(
+                        worker_id, child_id, payload["request_id"], digest
+                    )
                 deadline = min(deadline, turn_deadline)
                 self._context_permission(worker_id, child_id)
+            except ChildTurnExpired:
+                # No canonical turn request was dispatched. Keep the original
+                # model reservation held without inventing a denial or refund.
+                raise BrokerDenied("not_authorized") from None
             except (ChildDenied, ChildRejected, BrokerDenied):
                 denied = {
                     "schema_version": 1,
@@ -994,13 +1199,18 @@ class ModelBroker:
             # not dispatch using permission sampled before that wait.
             _, _, current_deadline = self._context_permission(worker_id, child_id)
             deadline = min(deadline, current_deadline)
-            forward = (
-                self._forward(policy, payload["messages"], tokens, deadline)
-                if definitions is TOOL_DEFINITIONS
-                else self._forward(
-                    policy, payload["messages"], tokens, deadline, definitions
+            if public:
+                binding = self._public_bound(worker_id, child_id, payload, admission=True)
+                deadline = min(deadline, binding["cutoff"])
+                forward = self._forward_public(policy, binding, payload, tokens, deadline)
+            else:
+                forward = (
+                    self._forward(policy, payload["messages"], tokens, deadline)
+                    if definitions is TOOL_DEFINITIONS
+                    else self._forward(
+                        policy, payload["messages"], tokens, deadline, definitions
+                    )
                 )
-            )
             response = asyncio.run(forward)
             result = {
                 "schema_version": 1,
@@ -1008,6 +1218,9 @@ class ModelBroker:
                 "ok": True,
                 "message": response,
             }
+            if public:
+                result["output"] = result.pop("message")
+                self._public_result(result, payload, binding)
             with self.connection() as db:
                 db.execute(
                     "UPDATE calls SET status='complete',response=? WHERE worker_id=? AND attempt_id=? AND request_id=?",
@@ -1016,6 +1229,8 @@ class ModelBroker:
             # Revocation can race an already dispatched inference call. Its
             # budget stays charged, but it grants no fresh permission or output.
             self._context_permission(worker_id, child_id)
+            if public:
+                self._public_bound(worker_id, child_id, payload, admission=True)
             return result
         except BrokerDenied:
             with self.connection() as db:
@@ -1030,6 +1245,42 @@ class ModelBroker:
                     "UPDATE calls SET status='uncertain' WHERE worker_id=? AND attempt_id=? AND request_id=? AND status='reserved'",
                     identity,
                 )
+            raise BrokerDenied("uncertain") from None
+
+    async def _forward_public(self, policy, binding, payload, tokens, deadline):
+        from .managed_public_types import public_output, publication_key, signed_intent
+        token = os.environ.get(policy.token_ref[4:], "")
+        if not token or any(c.isspace() for c in token):
+            raise BrokerDenied("provider_unavailable")
+        remaining = min(policy.request_timeout_seconds, deadline - time.monotonic())
+        if remaining <= 0:
+            raise BrokerDenied("not_authorized")
+        body = self._public_body(policy, binding, payload, tokens)
+
+        def decode(raw):
+            output = public_output(raw, token)
+            # The public record's escaped envelope must fit before raw provider
+            # text can enter the common completed-response cache.
+            slot = binding["slot"]
+            signed_intent(
+                binding["actor"]["status"], publication_key(slot["slot_id"]),
+                output["kind"], output["content"], reply_to=slot["reply_to"],
+            )
+            return output
+
+        try:
+            return await post_bounded_json(
+                policy.endpoint, body,
+                {"Authorization": "Bearer " + token, "Accept-Encoding": "identity"},
+                timeout_seconds=remaining,
+                max_response_bytes=min(262144, policy.max_response_bytes),
+                decode=decode,
+            )
+        except HTTPResponseRejected:
+            raise BrokerDenied("provider_unavailable") from None
+        except BrokerDenied:
+            raise
+        except Exception:
             raise BrokerDenied("uncertain") from None
 
     async def _forward(self, policy, messages, tokens, deadline, definitions=None):
@@ -1094,11 +1345,15 @@ class ModelBroker:
             endpoint.thread.join(max(0, deadline - time.monotonic()))
         # Do not release ownership while an in-flight thread can still mutate
         # this journal. Callers may retry close after the bounded request ends.
-        if any(endpoint.thread.is_alive() for endpoint in endpoints):
+        with self.public_condition:
+            public_active = self.public_calls != 0
+        if any(endpoint.thread.is_alive() for endpoint in endpoints) or public_active:
 
             def release_when_stopped():
                 for endpoint in endpoints:
                     endpoint.thread.join()
+                with self.public_condition:
+                    self.public_condition.wait_for(lambda: self.public_calls == 0)
                 self._service_lock.close()
 
             threading.Thread(target=release_when_stopped, daemon=True).start()

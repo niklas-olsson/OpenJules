@@ -40,6 +40,10 @@ class ChildDenied(RuntimeError):
         super().__init__(code)
 
 
+class ChildTurnExpired(RuntimeError):
+    """An optional original cutoff elapsed before the canonical turn request."""
+
+
 class ChildSupervisor:
     def __init__(
         self,
@@ -348,7 +352,18 @@ class ChildSupervisor:
             child["armed_deadline"] or child["deadline"],
         )
 
-    def reserve_turn(self, worker_id, child_id, request_id, request_digest):
+    def reserve_turn(
+        self, worker_id, child_id, request_id, request_digest, *, admission_cutoff=None,
+    ):
+        if admission_cutoff is not None:
+            if (
+                type(admission_cutoff) not in {int, float}
+                or not 0 < admission_cutoff <= 1e15
+                or not math.isfinite(admission_cutoff)
+            ):
+                raise ValueError("invalid child turn admission cutoff")
+            if admission_cutoff <= time.monotonic():
+                raise ChildTurnExpired("original child turn cutoff elapsed")
         root = self.journal.context(worker_id)
         child = self.journal.child(worker_id, child_id)
         cutoff = self.permission(worker_id, child_id)
@@ -356,6 +371,10 @@ class ChildSupervisor:
             [worker_id, root.attempt_id, child_id, request_id]
         )
         before = time.monotonic()
+        if admission_cutoff is not None and admission_cutoff <= before:
+            # permission() includes root and child authority waits. This local
+            # cutoff cannot authorize a canonical request after either wait.
+            raise ChildTurnExpired("original child turn cutoff elapsed")
         response = self.authority.call(
             "turn",
             root.spec.scope,
