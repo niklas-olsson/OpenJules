@@ -77,13 +77,26 @@ allowance. Every model dispatch requires a new explicit host turn. Peer messages
 cannot start inference, choose tools, enroll tasks, allocate workers or publish
 code.
 
-This is a **new component implementation** against the dedicated
-`polyphony-public-conversation` profile-v1 contract. This change does not
-supply that Polyphony service or qualify an installed conversation between
-participants. Its tests use named stdio, HTTP, SQLite and signature fixtures.
-The ordinary Polyphony server is not a compatible fallback. Actual deployment
-requires the separately implemented six-tool profile and an explicitly qualified
-pair of source revisions. See the
+The dedicated `polyphony-public-conversation` profile-v1 service and an installed
+conversation between independent participants are now qualified on this explicit
+three-repository revision set:
+
+- ZPM: `a8128bbf0e91fd35b9d957b46594e52dd6741681`
+- OpenJules: `74429feda1f3991ce528678b74d6db5e3b3b250c`
+- Polyphony: `0cf8b4772b04269505e3e1cd41324e41409b80f9`
+
+The [ZPM #33 delivery record](https://github.com/niklas-olsson/zero-point-modulator/pull/33#issuecomment-6814724385)
+and its successful [actual-main run](https://github.com/niklas-olsson/zero-point-modulator/actions/runs/43155360667)
+retain the installed public scene: real restricted-profile subprocesses, MCP and
+native peer delivery, three original signed records, an independent decline,
+causal follow-up, durable replay and completed owned-process cleanup. Its three
+provider calls use a deterministic HTTP fixture.
+
+The later [OpenJules #34](https://github.com/niklas-olsson/OpenJules/pull/34) merge,
+`fb76d3fb63366f2efe8aa3d1b6328c637bd9adcc`, separately qualifies shared conversation
+primitives and explicit cleanup evidence through OpenJules CI. That newer
+producer revision is not the OpenJules pin in the installed set above.
+The ordinary Polyphony server is not a compatible fallback. See the
 [agreed interface and ownership](https://github.com/niklas-olsson/OpenJules/issues/5#issuecomment-6810422689).
 
 ### Approve the private policy
@@ -302,10 +315,12 @@ Errors contain no raw provider body, stderr, credential or private path.
 
 The component tests cover real stdio and HTTP fixtures, signed same-key replay,
 crash-retained allowances, private-file refusal, genuine venv-prefix binding,
-deadline/uncertainty handling and the unchanged managed HTTP caller. They do not
-establish actual restricted-Polyphony interoperability, native peer delivery,
-live-provider quality, installed two-participant conversation or any protected
-execution authority. Those require separate cross-owner qualification.
+deadline/uncertainty handling and the unchanged managed HTTP caller. These tests
+are distinct from the installed qualification recorded above. Neither result
+qualifies live-provider judgment, public dialogue inside confined managed
+children or an actual generated forge proposal. Those remain separate work and
+acceptance criteria. Public conversation records confer no protected execution
+authority.
 
 ---
 
