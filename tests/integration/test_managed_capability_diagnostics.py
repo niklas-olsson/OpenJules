@@ -76,6 +76,7 @@ async def composed_service(tmp_path, monkeypatch, runtime_fixture, outcome_proto
     docker_fixture.info = lambda: {"SecurityOptions": []}
     child_policy = ChildPolicy(1, 1, 1, ("python",), outcome_protocol=outcome_protocol)
     policy = asdict(child_policy)
+    assert policy.pop("session_protocol") is None
     if outcome_protocol is None:
         policy.pop("outcome_protocol")
     supported = {
