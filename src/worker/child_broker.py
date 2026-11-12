@@ -116,23 +116,29 @@ class _ControlEndpoint:
                 self.request.settimeout(5)
                 self.request.sendall(struct.pack("!I", len(encoded)) + encoded)
 
-        try:
-            self.server = _UnixServer(
-                f"/proc/self/fd/{self.directory_fd}/control.sock", Handler
-            )
-            self.socket_path.chmod(0o666)
-        except BaseException:
-            os.close(self.directory_fd)
-            raise
+        self.server = None
         self.thread = threading.Thread(
             target=self._serve, daemon=True, name="root-child-control"
         )
-        self.thread.start()
+        try:
+            self.server = _UnixServer(
+                f"/proc/self/fd/{self.directory_fd}/control.sock",
+                Handler,
+                peer_uid=adapter.model.peer_uid_for_worker(worker_id),
+            )
+            self.socket_path.chmod(0o666)
+            self.thread.start()
+        except BaseException:
+            if self.server is not None:
+                self.server.server_close()
+                if self.socket_path.exists():
+                    self.socket_path.unlink()
+            os.close(self.directory_fd)
+            raise
 
     def _serve(self):
         try:
-            while not self.stop_requested.is_set():
-                self.server.handle_request()
+            self.server.serve()
         finally:
             self.server.server_close()
             if self.socket_path.exists():
@@ -141,6 +147,7 @@ class _ControlEndpoint:
 
     def stop(self):
         self.stop_requested.set()
+        self.server.stop()
 
 
 class _ChildModelContext:

@@ -152,10 +152,36 @@ Docker require separately qualified UID mappings. A mismatch fails closed;
 do not disable the credential check to work around it. Host users with access to
 the private state and the Docker daemon remain trusted.
 
-There is one serial listener per worker, with a bounded backlog and frame-read
-deadline. Endpoint creation is a trusted runtime operation tied to worker
-capacity. Guest requests cannot allocate listeners or host threads. Verify Unix
-socket availability before advertising this execution profile as ready.
+Each model, child-model, child-outcome and root-control endpoint has two fixed
+threads: an acceptor and one serialized request handler. The acceptor compares
+the kernel peer UID with the immutable endpoint binding before reading a body
+or queueing work. It can return the fixed `not_authorized` frame while an
+authorized handler is waiting for a provider or control operation. The handler
+still performs its existing live identity, canonical permission and budget
+checks. Root and child inference retain the same shared per-worker effect gate.
+
+Each endpoint admits at most one active handler and four queued authorized
+connections, plus one connection undergoing acceptance or UID rejection.
+Thus at most six accepted user-space sockets are owned per endpoint; the
+configured kernel listen backlog remains four. Frame reads and response writes
+retain their existing five-second bounds. Saturation closes the unadmitted
+connection before body parsing or effects. That closure is not a success or a
+safe automatic-retry receipt. This is bounded responsiveness under an active
+authorized call, not an availability guarantee against connection floods.
+
+Stop and queue-to-active admission share one fence. Stop closes queued sockets
+without running their handlers. The already-active handler remains owned, and
+the endpoint owner thread does not exit or relinquish its socket path and
+directory until that handler ends. Foreground broker shutdown keeps its existing
+bounded join; if work remains, the existing deferred release retains the service
+lock or child-journal release callback. A new service cannot take ownership
+while the old handler can still mutate state. An unexpected handler failure
+also stops its acceptor and remains a readiness failure, distinct from an
+intentional endpoint revocation.
+
+Endpoint creation remains a trusted runtime operation tied to worker capacity.
+Guest requests cannot allocate listeners or additional host threads. Verify
+Unix socket availability before advertising this execution profile as ready.
 
 ## Durable inference limits and recovery
 
@@ -243,6 +269,26 @@ not a skip:
 
 ```sh
 python -m pytest tests/unit/test_managed_model_socket.py
+```
+
+The bounded concurrency tests additionally check queue saturation, serialized
+outcome handling, queued-request discard, incomplete frames, startup failures,
+unexpected handler death and retained service ownership during active HTTP:
+
+```sh
+python -m pytest tests/unit/test_managed_socket_concurrency.py
+```
+
+The real Docker responsiveness regression holds an authenticated provider call
+and its original SQLite reservation, then requires a different actual UID to
+receive denial from that same socket before the provider reply is released.
+It checks that provider requests, reservations and permission checks do not
+increase. The provider and canonical permission callback are named fixtures;
+this is not live provider or Polyphony qualification.
+
+```sh
+OPENJULES_MANAGED_DOCKER_TESTS=1 \
+  python -m pytest tests/integration/test_managed_socket_responsiveness.py
 ```
 
 The real Docker test exercises the agent image and its read-only socket mount,

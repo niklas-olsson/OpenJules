@@ -7,6 +7,7 @@ The socket grants inference, never commands, task ownership or acceptance.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
@@ -219,9 +220,117 @@ class _UnixServer(socketserver.UnixStreamServer):
     request_queue_size = 4
     timeout = 0.1
 
+    def __init__(self, address, handler, *, peer_uid):
+        if type(peer_uid) is not int or not 0 <= peer_uid <= (1 << 31) - 1:
+            raise ValueError("socket endpoint requires an immutable peer UID")
+        self.peer_uid = peer_uid
+        self._stopping = threading.Event()
+        self._condition = threading.Condition()
+        self._pending = deque()
+        self._active = None
+        # One fixed handler preserves model/control/outcome serialization.
+        # The owner acceptor thread joins it before releasing endpoint ownership.
+        self._worker = threading.Thread(
+            target=self._work, daemon=True, name="worker-socket-handler"
+        )
+        self._worker_started = False
+        super().__init__(address, handler)
+
     def handle_error(self, request, client_address):
         # Socket failures and untrusted content must not print provider data.
         pass
+
+    def verify_request(self, request, client_address):
+        if self._stopping.is_set():
+            return False
+        try:
+            _, uid, _ = struct.unpack(
+                "3i",
+                request.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                ),
+            )
+            if uid == self.peer_uid:
+                return True
+            # The immutable binding is checked without a database read or body
+            # parsing, even while the only effect handler awaits its provider.
+            encoded = _json(
+                {
+                    "schema_version": 1,
+                    "request_id": "invalid",
+                    "ok": False,
+                    "error": "not_authorized",
+                }
+            ).encode()
+            request.settimeout(5)
+            request.sendall(struct.pack("!I", len(encoded)) + encoded)
+        except Exception:
+            pass
+        return False
+
+    def process_request(self, request, client_address):
+        with self._condition:
+            if not self._stopping.is_set() and len(self._pending) < 4:
+                self._pending.append((request, client_address))
+                self._condition.notify()
+                return
+        # Saturation and stop do not parse, reserve or acknowledge an operation.
+        self.shutdown_request(request)
+
+    def _work(self):
+        try:
+            while True:
+                with self._condition:
+                    while not self._pending and not self._stopping.is_set():
+                        self._condition.wait()
+                    if self._stopping.is_set():
+                        return
+                    request, address = self._pending.popleft()
+                    # Transfer queue ownership to the one active handler under
+                    # the same fence that stop uses to discard pending work.
+                    self._active = request
+                try:
+                    if not self._stopping.is_set():
+                        self.finish_request(request, address)
+                except Exception:
+                    self.handle_error(request, address)
+                except BaseException:
+                    return
+                finally:
+                    try:
+                        self.shutdown_request(request)
+                    finally:
+                        with self._condition:
+                            self._active = None
+        finally:
+            # A failed handler cannot leave a live acceptor claiming readiness.
+            self.stop()
+
+    def serve(self):
+        with self._condition:
+            if self._stopping.is_set():
+                return
+            self._worker.start()
+            self._worker_started = True
+        while not self._stopping.is_set():
+            self.handle_request()
+
+    def stop(self):
+        with self._condition:
+            self._stopping.set()
+            pending = list(self._pending)
+            self._pending.clear()
+            self._condition.notify_all()
+        for request, _ in pending:
+            self.shutdown_request(request)
+
+    def server_close(self):
+        self.stop()
+        try:
+            super().server_close()
+        finally:
+            if self._worker_started:
+                self._worker.join()
 
 
 class _Endpoint:
@@ -292,21 +401,29 @@ class _Endpoint:
                 self.request.settimeout(5)
                 self.request.sendall(struct.pack("!I", len(encoded)) + encoded)
 
-        try:
-            self.server = _UnixServer(address, Handler)
-            self.socket_path.chmod(0o666)
-        except BaseException:
-            os.close(self.directory_fd)
-            raise
+        self.server = None
         self.thread = threading.Thread(
             target=self._serve, daemon=True, name="worker-model-broker"
         )
-        self.thread.start()
+        try:
+            self.server = _UnixServer(
+                address,
+                Handler,
+                peer_uid=broker.peer_uid_for_worker(worker_id),
+            )
+            self.socket_path.chmod(0o666)
+            self.thread.start()
+        except BaseException:
+            if self.server is not None:
+                self.server.server_close()
+                if self.socket_path.exists():
+                    self.socket_path.unlink()
+            os.close(self.directory_fd)
+            raise
 
     def _serve(self):
         try:
-            while not self.stop_requested.is_set():
-                self.server.handle_request()
+            self.server.serve()
         finally:
             self.server.server_close()
             if self.socket_path.exists():
@@ -315,6 +432,7 @@ class _Endpoint:
 
     def stop(self):
         self.stop_requested.set()
+        self.server.stop()
 
 
 class ModelBroker:
