@@ -24,7 +24,7 @@ from ..worker.discussion_types import (
     CHILD_ENVIRONMENT, CLEANUP_SECONDS, CONTEXT_LIMIT, ConversationLaunch,
     Deadline, DiscussionError, Policy,
     FRAME_LIMIT, RPC_SECONDS, STARTUP_SECONDS, STDERR_LIMIT, TOOLS, WIRE_LIMIT,
-    absolute_path, canonical, fields, integer, strict_json, text,
+    absolute_path, boot_id, canonical, fields, integer, strict_json, text,
     validate_history, validate_status,
 )
 
@@ -253,6 +253,34 @@ class CleanupObserver:
             self._failed = True
 
 
+class ProcessLifecycleObserver:
+    """Trusted local durability hooks; never an owner or signalling interface.
+
+    before_start returns a caller-owned ticket before Popen. Only copied scalar
+    identity facts reach started/finished; no process handle is exposed. Hook
+    errors fail the operation without skipping the existing owner's cleanup.
+    A missing identity or negative cleanup remains unresolved, not a safe retry.
+    """
+
+    def before_start(self, stage, argv, cwd, environment, deadline):
+        raise NotImplementedError
+
+    def started(self, ticket, identity):
+        raise NotImplementedError
+
+    def finished(self, ticket, identity, confirmed):
+        raise NotImplementedError
+
+
+def _observe(function, *arguments):
+    try:
+        return function(*arguments)
+    except DiscussionError:
+        raise
+    except Exception:
+        raise DiscussionError("state_conflict") from None
+
+
 class _OwnedProcess:
     """Retain the leader PID until all group signals have been delivered."""
 
@@ -266,6 +294,24 @@ class _OwnedProcess:
         )
         self.closed = False
         self.cleanup_confirmed = False
+
+    def identity(self):
+        # The leader is still owned and unreaped, even if it already exited.
+        # Preserve the original PID until the existing group cleanup finishes.
+        try:
+            with open("/proc/" + str(self.process.pid) + "/stat", "rb") as handle:
+                raw = handle.read(4097)
+            if len(raw) > 4096:
+                raise ValueError("bounded process identity unavailable")
+            prefix, tail = raw.rsplit(b")", 1)
+            values = tail.split()
+            pid = int(prefix.split(b"(", 1)[0])
+            pgid, session, starttime = int(values[2]), int(values[3]), int(values[19])
+            if pid != self.process.pid or pgid != pid or session != pid or starttime <= 0:
+                raise ValueError("owned process identity changed")
+            return {"pid": pid, "starttime": starttime, "pgid": pgid, "boot_id": boot_id()}
+        except Exception:
+            raise DiscussionError("transport_unavailable") from None
 
     def configure(self):
         for handle in (self.process.stdin, self.process.stdout, self.process.stderr):
@@ -382,14 +428,29 @@ async def _write(handle, raw):
 
 
 @asynccontextmanager
-async def _owned(argv, cwd, *, deadline=None, cleanup=None):
+async def _owned(argv, cwd, *, deadline=None, cleanup=None, lifecycle=None, stage=None):
     process = None
     primary = None
+    cleanup_error = None
     confirmed = False
+    ticket = None
+    observed_intent = False
+    identity = None
     if cleanup is not None:
         cleanup._begin()
     try:
+        if lifecycle is not None:
+            if stage not in {"probe", "server"} or deadline is None:
+                raise DiscussionError("invalid_policy")
+            ticket = _observe(
+                lifecycle.before_start, stage, tuple(argv), cwd, dict(CHILD_ENVIRONMENT), deadline,
+            )
+            observed_intent = True
+            deadline.remaining()
         process = _OwnedProcess(argv, cwd)
+        if lifecycle is not None:
+            identity = process.identity()
+            _observe(lifecycle.started, ticket, dict(identity))
         process.configure()
         yield process
     except BaseException as error:
@@ -408,6 +469,7 @@ async def _owned(argv, cwd, *, deadline=None, cleanup=None):
                             raise DiscussionError("process_cleanup_failed")
                         confirmed = True
                     except BaseException as error:
+                        cleanup_error = error
                         if primary is not None:
                             primary.add_note("owned discussion process cleanup failed")
                         elif not isinstance(error, Exception):
@@ -418,11 +480,25 @@ async def _owned(argv, cwd, *, deadline=None, cleanup=None):
                         else:
                             raise DiscussionError("process_cleanup_failed") from None
         finally:
-            if cleanup is not None:
-                cleanup._finish(confirmed)
+            try:
+                if lifecycle is not None and observed_intent:
+                    try:
+                        _observe(
+                            lifecycle.finished, ticket,
+                            None if identity is None else dict(identity), confirmed,
+                        )
+                    except BaseException:
+                        earlier = primary if primary is not None else cleanup_error
+                        if earlier is not None:
+                            earlier.add_note("owned discussion lifecycle acknowledgement failed")
+                        else:
+                            raise
+            finally:
+                if cleanup is not None:
+                    cleanup._finish(confirmed)
 
 
-async def probe_interpreter(launch, startup, *, cleanup=None):
+async def probe_interpreter(launch, startup, *, cleanup=None, lifecycle=None):
     launch.check_binding()
     raw = bytearray()
     stderr_bytes = 0
@@ -449,7 +525,7 @@ async def probe_interpreter(launch, startup, *, cleanup=None):
     with anyio.fail_after(startup.remaining()):
         async with _owned(
             [launch.python, "-I", "-c", PROBE], launch.cwd,
-            deadline=startup, cleanup=cleanup,
+            deadline=startup, cleanup=cleanup, lifecycle=lifecycle, stage="probe",
         ) as process:
             process.process.stdin.close()
             async with anyio.create_task_group() as group:
@@ -549,7 +625,7 @@ class _Wire:
 
 
 @asynccontextmanager
-async def _transport(launch, deadline, *, cleanup=None):
+async def _transport(launch, deadline, *, cleanup=None, lifecycle=None):
     deadline.remaining()
     launch.check_binding()
     wire = _Wire()
@@ -610,7 +686,7 @@ async def _transport(launch, deadline, *, cleanup=None):
     async with _owned(
         [launch.python, "-m", "src.liminal_bridge.conversation_server",
          "--config", launch.config],
-        launch.cwd, deadline=deadline, cleanup=cleanup,
+        launch.cwd, deadline=deadline, cleanup=cleanup, lifecycle=lifecycle, stage="server",
     ) as process:
         try:
             async with incoming, receive, send, outgoing:
@@ -754,12 +830,13 @@ class ConversationClient:
 
 @asynccontextmanager
 async def connect(policy, deadline, *, expected_status=None, expected_interpreter=None,
-                  cleanup=None):
+                  cleanup=None, lifecycle=None):
     """Connect through a validated launch; optional cleanup survives any exit.
 
     Pass a CleanupObserver created before entry to inspect both owned lifetimes
     after this context finishes. A transport/application error and a positive
-    cleanup result are independent facts.
+    cleanup result are independent facts. Optional trusted lifecycle hooks can
+    retain a start intent and exact owned identity without gaining ownership.
     """
     launch = policy.launch if isinstance(policy, Policy) else policy
     if not isinstance(launch, ConversationLaunch):
@@ -768,20 +845,22 @@ async def connect(policy, deadline, *, expected_status=None, expected_interprete
         cleanup = CleanupObserver()
     elif not isinstance(cleanup, CleanupObserver):
         raise DiscussionError("invalid_policy")
+    if lifecycle is not None and not isinstance(lifecycle, ProcessLifecycleObserver):
+        raise DiscussionError("invalid_policy")
     startup = Deadline(
         min(time.time() + STARTUP_SECONDS, deadline.expires_at),
         min(time.monotonic() + STARTUP_SECONDS, deadline.monotonic_cutoff),
     )
     trusted_body_error = None
     try:
-        interpreter = await probe_interpreter(launch, startup, cleanup=cleanup)
+        interpreter = await probe_interpreter(launch, startup, cleanup=cleanup, lifecycle=lifecycle)
         if (
             expected_interpreter is not None
             and canonical(interpreter) != canonical(expected_interpreter)
         ):
             raise DiscussionError("state_conflict")
         startup.remaining()
-        async with _transport(launch, deadline, cleanup=cleanup) as (
+        async with _transport(launch, deadline, cleanup=cleanup, lifecycle=lifecycle) as (
             receive, send, wire, process,
         ):
             async with ClientSession(
