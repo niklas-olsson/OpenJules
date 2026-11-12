@@ -53,7 +53,8 @@ calls share the existing allowance and use only approved public instructions and
 selected signed messages. Private execution, completion and protected authority
 remain separate. This mode requires `initial-v1`, the matching trusted image and
 fixed public sockets; it is separate from cold clarification mode. Installation
-pins and the full public trial remain governed by the integrated acceptance record.
+pins, installed evidence and scope are recorded in the
+[qualified installed revision set](#qualified-installed-revision-set) below.
 
 CI qualifies execution, recovery and the model transport against deterministic
 provider fixtures. A configured live provider and semantic task quality require
@@ -86,9 +87,36 @@ allowance. Every model dispatch requires a new explicit host turn. Peer messages
 cannot start inference, choose tools, enroll tasks, allocate workers or publish
 code.
 
-The dedicated `polyphony-public-conversation` profile-v1 service and an installed
-conversation between independent participants are now qualified on this explicit
-three-repository revision set:
+### Qualified installed revision set
+
+The current installed qualification uses the dedicated
+`polyphony-public-conversation` profile-v1 service with this revision set:
+
+- ZPM: `8c3cb83504fc8878eb82a660614f64939262e045`
+- OpenJules: `c925dee46765d2b22c9e38b55f614fc29f8068c1`
+- Polyphony: `0cf8b4772b04269505e3e1cd41324e41409b80f9`
+
+The [ZPM #35 delivery record](https://github.com/niklas-olsson/zero-point-modulator/pull/35#issuecomment-6824429010) and its successful
+[actual-main run](https://github.com/niklas-olsson/zero-point-modulator/actions/runs/43221845468) retain the installed qualification.
+The managed-public scene covers a root, two separately granted children and an
+independent peer: attributable dialogue preserving dissent, independent
+decline/leave, refused inviter control, paired authorized/denied private reads,
+and original grants, deadlines and final captures retained after restart.
+Exact replay adds no inference or execution. Cold clarification and managed
+public participation remain separate approved profiles.
+
+The completed, declined, cold clarification and failed-child scenes retain
+bounded startup, delegation latency, context size and storage measurements,
+with separate cold-session evidence and idle CPU/RSS windows containing a
+complete controller cycle. The managed-public scene keeps its separate
+two-second idle sample without a completed-cycle claim. CPU covers the whole
+observed window, not an isolated cycle cost or performance guarantee. Warm child
+reuse remains unsupported. These trials use actual local services, Docker, MCP
+and native peer transport with deterministic model responses. They do not
+establish live-provider quality or billing, or an actual generated forge proposal.
+
+The earlier installed independent-participant qualification remains historical
+evidence on this separate revision set:
 
 - ZPM: `55dfd6a8f275a6b649fda86b2fe6f48b2321daf5`
 - OpenJules: `74429feda1f3991ce528678b74d6db5e3b3b250c`
@@ -103,8 +131,8 @@ provider calls use a deterministic HTTP fixture.
 
 The later [OpenJules #34](https://github.com/niklas-olsson/OpenJules/pull/34) merge,
 `fb76d3fb63366f2efe8aa3d1b6328c637bd9adcc`, separately qualifies shared conversation
-primitives and explicit cleanup evidence through OpenJules CI. That newer
-producer revision is not the OpenJules pin in the installed set above.
+primitives and explicit cleanup evidence through OpenJules CI. That producer
+revision was not the OpenJules pin in the historical ZPM #36 installed set.
 The ordinary Polyphony server is not a compatible fallback. See the
 [agreed interface and ownership](https://github.com/niklas-olsson/OpenJules/issues/5#issuecomment-6810422689).
 
@@ -328,8 +356,9 @@ deadline/uncertainty handling and the unchanged managed HTTP caller. These tests
 are distinct from the installed independent-participant qualification recorded
 above. The separate managed-public Docker component suite exercises a confined
 root and child with named authority, provider and stdio conversation fixtures.
-The installed root-plus-two-children public trial, live-provider judgment and an
-actual generated forge proposal remain separate evidence and acceptance claims.
+The installed root-plus-two-children public trial is recorded in the qualified
+set above. Live-provider judgment and an actual generated forge proposal remain
+unverified by that evidence.
 Public conversation records confer no protected execution authority.
 
 ---
