@@ -224,8 +224,16 @@ docker build -f docker/Dockerfile.managed-agent \
 docker image inspect --format '{{.Id}}' openjules-managed-agent:local
 ```
 
-The base digest above is a placeholder. The Dockerfile copies only the stdlib
-runner into the image. Install repository test dependencies in the approved
+The base digest above is a placeholder. The Dockerfile compiles the interpreter's
+immutable standard library during the build, using checked source hashes and
+normal optimization. This lets repeated Python helpers reuse validated bytecode
+when the container root is read-only. The build fails if compilation fails;
+`site-packages` and `dist-packages` are excluded. Cache files remain root-owned
+and readable by the task UID. The image retains `PYTHONDONTWRITEBYTECODE=1`;
+the read-only root also protects the standard library for isolated commands.
+
+The managed agent modules are copied as source after that build step, preserving
+their source-loading path. Install repository test dependencies in the approved
 image beforehand: task execution has no general networking and a read-only
 container root. The produced image must be approved and referred to by immutable
 ID or digest; a mutable build tag is not a runtime identity.
@@ -298,6 +306,11 @@ with network access disabled and no provider/authority credentials in the guest:
 OPENJULES_MANAGED_DOCKER_TESTS=1 \
   python -m pytest tests/integration/test_managed_agent_container.py
 ```
+
+It also starts a fresh isolated interpreter as the task UID, rejects any source
+compilation fallback, and imports representative standard-library modules from
+their checked-hash caches. This proves cache use under the existing confinement;
+it sets no timing threshold and makes no claim about a downstream suite's runtime.
 
 Once explicitly enabled, unavailable Docker is a test failure. The test builds
 a minimal test image, or accepts an exact `OPENJULES_MANAGED_AGENT_IMAGE_ID`.

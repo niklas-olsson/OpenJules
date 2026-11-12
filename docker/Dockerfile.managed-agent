@@ -4,6 +4,14 @@ ARG PYTHON_BASE
 FROM ${PYTHON_BASE}
 RUN apt-get update && apt-get install --yes --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# Read-only guests cannot populate missing stdlib caches between Python helpers.
+# Compile the immutable stdlib at build time, retaining source-hash validation.
+RUN python3 -I -S -c 'import compileall, os, py_compile, re, sysconfig; \
+    os.umask(0o022); \
+    roots = sorted({sysconfig.get_path(name) for name in ("stdlib", "platstdlib")}); \
+    excluded = re.compile(r"/(?:site-packages|dist-packages)(?:/|$)"); \
+    ok = all(os.path.isdir(root) and compileall.compile_dir(root, quiet=1, force=True, optimize=0, rx=excluded, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH) for root in roots); \
+    raise SystemExit(0 if ok else 1)'
 COPY src/agent/managed_runner.py /opt/openjules/managed_runner.py
 COPY src/agent/child_outcome.py /opt/openjules/child_outcome.py
 COPY src/agent/child_tools.py /opt/openjules/child_tools.py

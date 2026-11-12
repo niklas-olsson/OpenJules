@@ -75,6 +75,71 @@ def agent_image(tmp_path_factory):
     client.close()
 
 
+def test_readonly_agent_uses_checked_stdlib_caches_without_source_compilation(
+    agent_image,
+):
+    """Fresh imports must consume valid build caches, without a timing oracle."""
+    client, image = agent_image
+    program = r'''import importlib.machinery,os,sys
+assert os.getuid()==os.getgid()==65532
+assert os.environ.get('PYTHONDONTWRITEBYTECODE')=='1'
+assert sys.dont_write_bytecode and sys.flags.optimize==0
+targets=('json','subprocess','tempfile','http.client','urllib.request','unittest')
+assert all(name not in sys.modules for name in targets)
+def reject_source_compilation(*args,**kwargs):
+    raise AssertionError('stdlib import fell back to source compilation')
+importlib.machinery.SourceFileLoader.source_to_code=reject_source_compilation
+for name in targets:
+    __import__(name)
+    module=sys.modules[name]
+    cache=module.__cached__
+    with open(cache,'rb') as stream:
+        header=stream.read(16)
+    assert len(header)==16 and int.from_bytes(header[4:8],'little')==3
+    metadata=os.stat(cache)
+    assert metadata.st_uid==0 and metadata.st_mode&0o777==0o644
+    assert os.access(cache,os.R_OK) and not os.access(cache,os.W_OK)
+assert not os.path.exists('/opt/openjules/__pycache__')
+print('checked-stdlib-cache-imports-verified')
+'''
+    container = None
+    try:
+        container = client.containers.run(
+            image,
+            ["python3", "-I", "-S", "-B", "-c", program],
+            detach=True,
+            user="65532:65532",
+            working_dir="/",
+            network_mode="none",
+            read_only=True,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            privileged=False,
+            mem_limit=268435456,
+            memswap_limit=268435456,
+            pids_limit=64,
+            nano_cpus=1_000_000_000,
+            tmpfs={"/tmp": "rw,nosuid,nodev,noexec,size=16777216"},
+            environment={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},
+        )
+        result = container.wait(timeout=30)
+        output = container.logs().decode(errors="replace")
+        assert result["StatusCode"] == 0, output
+        assert output.strip() == "checked-stdlib-cache-imports-verified"
+        container.reload()
+        assert container.attrs["Config"]["User"] == "65532:65532"
+        assert container.attrs["HostConfig"]["ReadonlyRootfs"] is True
+        assert container.attrs["HostConfig"]["NetworkMode"] == "none"
+        assert container.attrs["HostConfig"]["Privileged"] is False
+        assert not any(
+            mount["Type"] in {"bind", "volume"}
+            for mount in container.attrs["Mounts"]
+        )
+    finally:
+        if container is not None:
+            container.remove(force=True)  # This test owns this exact ID.
+
+
 def test_networkless_container_runs_agent_over_own_broker_socket(
     tmp_path, monkeypatch, agent_image
 ):
