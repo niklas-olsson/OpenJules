@@ -341,10 +341,18 @@ class Policy:
             raise DiscussionError("invalid_policy") from None
         a_raw = read_private_bytes(config)
         a_config = strict_json(a_raw)
-        fields(a_config, {"schema_version", "topic", "scope_key_file", "state_directory"})
+        fields(
+            a_config, {"schema_version", "topic", "scope_key_file", "state_directory"},
+            {"bootstrap"},
+        )
         integer(a_config["schema_version"], 1, 1)
         if a_config["topic"] != value["topic"]:
             raise DiscussionError("invalid_policy")
+        if "bootstrap" in a_config:
+            bootstrap = fields(a_config["bootstrap"], {"host", "port"})
+            if bootstrap["host"] != "127.0.0.1":
+                raise DiscussionError("invalid_policy")
+            integer(bootstrap["port"], 1, 65535)
         # These are references only. B never opens A's scope secret.
         absolute_path(a_config["scope_key_file"])
         a_state = absolute_path(a_config["state_directory"])

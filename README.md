@@ -114,7 +114,7 @@ Replace the provider and approved paths before use:
 }
 ```
 
-The corresponding private A config has exactly these fields:
+The corresponding private A config requires these four fields:
 
 ```json
 {
@@ -124,6 +124,21 @@ The corresponding private A config has exactly these fields:
   "state_directory": "/srv/public-discussion/conversation-state"
 }
 ```
+
+For the paired profile's explicit single-host native topology, the operator
+may also add `"bootstrap": {"host": "127.0.0.1", "port": 12345}`. This is the
+only optional field. The host must be that literal address and the port an
+integer from 1 through 65535; aliases, other addresses, null, booleans and extra
+fields are refused. In the paired A profile this selects the configured
+loopback transport with no public-bootstrap fallback. Omission preserves its
+default transport. B's configuration validation alone does not prove native
+startup, peer discovery or receipt.
+
+The journal binds the exact original config bytes without inserting defaults
+or normalizing them. Existing four-field configurations remain valid. Keep the
+selected bootstrap endpoint and config bytes unchanged across participant
+restarts; changing the port, adding or removing the option, or changing
+whitespace refuses the existing journal instead of silently rebinding it.
 
 Polyphony owns its scope secret and signed conversation state. B reads the
 private config binding but never opens the scope-secret file. The A and B state
