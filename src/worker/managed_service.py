@@ -211,6 +211,11 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
                     raise ValueError(
                         "children require a unique approved model-backed profile"
                     )
+                if (
+                    "session_protocol" in item["policy"]
+                    and item["policy"]["session_protocol"] != "cold-clarification-v1"
+                ):
+                    raise ValueError("unsupported explicit child session protocol")
                 child_policies[key] = ChildPolicy(**item["policy"])
                 child_policies[key].validate_root(
                     profile_by_scope[key].uid, profile_by_scope[key].max_seconds

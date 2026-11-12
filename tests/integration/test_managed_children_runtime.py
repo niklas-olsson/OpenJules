@@ -351,6 +351,7 @@ def child_stack(
     seconds=60,
     child_seconds=40,
     outcome_protocol=None,
+    session_protocol=None,
     root_verify_argv=None,
     child_verify_argv=None,
 ):
@@ -398,6 +399,7 @@ def child_stack(
             else child_verify_argv
         ),
         outcome_protocol=outcome_protocol,
+        session_protocol=session_protocol,
     )
     stack = SimpleNamespace(
         client=client,

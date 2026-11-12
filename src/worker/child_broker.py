@@ -235,18 +235,26 @@ class ChildBroker:
                     raise ValueError(
                         "child endpoint directories must be owned mode0711 directories"
                     )
-            endpoint = existing
-            if existing is None or not existing.thread.is_alive():
-                context = _ChildModelContext(self, root, child_id)
-                endpoint = _Endpoint(context, child_id, directory)
-            with self.model.guard:
-                if self.model.closed:
-                    endpoint.stop()
-                    raise RuntimeUnavailable("root model broker is closed")
-                # Include these listeners in the root broker's close/join fence.
-                # The reserved key cannot be supplied as a worker UUID.
-                self.model.endpoints["/child/" + child_id] = endpoint
-            self.children[child_id] = endpoint
+            if (
+                self.supervisor.policy(root.spec).session_protocol is not None
+                and not self.supervisor.model_admission_open(root.worker_id, child_id)
+            ):
+                # Intentional model-only closure survives restoration. Outcome
+                # evidence retains its own original endpoint and replay slot.
+                if existing is not None:
+                    existing.stop()
+            else:
+                endpoint = existing
+                if existing is None or not existing.thread.is_alive():
+                    context = _ChildModelContext(self, root, child_id)
+                    endpoint = _Endpoint(context, child_id, directory)
+                with self.model.guard:
+                    if self.model.closed:
+                        endpoint.stop()
+                        raise RuntimeUnavailable("root model broker is closed")
+                    # Retain the original root broker's handler/lease ownership.
+                    self.model.endpoints["/child/" + child_id] = endpoint
+                self.children[child_id] = endpoint
             if self.supervisor.policy(root.spec).outcome_protocol is not None:
                 outcome = self.outcomes.get(child_id)
                 if outcome is None or not outcome.thread.is_alive():
@@ -260,6 +268,19 @@ class ChildBroker:
                             raise RuntimeUnavailable("root model broker is closed")
                         self.model.endpoints["/child-outcome/" + child_id] = outcome
                     self.outcomes[child_id] = outcome
+
+    def stop_child_model(self, root, child_id):
+        """Request stop and sample ownership, without joining under a lock."""
+        if self.supervisor.model_admission_open(root.worker_id, child_id):
+            raise LifecycleConflict("child model admission is not durably closed")
+        with self.guard:
+            endpoint = self.children.get(child_id)
+            if endpoint is not None:
+                endpoint.stop()
+                return not endpoint.thread.is_alive()
+            # A fresh host owner can have no old handler. Durable model rows,
+            # the inference gate and original exec still require separate proof.
+            return True
 
     def restore(self, worker_id):
         root = self.supervisor.journal.context(worker_id)

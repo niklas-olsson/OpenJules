@@ -80,6 +80,7 @@ class ChildPolicy:
     verify_argv: tuple[str, ...] = ()
     max_result_bytes: int = 4_000_000
     outcome_protocol: str | None = None
+    session_protocol: str | None = None
 
     def __post_init__(self):
         if type(self.max_children) is not int or not 1 <= self.max_children <= 64:
@@ -132,6 +133,15 @@ class ChildPolicy:
                 "child outcome protocol requires the approved managed runner"
             )
 
+        if self.session_protocol is not None and (
+            self.session_protocol != "cold-clarification-v1"
+            or self.outcome_protocol != "initial-v1"
+            or self.max_children < 2
+        ):
+            raise ValueError(
+                "cold child sessions require initial-v1 and at least two lifetime slots"
+            )
+
     @property
     def uids(self) -> range:
         return range(self.uid_start, self.uid_start + self.max_children)
@@ -147,6 +157,8 @@ class ChildPolicy:
         values = asdict(self)
         if self.outcome_protocol is None:
             values.pop("outcome_protocol")
+        if self.session_protocol is None:
+            values.pop("session_protocol")
         return digest({"protocol": PROTOCOL, "watchdog_protocol": 1, **values})
 
     @property

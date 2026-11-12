@@ -16,6 +16,10 @@ from src.polyphony.child_client import ChildAuthorityClient, ChildRejected
 from src.polyphony.managed_client import AuthorityUnavailable
 from .child_journal import ChildJournal
 from .child_outcomes import work_outcome
+from .child_sessions import (
+    ColdSessionStore, SESSION_OPERATIONS, SESSION_PROTOCOL, session_binding,
+    validate_request as validate_session_request,
+)
 from .child_runtime import ChildRuntime
 from .child_types import (
     CHILD_ID,
@@ -66,6 +70,7 @@ class ChildSupervisor:
         self.root_permission, self.root_active = root_permission, root_active
         self.boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         self.journal = ChildJournal(directory)
+        self.sessions = ColdSessionStore(self.journal)
         self.driver = ChildRuntime(runtime, self)
         self.guard = threading.RLock()
         self.operations = {}
@@ -107,6 +112,141 @@ class ChildSupervisor:
         self.journal.prepare(worker_id, spec, self.policy(spec))
         root = RootContext.bind(worker_id, spec, response, cutoff, self.boot_id)
         self.journal.bind(root)
+
+    def model_admission_open(self, worker_id, child_id):
+        """A new-call gate only; do not use from admitted-call permission checks."""
+        root = self.journal.context(worker_id)
+        policy = self.policy(root.spec)
+        if policy.session_protocol is None:
+            return True
+        return not self.sessions.admission_closed(root, policy, child_id)
+
+    def _session_enabled(self, root):
+        return self.policy(root.spec).session_protocol == SESSION_PROTOCOL
+
+    def _observe_sessions(self, root):
+        if self._session_enabled(root):
+            self.sessions.observe(
+                root, self.policy(root.spec), time.monotonic(), self.boot_id
+            )
+
+    def _handle_session(self, worker_id, payload):
+        root = self.journal.context(worker_id)
+        policy = self.policy(root.spec)
+        if not self._session_enabled(root):
+            raise ChildDenied("unsupported")
+        try:
+            validate_session_request(payload, policy)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise ChildDenied("invalid_request") from None
+        operation = payload["operation"]
+        result = {
+            "schema_version": 1, "request_id": payload["request_id"], "ok": True
+        }
+        if operation == "session_status":
+            self._root_permission(root)
+            session = self.sessions.get(root, policy, payload["session_id"])
+            for row in session["rounds"]:
+                if row["child"] is not None:
+                    # Existing observation records exec return and its terminal
+                    # logical observation in the same child-journal transaction.
+                    self.driver.observe(root, row["child"])
+            self._observe_sessions(root)
+            return result | self.sessions.project(root, policy, payload["session_id"])
+        if operation == "session_start":
+            session_id = session_binding(root, policy, payload)["session_id"]
+            prior = next(
+                (item for item in self.sessions.all(root, policy)
+                 if item["session_id"] == session_id),
+                None,
+            )
+            self._root_permission(root, admission=prior is None)
+        else:
+            session_id = payload["session_id"]
+            prior = self.sessions.get(root, policy, session_id)
+            self._root_permission(root, admission=len(prior["rounds"]) == 1)
+        lock = self._operation_lock(worker_id)
+        if not lock.acquire(blocking=False):
+            raise ChildDenied("retry_later")
+        try:
+            if operation == "session_start":
+                session_id = self.sessions.start(root, policy, payload)
+                first = self.sessions.get(root, policy, session_id)["rounds"][0]
+                child = self._resolve(root, first["intent"])
+                if child is not None and self.local_allowed(root, child, admission=True):
+                    self._admit_and_launch(root, child)
+            else:
+                current = self.sessions.get(root, policy, session_id)
+                first = current["rounds"][0]["child"]
+                if first is not None:
+                    self.driver.observe(root, first)
+                self._observe_sessions(root)
+                self.sessions.queue(root, policy, payload, time.monotonic())
+                current = self.sessions.get(root, policy, session_id)
+                self.endpoints.stop_child_model(
+                    root, current["rounds"][0]["child_id"]
+                )
+                # Queue acknowledgement never progresses a successor. Only the
+                # ordinary serialized reconciliation path can establish its fence.
+            self._observe_sessions(root)
+            return result | self.sessions.project(root, policy, session_id)
+        finally:
+            lock.release()
+
+    def _progress_sessions(self, root):
+        """The caller owns the existing per-worker operation lock."""
+        if not self._session_enabled(root):
+            return
+        policy = self.policy(root.spec)
+        self._observe_sessions(root)
+        for session in self.sessions.all(root, policy):
+            first = session["rounds"][0]
+            if not first["model_closed"]:
+                continue
+            owner_stopped = self.endpoints.stop_child_model(root, first["child_id"])
+            if (
+                session["closure"] is not None
+                or len(session["rounds"]) != 2
+                or session["rounds"][1]["state"] != "queued"
+            ):
+                continue
+            child = first["child"]
+            if (
+                not owner_stopped or child["phase"] != "exec_returned"
+                or type(child["exit_code"]) is not int or child["exit_code"] != 0
+            ):
+                continue
+            if not self.local_allowed(root, child, admission=True):
+                continue
+            self._root_permission(root, admission=True)
+            if self.model_broker is None:
+                raise RuntimeUnavailable("cold follow-up requires the shared model gate")
+            # No wait/join occurs under either lock. The context releases this
+            # exact model gate before any ordinary canonical delivery below.
+            with self.model_broker.child_followup_gate(
+                root.worker_id, root.attempt_id
+            ) as gate:
+                if gate == "busy":
+                    continue
+                if gate == "unresolved":
+                    self.sessions.block_uncertain(root, policy, session["session_id"])
+                    continue
+                if not self.endpoints.stop_child_model(root, first["child_id"]):
+                    continue
+                if not self.local_allowed(root, child, admission=True):
+                    continue
+                self.sessions.promote(
+                    root, policy, session["session_id"], time.monotonic()
+                )
+            second = self.sessions.get(
+                root, policy, session["session_id"]
+            )["rounds"][1]
+            if second["state"] != "linked":
+                continue
+            child = self._resolve(root, second["intent"])
+            if child is not None and self.local_allowed(root, child, admission=True):
+                self._admit_and_launch(root, child)
+        self._observe_sessions(root)
 
     def local_allowed(self, root, child=None, *, admission=False):
         if (
@@ -265,6 +405,17 @@ class ChildSupervisor:
         if intent["status"] == "rejected":
             return None
         policy = self.policy(root.spec)
+        if policy.session_protocol is not None:
+            self.sessions.check_intent(root, policy, intent)
+            if self.sessions.delivery_expired(
+                root, policy, intent["request_id"], time.monotonic(), self.boot_id
+            ):
+                # An unresolved grant may have reached authority already. Close
+                # admission before its original-key recovery, never mint a late
+                # successor merely because the root's later deadline remains.
+                self.journal.close_admission(
+                    root.worker_id, "cold successor interval expired", retire=True
+                )
         requested = json.loads(intent["payload"])
         if self.journal.worker(root.worker_id)["closed"]:
             # A replay after drain cannot accidentally allocate a previously
@@ -303,6 +454,11 @@ class ChildSupervisor:
         if child["phase"] in {"running", "exec_returned", "captured", "completed"}:
             return
         cutoff = self.permission(root.worker_id, child["child_id"])
+        policy = self.policy(root.spec)
+        if policy.session_protocol is not None:
+            cutoff = self.sessions.launch_cutoff(
+                root, policy, child["child_id"], cutoff, time.monotonic()
+            )
         if not self.local_allowed(root, child, admission=True):
             raise ChildDenied("not_authorized")
         if child["phase"] == "granted":
@@ -395,6 +551,8 @@ class ChildSupervisor:
         ):
             raise ChildDenied("invalid_request")
         request_id, operation = payload.get("request_id"), payload.get("operation")
+        if isinstance(operation, str) and operation in SESSION_OPERATIONS:
+            return self._handle_session(worker_id, payload)
         fields = {
             "spawn": {"instructions", "seconds", "max_turns", "capabilities"},
             "status": {"child_id"},
@@ -465,6 +623,8 @@ class ChildSupervisor:
             if not lock.acquire(timeout=0.05):
                 raise ChildDenied("retry_later")
             try:
+                if policy.session_protocol is not None:
+                    self.sessions.all(root, policy)
                 intent = self.journal.reserve(worker_id, request_id, requested, policy)
                 child = self._resolve(root, intent)
                 if child is None:
@@ -568,6 +728,7 @@ class ChildSupervisor:
                             "child permission revoked or expired",
                             retire=True,
                         )
+            self._progress_sessions(root)
         finally:
             lock.release()
 
@@ -578,6 +739,8 @@ class ChildSupervisor:
         if not lock.acquire(timeout=0.05):
             raise RuntimeUnavailable("child grant delivery is still in progress")
         try:
+            if self._session_enabled(root):
+                self.sessions.all(root, self.policy(root.spec))
             self._deliver_close(root)
             for intent in self.journal.intents(worker_id):
                 if intent["status"] != "rejected":
@@ -714,6 +877,9 @@ class ChildSupervisor:
                         termination_confirmed=True,
                         artifacts_captured=True,
                     )
+            if self._session_enabled(root):
+                self._observe_sessions(root)
+                self.sessions.validate_final(root, self.policy(root.spec))
         finally:
             lock.release()
 
