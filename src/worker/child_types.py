@@ -81,6 +81,7 @@ class ChildPolicy:
     max_result_bytes: int = 4_000_000
     outcome_protocol: str | None = None
     session_protocol: str | None = None
+    public_discussion: dict | None = None
 
     def __post_init__(self):
         if type(self.max_children) is not int or not 1 <= self.max_children <= 64:
@@ -142,6 +143,27 @@ class ChildPolicy:
                 "cold child sessions require initial-v1 and at least two lifetime slots"
             )
 
+        if self.public_discussion is not None:
+            from .managed_public_types import PublicPolicy
+
+            approved_public = PublicPolicy.parse(self.public_discussion)
+            if (
+                self.outcome_protocol != "initial-v1"
+                or self.command != type(self).__dataclass_fields__["command"].default
+                or self.max_children < 2
+                or self.session_protocol is not None
+            ):
+                raise ValueError(
+                    "managed public discussion requires initial-v1, the approved "
+                    "runner, two lifetime slots and no cold session protocol"
+                )
+            # Isolate caller-owned mappings; the retained policy fingerprint
+            # includes the complete approved block, with the original encoder.
+            object.__setattr__(
+                self, "public_discussion",
+                approved_public.document,
+            )
+
     @property
     def uids(self) -> range:
         return range(self.uid_start, self.uid_start + self.max_children)
@@ -159,6 +181,8 @@ class ChildPolicy:
             values.pop("outcome_protocol")
         if self.session_protocol is None:
             values.pop("session_protocol")
+        if self.public_discussion is None:
+            values.pop("public_discussion")
         return digest({"protocol": PROTOCOL, "watchdog_protocol": 1, **values})
 
     @property

@@ -46,6 +46,15 @@ image/profile with `initial-v1` and at least two lifetime child slots. See
 [cold clarification sessions](docs/managed-children.md#cold-clarification-sessions)
 for the bounds, tool sequence and recovery behavior.
 
+An explicitly approved `public_discussion` profile lets the root and already
+granted children use [managed public discussion](docs/managed-children.md#managed-public-discussion).
+The parent offers a turn; only its child can pull it or decline. Public model
+calls share the existing allowance and use only approved public instructions and
+selected signed messages. Private execution, completion and protected authority
+remain separate. This mode requires `initial-v1`, the matching trusted image and
+fixed public sockets; it is separate from cold clarification mode. Installation
+pins and the full public trial remain governed by the integrated acceptance record.
+
 CI qualifies execution, recovery and the model transport against deterministic
 provider fixtures. A configured live provider and semantic task quality require
 their own qualification. The older webhook, in-memory collaboration and DinD
@@ -81,13 +90,13 @@ The dedicated `polyphony-public-conversation` profile-v1 service and an installe
 conversation between independent participants are now qualified on this explicit
 three-repository revision set:
 
-- ZPM: `a8128bbf0e91fd35b9d957b46594e52dd6741681`
+- ZPM: `55dfd6a8f275a6b649fda86b2fe6f48b2321daf5`
 - OpenJules: `74429feda1f3991ce528678b74d6db5e3b3b250c`
 - Polyphony: `0cf8b4772b04269505e3e1cd41324e41409b80f9`
 
-The [ZPM #33 delivery record](https://github.com/niklas-olsson/zero-point-modulator/pull/33#issuecomment-6814724385)
-and its successful [actual-main run](https://github.com/niklas-olsson/zero-point-modulator/actions/runs/43155360667)
-retain the installed public scene: real restricted-profile subprocesses, MCP and
+The [ZPM #36 delivery record](https://github.com/niklas-olsson/zero-point-modulator/pull/36#issuecomment-6816512407)
+and its successful [actual-main run](https://github.com/niklas-olsson/zero-point-modulator/actions/runs/43165296956)
+retain the repeated installed independent-public scene: real restricted-profile subprocesses, MCP and
 native peer delivery, three original signed records, an independent decline,
 causal follow-up, durable replay and completed owned-process cleanup. Its three
 provider calls use a deterministic HTTP fixture.
@@ -316,11 +325,12 @@ Errors contain no raw provider body, stderr, credential or private path.
 The component tests cover real stdio and HTTP fixtures, signed same-key replay,
 crash-retained allowances, private-file refusal, genuine venv-prefix binding,
 deadline/uncertainty handling and the unchanged managed HTTP caller. These tests
-are distinct from the installed qualification recorded above. Neither result
-qualifies live-provider judgment, public dialogue inside confined managed
-children or an actual generated forge proposal. Those remain separate work and
-acceptance criteria. Public conversation records confer no protected execution
-authority.
+are distinct from the installed independent-participant qualification recorded
+above. The separate managed-public Docker component suite exercises a confined
+root and child with named authority, provider and stdio conversation fixtures.
+The installed root-plus-two-children public trial, live-provider judgment and an
+actual generated forge proposal remain separate evidence and acceptance claims.
+Public conversation records confer no protected execution authority.
 
 ---
 

@@ -1,7 +1,7 @@
 """Pure managed-public boundaries; no enabled host, provider or peer is claimed."""
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -52,16 +52,29 @@ def completion(output):
     }).encode()
 
 
-def test_dormant_helpers_do_not_enable_actual_child_policy_or_change_omission(tmp_path):
+def test_explicit_public_policy_requires_initial_runner_and_preserves_omitted_fingerprint(tmp_path):
     original = ordinary_policy()
     before = asdict(original), original.fingerprint, original.canonical_policy
+    historical = asdict(original)
+    for key in ("outcome_protocol", "session_protocol", "public_discussion"):
+        assert historical.pop(key) is None
+    encoded = json.dumps(
+        {"protocol": "bounded-children-v1", "watchdog_protocol": 1, **historical},
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()
+    assert original.fingerprint == hashlib.sha256(encoded).hexdigest()
+    assert replace(original, public_discussion=None).fingerprint == original.fingerprint
     block = public_document(tmp_path)
-    parsed = public.PublicPolicy.parse(block)
-    assert parsed.document == block
-    with pytest.raises(TypeError, match="public_discussion"):
-        ChildPolicy(**(asdict(original) | {"public_discussion": block}))
+    with pytest.raises(ValueError, match="requires initial-v1"):
+        replace(original, public_discussion=block)
+    enabled = replace(original, outcome_protocol="initial-v1", public_discussion=block)
+    approved = deepcopy(block)
+    block["instructions"]["proposal"] = "Unapproved later caller mutation."
+    block["server"]["scope_key_sha256"] = "0" * 64
+    assert enabled.public_discussion == approved
+    assert enabled.canonical_policy == original.canonical_policy
+    assert enabled.fingerprint != replace(original, outcome_protocol="initial-v1").fingerprint
     assert (asdict(original), original.fingerprint, original.canonical_policy) == before
-    assert "public_discussion" not in asdict(original)
 
 
 def test_public_policy_is_an_immutable_copy_and_uses_original_ascii_bytes(tmp_path):

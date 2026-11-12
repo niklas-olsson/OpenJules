@@ -48,6 +48,7 @@ def test_omitted_fingerprint_and_existing_tools_are_unchanged():
     for value in (ordinary, initial):
         old = asdict(value)
         old.pop("session_protocol")
+        assert old.pop("public_discussion") is None
         if value.outcome_protocol is None:
             old.pop("outcome_protocol")
         assert value.fingerprint == digest(

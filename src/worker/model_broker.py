@@ -337,7 +337,7 @@ class _Endpoint:
     def __init__(
         self, broker, worker_id: str, directory: Path, *, socket_name="model.sock"
     ):
-        if socket_name not in {"model.sock", "outcome.sock"}:
+        if socket_name not in {"model.sock", "outcome.sock", "public.sock"}:
             raise ValueError("unsupported host endpoint name")
         self.stop_requested = threading.Event()
         self.directory = directory
@@ -1046,6 +1046,19 @@ class ModelBroker:
                     from src.agent.child_outcome import OUTCOME_TOOL_DEFINITIONS
 
                     definitions = [*TOOL_DEFINITIONS, *OUTCOME_TOOL_DEFINITIONS]
+            if self.public_supervisor is not None:
+                with self.connection() as db:
+                    spec = WorkerSpec(**json.loads(self._worker(db, worker_id)["spec"]))
+                if self.public_supervisor.enabled(spec):
+                    from src.agent.public_tools import (
+                        ROOT_PUBLIC_TOOL_DEFINITIONS, CHILD_PUBLIC_TOOL_DEFINITIONS,
+                    )
+
+                    definitions = [
+                        *definitions,
+                        *(ROOT_PUBLIC_TOOL_DEFINITIONS if child_id is None
+                          else CHILD_PUBLIC_TOOL_DEFINITIONS),
+                    ]
             tool_names = {item["function"]["name"] for item in definitions}
             _messages(payload["messages"], tool_names)
             if self.public_supervisor is not None:

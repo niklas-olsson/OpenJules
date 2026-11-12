@@ -80,6 +80,7 @@ class ChildSupervisor:
         self.operations = {}
         self.closed = False
         self.endpoints = None  # Installed once by the separate host socket adapter.
+        self.public_supervisor = None
 
     def policy(self, spec):
         try:
@@ -95,6 +96,11 @@ class ChildSupervisor:
             return self.operations.setdefault(worker_id, threading.Lock())
 
     def prepare_worker(self, worker_id, spec, directory):
+        if (
+            getattr(self.policy(spec), "public_discussion", None) is not None
+            and self.public_supervisor is None
+        ):
+            raise RuntimeUnavailable("managed public transport is not installed")
         try:
             self.journal.worker(worker_id)
         except LifecycleConflict:
@@ -538,6 +544,12 @@ class ChildSupervisor:
         root = self.journal.context(worker_id)
         if self.closed or self.policy(root.spec).outcome_protocol is None:
             raise ChildDenied("not_authorized")
+        if (
+            getattr(self.policy(root.spec), "public_discussion", None) is not None
+            and isinstance(payload["request_id"], str)
+            and payload["request_id"].startswith("mpub1:")
+        ):
+            raise ChildDenied("invalid_request")
         child = self.journal.child(worker_id, child_id)
         try:
             report = self.journal.retain_outcome(
@@ -589,6 +601,11 @@ class ChildSupervisor:
         ):
             raise ChildDenied("invalid_request")
         root = self.journal.context(worker_id)
+        if (
+            getattr(self.policy(root.spec), "public_discussion", None) is not None
+            and request_id.startswith("mpub1:")
+        ):
+            raise ChildDenied("invalid_request")
         result = {"schema_version": 1, "request_id": request_id, "ok": True}
         if operation in {"close", "cancel"}:
             reason = payload["reason"]
@@ -706,6 +723,17 @@ class ChildSupervisor:
     ):
         try:
             self.journal.close_admission(worker_id, reason, retire=True)
+            if self.public_supervisor is not None:
+                root = self.journal.context(worker_id)
+                if self.public_supervisor.enabled(root.spec):
+                    from .managed_public_types import ManagedPublicError
+
+                    try:
+                        self.public_supervisor.retire(worker_id)
+                    except (ManagedPublicError, LifecycleConflict):
+                        # Kernel retirement must still proceed. The public
+                        # capture barrier refuses until durable closure is proven.
+                        pass
             if self.endpoints is not None:
                 self.endpoints.revoke(worker_id)
         except LifecycleConflict:
@@ -807,6 +835,10 @@ class ChildSupervisor:
                     )
                     child = self.journal.child(worker_id, child["child_id"])
                 captured = json.loads(child["capture"])
+                if self.public_supervisor is not None and self.public_supervisor.enabled(root.spec):
+                    self.public_supervisor.validate_child_capture(
+                        root, child["child_id"], json.loads(captured["contents"]["manifest"]),
+                    )
                 expected_outcome = json.loads(captured["contents"]["manifest"]).get(
                     "work_outcome"
                 )
@@ -906,7 +938,13 @@ class ChildSupervisor:
         if self.closed:
             return
         self.closed = True
-        if self.endpoints is not None:
-            self.endpoints.close(self.journal.close)
+        def close_private():
+            if self.endpoints is not None:
+                self.endpoints.close(self.journal.close)
+            else:
+                self.journal.close()
+
+        if self.public_supervisor is not None:
+            self.public_supervisor.close(close_private)
         else:
-            self.journal.close()
+            close_private()
