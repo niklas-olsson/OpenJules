@@ -782,13 +782,55 @@ class ModelBroker:
         # A known live call is busy, not a lost provider outcome. No journal or
         # canonical turn effects occur before this common root/child gate.
         with self.connection() as db:
-            self._worker(db, worker_id)
+            worker = self._worker(db, worker_id)
+            spec = WorkerSpec(**json.loads(worker["spec"]))
         with self.guard:
             gate = self.inference_locks.setdefault(worker_id, threading.Lock())
         if not gate.acquire(timeout=0.05):
             raise BrokerDenied("retry_later")
         try:
+            if (
+                child_id is not None
+                and self.child_supervisor.policy(spec).session_protocol is not None
+            ):
+                # This is a new-call admission check only. Once it succeeds,
+                # existing permission rechecks remain unchanged for this call.
+                try:
+                    admission_open = self.child_supervisor.model_admission_open(
+                        worker_id, child_id
+                    )
+                except Exception:
+                    admission_open = False
+                if not admission_open:
+                    raise BrokerDenied("not_authorized")
             return self._complete_serial(worker_id, payload, child_id)
+        finally:
+            gate.release()
+
+    @contextmanager
+    def child_followup_gate(self, worker_id, attempt_id):
+        """Borrow the existing gate without waiting or dispatching inference."""
+        with self.guard:
+            gate = self.inference_locks.setdefault(worker_id, threading.Lock())
+        if not gate.acquire(blocking=False):
+            yield "busy"
+            return
+        try:
+            with self.connection() as db:
+                row = self._worker(db, worker_id)
+                if (
+                    self.closed or row["revoked"]
+                    or row["attempt_id"] != attempt_id
+                    or row["boot_id"] != self.boot_id
+                    or row["deadline"] <= time.monotonic()
+                ):
+                    raise BrokerDenied("not_authorized")
+                unresolved = db.execute(
+                    "SELECT 1 FROM calls WHERE worker_id=? AND attempt_id=? "
+                    "AND status IN ('reserved','uncertain','child_authorizing') LIMIT 1",
+                    (worker_id, attempt_id),
+                ).fetchone()
+            yield "clear" if unresolved is None else "unresolved"
         finally:
             gate.release()
 
@@ -837,6 +879,10 @@ class ModelBroker:
                 from src.agent.child_tools import CHILD_TOOL_DEFINITIONS
 
                 definitions = [*TOOL_DEFINITIONS, *CHILD_TOOL_DEFINITIONS]
+                if self.child_supervisor.policy(spec).session_protocol is not None:
+                    from src.agent.child_tools import SESSION_TOOL_DEFINITIONS
+
+                    definitions = [*definitions, *SESSION_TOOL_DEFINITIONS]
             elif (
                 child_id is not None
                 and self.child_supervisor.policy(spec).outcome_protocol is not None

@@ -11,6 +11,14 @@ import sqlite3
 import stat
 
 from .child_types import ChildPolicy, RootContext, canonical, digest
+from .child_sessions import (
+    bind_session_grant,
+    install_session_schema,
+    retain_terminal_observation,
+    _host_instruction,
+    session_request_owner,
+    validate_existing_session_schema,
+)
 from .lifecycle import LifecycleConflict, RuntimeUnavailable, WorkerSpec
 
 
@@ -65,6 +73,12 @@ class ChildJournal:
         encoded = canonical(asdict(spec))
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT 1 FROM workers WHERE worker_id=?", (worker_id,)
+            ).fetchone()
+            validate_existing_session_schema(db)
+            if policy.session_protocol is not None:
+                install_session_schema(db, require_existing=existing is not None)
             db.execute(
                 "INSERT OR IGNORE INTO workers(worker_id,spec,policy_digest) VALUES(?,?,?)",
                 (worker_id, encoded, policy.fingerprint),
@@ -127,48 +141,68 @@ class ChildJournal:
             )
         return context
 
+    @staticmethod
+    def _capacity_available(db, worker_id, policy):
+        children = db.execute(
+            "SELECT COUNT(*) FROM children WHERE worker_id=?", (worker_id,)
+        ).fetchone()[0]
+        pending = db.execute(
+            "SELECT COUNT(*) FROM intents WHERE worker_id=? "
+            "AND child_id IS NULL AND status!='rejected'", (worker_id,)
+        ).fetchone()[0]
+        return children + pending < policy.max_children
+
+    def _reserve_in(
+        self, db, worker_id, request_id, payload, policy, *, session_owner=None
+    ):
+        # An opted-in worker cannot lose its queued request ownership merely by
+        # losing both optional tables. Only prepare of a new worker creates them.
+        if policy.session_protocol is not None:
+            install_session_schema(db, require_existing=True)
+        if (
+            policy.session_protocol is not None
+            and session_owner is None
+            and _host_instruction(payload.get("instructions"))
+        ):
+            raise LifecycleConflict("cold instruction requires its original session")
+        if session_request_owner(db, worker_id, request_id) != session_owner:
+            raise LifecycleConflict("child request key belongs to another operation")
+        encoded = canonical(payload)
+        old = db.execute(
+            "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
+            (worker_id, request_id),
+        ).fetchone()
+        if old:
+            if old["payload"] != encoded:
+                raise LifecycleConflict("child request key changed its payload")
+            return dict(old)
+        worker = db.execute(
+            "SELECT * FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        if worker is None or worker["context"] is None or worker["closed"]:
+            raise LifecycleConflict("child admission is closed")
+        if not self._capacity_available(db, worker_id, policy):
+            raise LifecycleConflict("local lifetime child limit is reserved")
+        root = json.loads(worker["context"])
+        key = "openjules-child:" + digest(
+            [worker_id, root["attempt_id"], request_id]
+        )
+        db.execute(
+            "INSERT INTO intents(worker_id,request_id,payload,delivery_key) "
+            "VALUES(?,?,?,?)",
+            (worker_id, request_id, encoded, key),
+        )
+        return dict(db.execute(
+            "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
+            (worker_id, request_id),
+        ).fetchone())
+
     def reserve(
         self, worker_id: str, request_id: str, payload: dict, policy: ChildPolicy
     ) -> dict:
-        encoded = canonical(payload)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            old = db.execute(
-                "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
-                (worker_id, request_id),
-            ).fetchone()
-            if old:
-                if old["payload"] != encoded:
-                    raise LifecycleConflict("child request key changed its payload")
-                return dict(old)
-            worker = db.execute(
-                "SELECT * FROM workers WHERE worker_id=?", (worker_id,)
-            ).fetchone()
-            if worker is None or worker["context"] is None or worker["closed"]:
-                raise LifecycleConflict("child admission is closed")
-            children = db.execute(
-                "SELECT COUNT(*) FROM children WHERE worker_id=?", (worker_id,)
-            ).fetchone()[0]
-            pending = db.execute(
-                "SELECT COUNT(*) FROM intents WHERE worker_id=? AND child_id IS NULL AND status!='rejected'",
-                (worker_id,),
-            ).fetchone()[0]
-            if children + pending >= policy.max_children:
-                raise LifecycleConflict("local lifetime child limit is reserved")
-            root = json.loads(worker["context"])
-            key = "openjules-child:" + digest(
-                [worker_id, root["attempt_id"], request_id]
-            )
-            db.execute(
-                "INSERT INTO intents(worker_id,request_id,payload,delivery_key) VALUES(?,?,?,?)",
-                (worker_id, request_id, encoded, key),
-            )
-            return dict(
-                db.execute(
-                    "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
-                    (worker_id, request_id),
-                ).fetchone()
-            )
+            return self._reserve_in(db, worker_id, request_id, payload, policy)
 
     def reject(self, worker_id: str, request_id: str):
         with self.connection() as db:
@@ -202,6 +236,8 @@ class ChildJournal:
         )
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            if policy.session_protocol is not None:
+                install_session_schema(db, require_existing=True)
             intent = db.execute(
                 "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
                 (worker_id, request_id),
@@ -255,6 +291,7 @@ class ChildJournal:
                 "UPDATE intents SET child_id=?,status='bound' WHERE worker_id=? AND request_id=?",
                 (child_id, worker_id, request_id),
             )
+            bind_session_grant(db, worker_id, request_id, response)
         return self.child(worker_id, child_id)
 
     def child(self, worker_id: str, child_id: str) -> dict:
@@ -319,6 +356,8 @@ class ChildJournal:
                 + " WHERE worker_id=? AND child_id=?",
                 (*changes.values(), worker_id, child_id),
             )
+            if changes.get("phase") in {"exec_returned", "uncertain"}:
+                retain_terminal_observation(db, worker_id, child_id)
 
     def retain_outcome(self, worker_id, child_id, request_key, outcome, summary):
         from src.agent.child_outcome import report_value

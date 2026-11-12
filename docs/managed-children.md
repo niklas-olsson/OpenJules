@@ -206,9 +206,85 @@ before reserving its immutable capture slot and again before terminal release.
 The existing whole-worker fence still precedes final capture. A report cannot
 disarm a watchdog, extend a deadline, refund a budget, clear an execution
 reference or authorize follow-up work. Summaries remain in protected records;
-they are not automatically published to public conversation. This first slice
-supports only the original private instruction. A second instruction round
-requires a separately approved persistent session contract.
+they are not automatically published to public conversation. The outcome protocol
+alone supports only the original private instruction. The separate opt-in
+session protocol below supports one bounded parent follow-up.
+
+## Cold clarification sessions
+
+An approved model profile can additionally set
+`"session_protocol": "cold-clarification-v1"` in its child policy. It requires
+`"outcome_protocol": "initial-v1"`, the default trusted child runner and
+`max_children >= 2`. Deploy the paired host implementation, build and approve an immutable image
+containing the updated guest, and use a new profile name and worker incarnation.
+Omitting the setting preserves existing policy serialization, fingerprints and
+tools. Explicit null or another protocol value is rejected. Polyphony still
+receives the same four canonical child policy fields; this adds no session
+authority or separate task budget.
+
+A session retains one original instruction and permits at most one parent
+follow-up. Each round uses a distinct canonical child, grant, UID, private
+checkout, exec and charged allocation. Each child reports its own original
+instruction at ordinal 1. The second round receives a canonical JSON instruction
+envelope containing the original instruction, the parent's clarification and
+the frozen provisional outcome of the first child. It starts a fresh checkout;
+no patch or workspace change is automatically carried forward. The parent
+remains responsible for inspecting and composing contributions.
+
+The enabled root receives three additional tools:
+
+| Tool | Required arguments and effect |
+| --- | --- |
+| `start_child_session` | `instructions`, `seconds`, `max_turns`, `capabilities`. Retains the original session and ordinary child delivery intent before contacting canonical authority. |
+| `continue_child_session` | `session_id`, `predecessor_digest`, `instructions`, `seconds`, `max_turns`. Queues the single follow-up against the exact observed predecessor. Capabilities, task, root, base and requirements revision stay fixed. |
+| `child_session_status` | `session_id`. Observes retained reports and execution state without granting or launching a successor. |
+
+Start a session, observe its report, then choose whether to continue. Only an
+explicit first-round `needs_clarification` report permits the follow-up. A
+decline, failure, missing report at exec return, nonzero exit or uncertain
+execution closes that opportunity. A second-round clarification request closes
+the session; it does not enable a third round or replacement child. Independent
+child decisions are retained, including a refusal to proceed.
+
+A follow-up first closes new model-call admission for the predecessor. A call
+already admitted under the shared model gate keeps the existing permission,
+deadline and charging rules. The original endpoint must finish its active
+handler and response write, and the child exec must return successfully, before
+the host can establish the fence and promote the queued request. Unresolved or
+uncertain root-attempt inference reservations block promotion. Reopening a
+journal preserves the closure and never recreates that model endpoint; the
+child's separate outcome endpoint remains available for its original report.
+
+The model fence is not an OS process-termination receipt. All previously armed
+watchdogs remain armed, including the predecessor's. The successor cannot extend
+the earliest existing child, root or current permission cutoff. Its requested
+seconds and turns cannot exceed the first round's request or current policy.
+Both rounds consume the existing shared inference allowance and ordinary
+canonical child budget.
+
+Queuing retains the request key but consumes no second physical or canonical
+child slot. An ordinary child may take the last lifetime slot before promotion;
+the session then records a local capacity refusal without another canonical
+grant request. Identical delivery retries retain their original keys and
+cutoffs. The guest stops on an unknown mutation outcome so host recovery can
+reconcile the original intent; it does not manufacture a replacement request.
+
+Initial and follow-up text are each bounded to 16,384 UTF-8 bytes. The complete
+encoded instruction is bounded to 65,536 bytes, and the existing outcome summary
+limit is 8,192 bytes. There are at most two rounds and one queued follow-up per
+session, and at most `max_children` retained session records, including refused
+starts. A finished child never frees its lifetime slot; a refused session still
+counts against the session-record bound.
+
+Session responses remain host-retained projections:
+`canonical_session: false` and `release_authorized: false`. A report may close
+the logical session while its child still needs final capture.
+`all_child_receipts_final` reports the original child obligations only; it is
+not root acceptance or publication permission. Final child capture preserves
+the original reports and may add canonical artifact references, but cannot
+rewrite the provisional predecessor already supplied to the successor. Missing
+or changed correlations fail closed. Service recovery resumes reconciliation
+of those retained identities, not a terminated guest loop.
 
 ## Deadlines, cancellation and final capture
 
@@ -262,7 +338,8 @@ blocked by the test environment:
 
 ```sh
 python -m pytest tests/unit/test_child_socket.py tests/unit/test_child_tools.py \
-  tests/unit/test_child_outcome_socket.py
+  tests/unit/test_child_outcome_socket.py tests/unit/test_child_session_tools.py \
+  tests/unit/test_child_session_runtime.py
 ```
 
 The Docker qualification runs two children under distinct UIDs, composes their
@@ -273,7 +350,8 @@ journal recovery after host listeners stop:
 ```sh
 OPENJULES_MANAGED_DOCKER_TESTS=1 \
   python -m pytest tests/integration/test_managed_children_runtime.py \
-    tests/integration/test_managed_child_outcomes_runtime.py
+    tests/integration/test_managed_child_outcomes_runtime.py \
+    tests/integration/test_managed_cold_sessions_runtime.py
 ```
 
 The direct sibling regression runs two actual child agents, then probes their
@@ -300,6 +378,14 @@ that root/sibling UIDs cannot report as another child and that report retries
 add no inference. Journal tests cover both report/capture interleavings and lost
 capture or terminal replies. A shared Unicode fixture checks canonical hashes
 against the paired Polyphony contract.
+
+Cold-session store tests cover transaction crash/reopen, immutable replay,
+queued-key ownership, capacity races, earlier watchdog cutoffs, sticky logical
+closure and malformed retained records. Socket and model-gate tests exercise
+bounded guest replies and the predecessor fence. The Docker scenario uses the
+real trusted runners for two rounds and retains both children through final
+capture. These tests keep logical completion, exec return, model fencing and
+whole-worker termination as separate observations.
 
 These OpenJules tests use explicitly named canonical-authority and model
 fixtures. They do not establish real Polyphony service interoperability or live

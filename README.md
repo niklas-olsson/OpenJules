@@ -36,6 +36,16 @@ them to canonical child records for reconnect. This requires the paired
 Polyphony capability and the approved image; it adds no execution permission or
 second instruction round. See the [outcome contract](docs/managed-children.md#explicit-initial-instruction-outcomes).
 
+An additional child `session_protocol: cold-clarification-v1` profile lets the
+parent answer one explicit clarification request using a fresh child. The host
+retains the original instructions and provisional predecessor, closes the first
+child's model endpoint, and requires its exec and active model handler to return
+before requesting the successor. Both children keep their original watchdogs,
+canonical charges and final capture obligations. This requires a newly approved
+image/profile with `initial-v1` and at least two lifetime child slots. See
+[cold clarification sessions](docs/managed-children.md#cold-clarification-sessions)
+for the bounds, tool sequence and recovery behavior.
+
 CI qualifies execution, recovery and the model transport against deterministic
 provider fixtures. A configured live provider and semantic task quality require
 their own qualification. The older webhook, in-memory collaboration and DinD
