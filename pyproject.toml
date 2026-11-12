@@ -21,10 +21,12 @@ dependencies = [
     "pyyaml>=6.0.1",
     "pyjwt>=2.8.0",
     "cryptography>=42.0.0",
+    "mcp==1.30.0",
 ]
 
 [project.scripts]
 openjules = "src.cli:main"
+openjules-discussion = "src.worker.public_discussion:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

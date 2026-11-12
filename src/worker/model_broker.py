@@ -28,7 +28,7 @@ from typing import Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-import httpx
+from src.worker.bounded_http import HTTPResponseRejected, post_bounded_json
 
 from src.agent.managed_runner import TOOL_DEFINITIONS
 from src.worker.lifecycle import WorkerSpec
@@ -1002,29 +1002,20 @@ class ModelBroker:
             policy.token_parameter: tokens,
         }
         try:
-            async with asyncio.timeout(remaining):
-                async with httpx.AsyncClient(
-                    trust_env=False, follow_redirects=False, timeout=remaining
-                ) as client:
-                    async with client.stream(
-                        "POST",
-                        policy.endpoint,
-                        json=body,
-                        headers={
-                            "Authorization": "Bearer " + token,
-                            "Accept-Encoding": "identity",
-                        },
-                    ) as response:
-                        if response.status_code != 200 or response.headers.get(
-                            "Content-Encoding", "identity"
-                        ) not in {"", "identity"}:
-                            raise BrokerDenied("provider_unavailable")
-                        raw = bytearray()
-                        async for part in response.aiter_raw():
-                            raw.extend(part)
-                            if len(raw) > policy.max_response_bytes:
-                                raise BrokerDenied("provider_unavailable")
-                        value = json.loads(raw, object_pairs_hook=_pairs)
+            try:
+                value = await post_bounded_json(
+                    policy.endpoint,
+                    body,
+                    {
+                        "Authorization": "Bearer " + token,
+                        "Accept-Encoding": "identity",
+                    },
+                    timeout_seconds=remaining,
+                    max_response_bytes=policy.max_response_bytes,
+                    decode=lambda raw: json.loads(raw, object_pairs_hook=_pairs),
+                )
+            except HTTPResponseRejected:
+                raise BrokerDenied("provider_unavailable") from None
             choices = value.get("choices") if isinstance(value, dict) else None
             if (
                 not isinstance(choices, list)
