@@ -332,7 +332,10 @@ def test_real_root_socket_and_child_pull_share_accounting_and_selected_signed_co
         )["slot"]
         assert offered["state"] == "offered" and offered["actor"]["status"] is None
         assert fixture.calls() == before_model
-        assert fixture.children.authority.events == before_authority
+        # An offer checks the child's existing permission without a grant or turn.
+        assert fixture.children.authority.events == before_authority + [
+            ("permission", {"child_id": child}),
+        ]
         assert fixture.view()["actors"][child]["generations"] == 0
         result = fixture.request(
             "public_pull", "mpub1:child-decision", who=child, slot_id=offered["slot_id"],
