@@ -313,6 +313,20 @@ def fresh_client(fixture):
     return PublicClient(fixture.socket_path, role="root", timeout_seconds=8)
 
 
+class OriginalKeyClient(PublicClient):
+    """Trusted retry fixture; model-visible fields never choose a request key."""
+
+    def __init__(self, fixture, request_id):
+        super().__init__(fixture.socket_path, role="root", timeout_seconds=8)
+        self.original_request_id = request_id
+        self.dispatches = []
+
+    def request(self, name, **arguments):
+        assert "request_id" not in arguments
+        self.dispatches.append((name, deepcopy(arguments)))
+        return super().request(name, request_id=self.original_request_id, **arguments)
+
+
 def test_real_root_socket_and_child_pull_share_accounting_and_selected_signed_context(host_factory):
     def answer(handler, requests):
         public_completion(
@@ -445,11 +459,20 @@ def test_unknown_publication_retry_keeps_uncertainty_on_wire_and_in_rows(
             assert owner["expires_at"] <= time.time()
         rows, wire = fixture.calls(), fixture.wire_requests()
         processes = deepcopy(original["processes"])
+        retry_client = OriginalKeyClient(fixture, key)
+        retry_tools = PublicTools(SimpleNamespace(), retry_client)
+        snapshot = database_snapshot(fixture.children.journal)
+        # An untrusted model cannot inject the transport's reserved request ID.
+        assert json.loads(retry_tools.call(effect, values | {"request_id": key})) == {
+            "ok": False, "error": "invalid_request",
+        }
+        assert retry_client.dispatches == []
+        assert database_snapshot(fixture.children.journal) == snapshot
         with pytest.raises(PublicError) as repeated:
-            PublicTools(SimpleNamespace(), fresh_client(fixture)).call(
-                effect, values | {"request_id": key},
-            )
+            retry_tools.call(effect, values)
+        assert retry_client.dispatches == [(effect, values)]
         assert repeated.value.code == "publication_uncertain"
+        assert repeated.value.request_id == key
         final = fixture.view()
         assert final["requests"][key]["state"] == "uncertain"
         assert final["requests"][key]["error"] == "publication_uncertain"
@@ -551,10 +574,11 @@ def test_accepted_original_retry_crossing_lease_closure_still_reports_uncertaint
 
         monkeypatch.setattr(fixture.public, "_lease", paused)
         outcome = []
+        retry_client = OriginalKeyClient(fixture, key)
         def repeat():
             try:
-                PublicTools(SimpleNamespace(), fresh_client(fixture)).call(
-                    "public_turn", selection() | {"request_id": key},
+                PublicTools(SimpleNamespace(), retry_client).call(
+                    "public_turn", selection(),
                 )
             except BaseException as error:
                 outcome.append(error)
@@ -588,6 +612,8 @@ def test_accepted_original_retry_crossing_lease_closure_still_reports_uncertaint
             assert not caller.is_alive()
             assert len(outcome) == 1 and isinstance(outcome[0], PublicError)
             assert outcome[0].code == "publication_uncertain"
+            assert outcome[0].request_id == key
+            assert retry_client.dispatches == [("public_turn", selection())]
             assert database_snapshot(fixture.children.journal) == snapshot
             assert fixture.calls() == calls and len(requests) == 1
         finally:
