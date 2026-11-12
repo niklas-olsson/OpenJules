@@ -800,7 +800,7 @@ class PublicStore:
             intent = fields(process["intent"], {
                 "schema_version", "stage", "launch_path", "cwd", "config_sha256",
                 "argv_sha256", "environment_sha256", "monotonic_cutoff", "boot_id",
-            }, code="state_conflict")
+            }, {"leave_recovery"}, code="state_conflict")
             integer(intent["schema_version"], 1, 1, code="state_conflict")
             finite(intent["monotonic_cutoff"], 0, 1e15, code="state_conflict")
             matches(HEX64, intent["argv_sha256"], code="state_conflict")
@@ -817,6 +817,25 @@ class PublicStore:
                 or intent["monotonic_cutoff"] > bundle["header"]["root"]["monotonic_deadline"]
             ):
                 _conflict()
+            if "leave_recovery" in intent:
+                retained_recovery = fields(intent["leave_recovery"], {
+                    "schema_version", "slot_id", "decision_request_id",
+                    "request_payload_digest", "publication_intent_digest", "actor_binding_digest",
+                }, code="state_conflict")
+                integer(retained_recovery["schema_version"], 1, 1, code="state_conflict")
+                recovery = PublicStore._leave_recovery(
+                    bundle, actor["actor_id"], intent["leave_recovery"].get("slot_id")
+                    if isinstance(intent["leave_recovery"], dict) else None,
+                )
+                decision = bundle["requests"][recovery["decision_request_id"]]
+                slot = bundle["slots"][recovery["slot_id"]]
+                if (
+                    process["generation"] != 2 or intent["leave_recovery"] != recovery
+                    or intent["monotonic_cutoff"] > min(
+                        slot["monotonic_cutoff"], decision["monotonic_cutoff"],
+                    )
+                ):
+                    _conflict()
             generations[process["actor_id"]].add(process["generation"])
             identity = process["identity"]
             if identity is not None:
@@ -853,6 +872,11 @@ class PublicStore:
                 }
                 if "probe" not in current or (
                     "server" in current and current["probe"]["state"] != "stopped"
+                ):
+                    _conflict()
+                if "server" in current and (
+                    current["server"]["intent"].get("leave_recovery")
+                    != current["probe"]["intent"].get("leave_recovery")
                 ):
                     _conflict()
                 previous = [
@@ -1508,11 +1532,71 @@ class PublicStore:
                     _save(db, "public_requests", root.worker_id, request["request_id"], request)
             return actor
 
-    def process_intent(self, root, policy, who, stage, intent):
+    @staticmethod
+    def _leave_recovery(bundle, who, slot_id):
+        """Immutable exception identity, also checked after a receipt or freeze."""
+        actor = bundle["actors"].get(who)
+        slot = bundle["slots"].get(slot_id) if isinstance(slot_id, str) else None
+        if actor is None or slot is None:
+            _conflict()
+        request = bundle["requests"].get(slot["decision_request_id"])
+        if (
+            not actor["closed"] or actor["leave_slot"] != slot_id
+            or slot["actor_id"] != who or actor["binding_digest"] is None
+            or request is None or request["actor_id"] != who
+            or request["payload"]["operation"] not in {"public_pull", "public_turn"}
+            or request["slot_id"] != slot_id
+            or slot["response"] is None or slot["response"]["kind"] != "leave"
+            or slot["publication_intent"] is None
+            or slot["publication_intent"]["kind"] != "leave"
+            or slot["publication_intent"]["request_key"] != publication_key(slot_id)
+        ):
+            _conflict()
+        return {
+            "schema_version": 1, "slot_id": slot_id,
+            "decision_request_id": request["request_id"],
+            "request_payload_digest": request["payload_digest"],
+            "publication_intent_digest": digest(slot["publication_intent"]),
+            "actor_binding_digest": actor["binding_digest"],
+        }
+
+    def process_intent(self, root, policy, who, stage, intent, *, recovery_slot=None):
         """A durable intent precedes Popen; an existing intent never relaunches."""
+        intent = object_value(canonical(intent), retained=True)
+        if "leave_recovery" in intent:
+            # Only the store derives this exception from the original decision.
+            _conflict()
         with self._transaction(root, policy) as (db, bundle):
             actor = bundle["actors"][who]
-            if bundle["header"]["closed"] or actor["closed"]:
+            if bundle["header"]["closed"] or bundle["header"]["frozen"] is not None:
+                raise ManagedPublicError("not_authorized")
+            if actor["closed"]:
+                if recovery_slot is None:
+                    raise ManagedPublicError("not_authorized")
+                recovery = self._leave_recovery(bundle, who, recovery_slot)
+                slot = bundle["slots"][recovery_slot]
+                request = bundle["requests"][recovery["decision_request_id"]]
+                if (
+                    slot["receipt"] is not None or slot["state"] not in {
+                        "response_retained", "publication_pending", "leave_pending", "uncertain",
+                    } or request["state"] not in {"accepted", "uncertain"}
+                    or actor["generations"] < 1
+                ):
+                    raise ManagedPublicError("not_authorized")
+                if (
+                    remaining(slot, root.boot_id) <= 0
+                    or remaining(request, root.boot_id) <= 0
+                    or root.monotonic_deadline <= time.monotonic()
+                    or root.deadline <= time.time()
+                ):
+                    raise ManagedPublicError("expired")
+                if intent["monotonic_cutoff"] > min(
+                    slot["monotonic_cutoff"], request["monotonic_cutoff"],
+                    root.monotonic_deadline,
+                ):
+                    _conflict()
+                intent["leave_recovery"] = recovery
+            elif recovery_slot is not None:
                 raise ManagedPublicError("not_authorized")
             if actor["config"] is None or actor["config"]["state"] != "ready":
                 _conflict()
