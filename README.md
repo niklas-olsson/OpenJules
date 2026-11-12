@@ -334,6 +334,27 @@ Public conversation records confer no protected execution authority.
 
 ---
 
+## Source and documentation map
+
+Read [AGENTS.md](AGENTS.md) for contributor guidance. Use these representative
+source entry points and existing documentation homes; keep contract details in
+the linked explanation. Update this map when routing changes.
+
+| Change | Representative source | Documentation home |
+| --- | --- | --- |
+| Service configuration, ingress and readiness | [managed_service.py](src/worker/managed_service.py), [execution_context.py](src/worker/execution_context.py) | [Managed service](docs/managed-service.md) |
+| Worker state and lifecycle API | [lifecycle.py](src/worker/lifecycle.py), [worker_lifecycle.py](src/api/worker_lifecycle.py) | [Worker lifecycle](docs/worker-lifecycle.md) |
+| Docker, source snapshots, capture and cleanup | [docker_runtime.py](src/worker/docker_runtime.py), [source_snapshot.py](src/worker/source_snapshot.py) | [Managed Docker runtime](docs/managed-docker-runtime.md) |
+| Coding tools, model access and limits | [model_broker.py](src/worker/model_broker.py), [managed_runner.py](src/agent/managed_runner.py) | [Model broker](docs/managed-model-broker.md) |
+| Child grants, cold sessions and managed public discussion | [child_supervisor.py](src/worker/child_supervisor.py), [child_client.py](src/polyphony/child_client.py), [managed_public.py](src/worker/managed_public.py) and adjacent `managed_public*.py` modules, [public_tools.py](src/agent/public_tools.py) | [Managed children](docs/managed-children.md) |
+| Composition and draft publication | [managed_composition.py](src/git_manager/managed_composition.py), [managed_publication.py](src/worker/managed_publication.py), [managed_github.py](src/forge/managed_github.py) | [Managed publication](docs/managed-publication.md) |
+| Standalone sandbox recovery | [docker_driver.py](src/sandbox/docker_driver.py), [executor.py](src/worker/executor.py) | [Sandbox recovery](docs/sandbox-recovery.md) |
+| Standalone public participant | [public_discussion.py](src/worker/public_discussion.py), [discussion_journal.py](src/worker/discussion_journal.py), [conversation_client.py](src/polyphony/conversation_client.py) | [Bounded public discussion](#bounded-public-discussion) |
+
+Polyphony owns [canonical task authority](https://github.com/niklas-olsson/keystone-polyphony/blob/main/docs/managed-runtime.md).
+ZPM owns [installation configuration](https://github.com/niklas-olsson/zero-point-modulator/blob/main/docs/single-host-installation.md),
+installed pins and [joined acceptance](https://github.com/niklas-olsson/zero-point-modulator/issues/3).
+
 ## Architecture Overview
 
 ```

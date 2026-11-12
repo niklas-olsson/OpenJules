@@ -1,10 +1,14 @@
 # Worker lifecycle contract for ZPM
 
-This is the first implementation slice of [OpenJules #3](https://github.com/niklas-olsson/OpenJules/issues/3).
-It provides a durable capacity journal, runtime adapter interface, local admission
-barrier and authenticated HTTP contract. It does not yet provide a production
-Polyphony coding worker. The default adapter reports unavailable and rejects
-launches. The existing `BackgroundTasks` executor is not a managed fallback.
+This guide covers the durable capacity journal, runtime adapter interface, local
+admission barrier and authenticated HTTP contract introduced for
+[OpenJules #3](https://github.com/niklas-olsson/OpenJules/issues/3). The
+[managed service](managed-service.md) connects this layer to Polyphony's canonical
+authority and the [managed Docker runtime](managed-docker-runtime.md).
+
+Constructing `WorkerLifecycle` without an explicitly supplied runtime still uses
+`UnavailableRuntime`: it reports unavailable and rejects launches. The legacy
+`BackgroundTasks` executor is never a managed fallback.
 
 ## Ownership
 
@@ -186,7 +190,7 @@ Stop retries observe and, when needed, resume the original pending operation.
 They never signal a known terminal incarnation again. The lifecycle module
 never deletes workspaces or artifacts.
 
-## Verification and remaining integration
+## Verification and integration scope
 
 Run:
 
@@ -204,9 +208,9 @@ A real subprocess fixture starts a process, reopens its journal, drains it,
 captures output and confirms termination. It is a lifecycle fixture, not a real
 OpenJules agent or a proof of Docker confinement or Polyphony task coordination.
 
-Production completion still requires the real adapter from
-[OpenJules #2](https://github.com/niklas-olsson/OpenJules/issues/2), runtime
-enforcement from [#4](https://github.com/niklas-olsson/OpenJules/issues/4), wiring
-every managed execution ingress through both authority and local admission, and
-the [ZPM installation trial](https://github.com/niklas-olsson/zero-point-modulator/issues/3).
-The default fail-closed behavior is intentional until those capabilities exist.
+For managed execution and its integration checks, follow the
+[managed service](managed-service.md) and [Docker runtime](managed-docker-runtime.md)
+guides. Their implemented adapters do not change the unavailable default above.
+ZPM owns [installation configuration and source pins](https://github.com/niklas-olsson/zero-point-modulator/blob/main/docs/single-host-installation.md)
+and [joined acceptance](https://github.com/niklas-olsson/zero-point-modulator/issues/3).
+Lifecycle fixture results alone do not qualify an installed revision set.
