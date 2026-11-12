@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 openjules = "src.cli:main"
+openjules-discussion = "src.worker.public_discussion:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
