@@ -489,6 +489,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", required=True)
     parser.add_argument("--max-turns", type=int, default=25)
+    parser.add_argument("--public-socket", help="opt-in actor-bound public socket")
     parser.add_argument(
         "--outcome-socket", help="opt-in child-bound initial outcome socket"
     )
@@ -496,7 +497,22 @@ def main():
         "--verify-json", help="operator-approved verification argv as JSON"
     )
     args = parser.parse_args()
+    boundary_errors = (BrokerError, ValueError, OSError)
     try:
+        public = None
+        if args.public_socket:
+            if __package__:
+                from . import public_tools as public
+            else:
+                path = Path(__file__).resolve().with_name("public_tools.py")
+                specification = importlib.util.spec_from_file_location(
+                    "_openjules_child_public", path
+                )
+                if specification is None or specification.loader is None:
+                    raise ValueError("trusted public module is unavailable")
+                public = importlib.util.module_from_spec(specification)
+                specification.loader.exec_module(public)
+            boundary_errors += (public.PublicError,)
         outcome_client = None
         if args.outcome_socket:
             if __package__:
@@ -516,15 +532,20 @@ def main():
             outcome_client = OutcomeClient(args.outcome_socket)
         requirements = sys.stdin.buffer.read(131073).decode()
         verification = json.loads(args.verify_json) if args.verify_json else None
+        tools = LocalTools(Path.cwd())
+        if public is not None:
+            tools = public.PublicTools(
+                tools, public.PublicClient(args.public_socket, role="child")
+            )
         result = run_agent(
             BrokerClient(args.socket),
-            LocalTools(Path.cwd()),
+            tools,
             requirements,
             max_turns=args.max_turns,
             verify_argv=verification,
             outcome_client=outcome_client,
         )
-    except (BrokerError, ValueError, OSError):
+    except boundary_errors:
         print(
             json.dumps(
                 {

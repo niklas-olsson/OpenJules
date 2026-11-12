@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends git ca-certi
 COPY src/agent/managed_runner.py /opt/openjules/managed_runner.py
 COPY src/agent/child_outcome.py /opt/openjules/child_outcome.py
 COPY src/agent/child_tools.py /opt/openjules/child_tools.py
+COPY src/agent/public_tools.py /opt/openjules/public_tools.py
 COPY src/agent/managed_root_runner.py /opt/openjules/managed_root_runner.py
 RUN chmod 0444 /opt/openjules/*.py
 ENV PYTHONDONTWRITEBYTECODE=1

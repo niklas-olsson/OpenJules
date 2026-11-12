@@ -16,7 +16,7 @@ import sys
 
 
 def _load_sibling(name):
-    if name not in {"child_tools", "managed_runner"}:
+    if name not in {"child_tools", "managed_runner", "public_tools"}:
         raise ValueError("unsupported trusted image module")
     path = Path(__file__).resolve().with_name(name + ".py")
     specification = importlib.util.spec_from_file_location(
@@ -45,6 +45,18 @@ else:
 ControlClient = _child.ControlClient
 ControlError = _child.ControlError
 RootTools = _child.RootTools
+_public = None
+
+
+def _public_extension():
+    global _public
+    if _public is None:
+        if __package__:
+            from . import public_tools
+            _public = public_tools
+        else:
+            _public = _load_sibling("public_tools")
+    return _public
 
 
 def run_root(
@@ -56,14 +68,19 @@ def run_root(
     max_turns=25,
     verify_argv=None,
     legacy=None,
+    public_client=None,
 ):
     """Compose the existing agent loop; explicit dependencies support tests."""
     legacy = legacy if legacy is not None else _load_sibling("managed_runner")
     tools = RootTools(local_tools, control)
     try:
+        active_tools = (
+            _public_extension().PublicTools(tools, public_client)
+            if public_client is not None else tools
+        )
         return legacy.run_agent(
             model_client,
-            tools,
+            active_tools,
             requirements,
             max_turns=max_turns,
             verify_argv=verify_argv,
@@ -87,6 +104,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--socket", required=True)
     parser.add_argument("--control-socket", required=True)
+    parser.add_argument("--public-socket")
     parser.add_argument("--max-turns", type=int, default=25)
     parser.add_argument("--control-timeout-seconds", type=float, default=30)
     parser.add_argument("--verify-json")
@@ -95,7 +113,13 @@ def main(argv=None):
     previous = signal.signal(signal.SIGTERM, _terminate)
     control = None
     entered_runner = False
+    boundary_errors = (legacy.BrokerError, ControlError, ValueError, OSError)
     try:
+        public_client = None
+        if args.public_socket:
+            public = _public_extension()
+            boundary_errors += (public.PublicError,)
+            public_client = public.PublicClient(args.public_socket, role="root")
         control = ControlClient(
             args.control_socket, timeout_seconds=args.control_timeout_seconds
         )
@@ -112,11 +136,12 @@ def main(argv=None):
             max_turns=args.max_turns,
             verify_argv=verification,
             legacy=legacy,
+            public_client=public_client,
         )
     except KeyboardInterrupt:
         print(json.dumps({"event": "root_agent_interrupted"}), flush=True)
         return 130
-    except (legacy.BrokerError, ControlError, ValueError, OSError):
+    except boundary_errors:
         print(
             json.dumps(
                 {
