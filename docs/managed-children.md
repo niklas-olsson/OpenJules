@@ -1,8 +1,14 @@
 # Bounded child agents in a managed worker
 
 An explicitly approved model profile can run one level of child coding agents
-inside its existing worker container. The root asks for a canonical child grant,
-the trusted host admits that exact child, and the child edits its own checkout.
+inside its existing worker container. Rather than implying POSIX process-tree
+hierarchies (`fork()`, process trees), this subsystem implements capability
+attenuation: a primary lease holder sub-allocates a bounded slice of authority
+and budget via a `DelegatedGrant` (or `Subgrant`/`SubLease`). This terminology
+communicates capability-based delegation consistent with FencedLedger leases.
+
+The root asks for a canonical child grant (`DelegatedGrant`), the trusted host
+admits that exact delegated capability, and the delegate edits its own checkout.
 The root can read provisional child patches and logs and compose the result in
 its own checkout. Polyphony remains the authority for requirements, grants,
 budgets, artifacts and review. ZPM still counts one worker for the entire group.

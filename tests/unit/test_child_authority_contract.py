@@ -10,9 +10,14 @@ from src.polyphony.managed_client import AuthorityUnavailable, ManagedAuthorityC
 from src.worker.child_journal import ChildJournal
 from src.worker.child_types import (
     ChildPolicy,
+    DelegatedGrant,
+    DelegatedGrantBinding,
     RootContext,
+    Subgrant,
+    SubLease,
     digest,
     text_hash,
+    verify_delegated_grant,
     verify_grant,
 )
 from src.worker.lifecycle import LifecycleConflict, WorkerSpec
@@ -122,6 +127,24 @@ def test_policy_uid_and_exact_capability_boundary():
                 "child_policy": p.canonical_policy | {"max_children": 3},
             }
         )
+
+
+def test_delegated_grant_capability_attenuation():
+    root, p, response = context(), policy(), grant()
+    delegated = verify_delegated_grant(response, root, p, request())
+    assert isinstance(delegated, DelegatedGrant)
+    assert isinstance(delegated, Subgrant)
+    assert isinstance(delegated, SubLease)
+    assert isinstance(delegated.binding, DelegatedGrantBinding)
+    assert delegated.child_id == response["binding"]["child_id"]
+    assert delegated.grant_digest == response["binding"]["grant_digest"]
+    assert delegated.instructions_digest == response["binding"]["instructions_digest"]
+    assert delegated.instructions == response["instructions"]
+    assert delegated.launch_allowed is True
+    assert delegated.remaining_seconds == 9
+    assert delegated.reason == "allowed"
+    assert delegated.binding.to_dict() == response["binding"]
+    assert delegated.to_dict() == response
 
 
 def test_immutable_grant_replay_after_revocation():

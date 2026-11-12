@@ -323,27 +323,25 @@ class RootContext:
         return cls(**(value | {"spec": WorkerSpec(**value["spec"])}))
 
 
-GRANT_FIELDS = {
-    "child_id",
-    "root_attempt_id",
-    "parent_attempt_id",
-    "task_id",
-    "deployment_id",
-    "repository",
-    "runtime_principal",
-    "worker_id",
-    "profile",
-    "profile_digest",
-    "requirements_revision",
-    "base",
-    "launch_key",
-    "allocated_seconds",
-    "deadline",
-    "max_turns",
-    "capabilities",
-    "instructions_digest",
-    "grant_digest",
-}
+from .delegated_grant import (  # noqa: E402
+    DelegatedGrant,
+    DelegatedGrantBinding,
+    GRANT_FIELDS,
+    SubLease,
+    Subgrant,
+)
+
+
+def verify_delegated_grant(
+    response: dict,
+    root: RootContext,
+    policy: ChildPolicy,
+    requested: Mapping | None = None,
+    original: Mapping | None = None,
+) -> DelegatedGrant:
+    """Validate immutable canonical content and return a typed DelegatedGrant."""
+    verified_dict = verify_grant(response, root, policy, requested, original)
+    return DelegatedGrant.from_response(verified_dict)
 
 
 def verify_grant(
