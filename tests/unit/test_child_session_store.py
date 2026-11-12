@@ -1103,7 +1103,9 @@ def test_retained_record_decoder_normalizes_distinct_bounded_failures(case):
         with pytest.raises(UnicodeEncodeError):
             value.encode("utf-8")
     elif case == "nested-json":
-        depth = sys.getrecursionlimit() + 100
+        # Python 3.12 separates builtin parser recursion from Python call depth.
+        # Keep real decoder pressure fixed and well below the record byte bound.
+        depth = 8192
         value = '{"value":' + "[" * depth + "0" + "]" * depth + "}"
         assert len(value.encode("utf-8")) < 262144
         with pytest.raises(RecursionError):
