@@ -20,6 +20,10 @@ from .child_sessions import (
     validate_existing_session_schema,
 )
 from .lifecycle import LifecycleConflict, RuntimeUnavailable, WorkerSpec
+from .managed_public_journal import (
+    PUBLIC_SCHEMA_BIT, PublicStore, optional_schema, ordinary_request_key,
+    prepare_public_worker,
+)
 
 
 class ChildJournal:
@@ -79,6 +83,13 @@ class ChildJournal:
             validate_existing_session_schema(db)
             if policy.session_protocol is not None:
                 install_session_schema(db, require_existing=existing is not None)
+            if getattr(policy, "public_discussion", None) is not None:
+                prepare_public_worker(db, worker_id, policy, require_existing=existing is not None)
+            elif optional_schema(db) & PUBLIC_SCHEMA_BIT:
+                if db.execute(
+                    "SELECT 1 FROM public_workers WHERE worker_id=?", (worker_id,),
+                ).fetchone() is not None:
+                    raise LifecycleConflict("ordinary worker cannot adopt retained public state")
             db.execute(
                 "INSERT OR IGNORE INTO workers(worker_id,spec,policy_digest) VALUES(?,?,?)",
                 (worker_id, encoded, policy.fingerprint),
@@ -88,6 +99,8 @@ class ChildJournal:
             ).fetchone()
             if row["spec"] != encoded or row["policy_digest"] != policy.fingerprint:
                 raise LifecycleConflict("child worker immutable policy changed")
+            if getattr(policy, "public_discussion", None) is not None:
+                PublicStore(self)._checked(db, worker_id, policy)
 
     def worker(self, worker_id: str) -> dict:
         with self.connection() as db:
@@ -159,6 +172,9 @@ class ChildJournal:
         # losing both optional tables. Only prepare of a new worker creates them.
         if policy.session_protocol is not None:
             install_session_schema(db, require_existing=True)
+        ordinary_request_key(db, worker_id, request_id)
+        if getattr(policy, "public_discussion", None) is not None:
+            PublicStore(self)._checked(db, worker_id, policy)
         if (
             policy.session_protocol is not None
             and session_owner is None
@@ -238,6 +254,9 @@ class ChildJournal:
             db.execute("BEGIN IMMEDIATE")
             if policy.session_protocol is not None:
                 install_session_schema(db, require_existing=True)
+            ordinary_request_key(db, worker_id, request_id)
+            if getattr(policy, "public_discussion", None) is not None:
+                PublicStore(self)._checked(db, worker_id, policy)
             intent = db.execute(
                 "SELECT * FROM intents WHERE worker_id=? AND request_id=?",
                 (worker_id, request_id),
@@ -366,6 +385,7 @@ class ChildJournal:
         encoded = canonical(report)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            ordinary_request_key(db, worker_id, request_key)
             child = db.execute(
                 "SELECT * FROM children WHERE worker_id=? AND child_id=?",
                 (worker_id, child_id),

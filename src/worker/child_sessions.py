@@ -241,53 +241,22 @@ def predecessor_snapshot(child):
 
 
 def session_tables_present(db):
-    version = db.execute("PRAGMA user_version").fetchone()[0]
-    names = {
-        row[0] for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('cold_sessions','cold_rounds')"
-        )
-    }
-    if (
-        version not in {0, SESSION_SCHEMA_VERSION}
-        or (version == 0 and names)
-        or (
-            version == SESSION_SCHEMA_VERSION
-            and names != {"cold_sessions", "cold_rounds"}
-        )
-    ):
-        raise LifecycleConflict("cold-session schema marker is inconsistent")
-    return version == SESSION_SCHEMA_VERSION
+    from .managed_public_journal import optional_schema
+
+    return bool(optional_schema(db) & SESSION_SCHEMA_VERSION)
 
 
 def install_session_schema(db, *, require_existing):
-    present = session_tables_present(db)
-    if not present:
-        if require_existing:
-            raise LifecycleConflict("existing session worker lacks its recovery schema")
-        if not db.in_transaction:
-            raise LifecycleConflict("session schema requires the worker transaction")
-        db.execute(SESSION_SQL)
-        db.execute(ROUND_SQL)
-        db.execute("PRAGMA user_version=1")
-    for name, columns, sql in (
-        ("cold_sessions", SESSION_COLUMNS, SESSION_SQL),
-        ("cold_rounds", ROUND_COLUMNS, ROUND_SQL),
-    ):
-        actual = tuple(row[1] for row in db.execute("PRAGMA table_info(" + name + ")"))
-        saved = db.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)
-        ).fetchone()
-        if actual != columns or saved is None or saved[0] != sql:
-            raise LifecycleConflict("cold-session schema does not match its protocol")
+    from .managed_public_journal import install_optional_schema
+
+    if require_existing and not session_tables_present(db):
+        raise LifecycleConflict("existing session worker lacks its recovery schema")
+    install_optional_schema(db, SESSION_SCHEMA_VERSION, require_existing=require_existing)
 
 
 def validate_existing_session_schema(db):
-    """Inspect optional global state without enabling an omitted policy."""
-    present = session_tables_present(db)
-    if present:
-        install_session_schema(db, require_existing=True)
-    return present
+    """Inspect the whole optional registry without enabling an omitted policy."""
+    return session_tables_present(db)
 
 
 def session_request_owner(db, worker_id, request_id):
