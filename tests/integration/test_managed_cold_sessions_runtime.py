@@ -86,7 +86,7 @@ def guest_python(container, uid, script, *arguments):
     result = container.exec_run(
         ["python3", "-I", "-S", "-c", script, *arguments],
         user=f"{uid}:{uid}",
-        workdir="/workspace/run/repo",
+        workdir="/",
         privileged=False,
     )
     assert result.exit_code == 0, result.output.decode(errors="replace")
