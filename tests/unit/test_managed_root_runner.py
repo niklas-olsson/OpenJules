@@ -198,3 +198,170 @@ def test_main_closes_admission_when_input_validation_fails(monkeypatch):
         == 4
     )
     assert operations == [("close", {"reason": "root runner setup failed"})]
+
+
+def test_public_root_composes_existing_control_and_ordinary_verification(tmp_path):
+    from src.agent.public_tools import PublicClient
+    from tests.unit.test_public_tools import actor, history, success
+
+    legacy = runner._load_sibling("managed_runner")
+    (tmp_path / "AGENTS.md").write_text("Use the existing child and verification boundaries.\n")
+    script = [
+        tool("public_read", {"after": 0, "stream_id": None, "watch_seconds": 0}),
+        tool("spawn_child", {"instructions": "Ordinary child work.", "seconds": 20,
+                             "max_turns": 2, "capabilities": []}),
+        tool("finish", {"summary": "Observed public history and retained ordinary controls."}),
+    ]
+    histories = []
+
+    def complete(messages):
+        histories.append(json.loads(json.dumps(messages)))
+        assert len(histories) <= len(script), "public observation added an inference"
+        return script[len(histories) - 1]
+
+    def private_reply(request, _number):
+        if request["operation"] == "spawn":
+            return spawned(request)
+        assert request["operation"] == "close"
+        return reply(request, admission_open=False)
+
+    with server(private_reply) as private:
+        with server(lambda request, _: success(request, history(actor("root")))) as public:
+            code = runner.run_root(
+                SimpleNamespace(complete=complete), legacy.LocalTools(tmp_path),
+                ControlClient(private.path), "Use the explicitly approved public observation.",
+                max_turns=3, legacy=legacy, public_client=PublicClient(public.path, role="root"),
+                verify_argv=[sys.executable, "-c", "open('verified.txt','w').write('checked')"],
+            )
+            assert code == 0
+            assert (tmp_path / "verified.txt").read_text() == "checked"
+            assert len(histories) == 3
+            assert [r["operation"] for r in public.requests] == ["public_read"]
+            assert [r["operation"] for r in private.requests] == ["spawn", "close"]
+            assert json.loads([
+                m["content"] for m in histories[1] if m["role"] == "tool"
+            ][0])["execution_authorized"] is False
+
+
+@pytest.mark.parametrize("close_uncertain", [False, True])
+def test_public_root_uncertainty_preserves_original_error_and_closes_only_private_admission(
+    tmp_path, close_uncertain
+):
+    from src.agent.public_tools import PublicClient, PublicError
+    from tests.unit.test_public_tools import refusal, selection
+
+    legacy = runner._load_sibling("managed_runner")
+    (tmp_path / "AGENTS.md").write_text("Unknown public effects stop the agent.\n")
+    histories, original_errors = [], []
+
+    def complete(messages):
+        histories.append(json.loads(json.dumps(messages)))
+        assert len(histories) == 1, "uncertain public publication reached another model call"
+        return tool("public_turn", selection())
+
+    def private_reply(request, _number):
+        assert request["operation"] == "close"
+        if close_uncertain:
+            return reply(request, ok=False, error="uncertain")
+        return reply(request, admission_open=False)
+
+    with server(private_reply) as private:
+        with server(lambda request, _: refusal(request, "publication_uncertain")) as public:
+            actual = PublicClient(public.path, role="root")
+
+            class ObservedClient:
+                role = "root"
+
+                def request(self, *args, **kwargs):
+                    try:
+                        return actual.request(*args, **kwargs)
+                    except PublicError as exc:
+                        original_errors.append(exc)
+                        raise
+
+            with pytest.raises(PublicError) as error:
+                runner.run_root(
+                    SimpleNamespace(complete=complete), legacy.LocalTools(tmp_path),
+                    ControlClient(private.path), "Use one explicitly selected public turn.",
+                    max_turns=3, legacy=legacy, public_client=ObservedClient(),
+                )
+            assert original_errors == [error.value]
+            assert error.value is original_errors[0]
+            assert error.value.code == "publication_uncertain"
+            assert error.value.request_id == public.requests[0]["request_id"]
+            assert len(histories) == 1
+            assert [r["operation"] for r in public.requests] == ["public_turn"]
+            assert [r["operation"] for r in private.requests] == ["close"]
+
+
+def test_public_root_main_selects_fixed_role_and_closes_after_uncertainty(
+    tmp_path, monkeypatch, capsys
+):
+    from src.agent import managed_runner as legacy
+    from src.agent import public_tools as public_module
+    from tests.unit.test_public_tools import refusal, selection
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("Root public extension fixture.\n")
+    constructors, histories = [], []
+    actual_client = public_module.PublicClient
+
+    def create_client(path, **kwargs):
+        constructors.append((path, kwargs))
+        return actual_client(path, **kwargs)
+
+    def complete(messages):
+        histories.append(json.loads(json.dumps(messages)))
+        assert len(histories) == 1
+        return tool("public_turn", selection())
+
+    def load(name):
+        assert name == "managed_runner"
+        return legacy
+
+    monkeypatch.setattr(runner, "_load_sibling", load)
+    monkeypatch.setattr(runner, "_public", None)
+    monkeypatch.setattr(public_module, "PublicClient", create_client)
+    monkeypatch.setattr(legacy, "BrokerClient", lambda _path: SimpleNamespace(complete=complete))
+    monkeypatch.setattr(runner.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"Approved public root turn")))
+    with server(lambda request, _: reply(request, admission_open=False)) as private:
+        with server(lambda request, _: refusal(request, "provider_uncertain")) as public:
+            assert runner.main([
+                "--socket", "/fixture-model.sock", "--control-socket", private.path,
+                "--public-socket", public.path, "--max-turns", "3",
+            ]) == 4
+            assert constructors == [(public.path, {"role": "root"})]
+            assert [r["operation"] for r in private.requests] == ["close"]
+            assert [r["operation"] for r in public.requests] == ["public_turn"]
+            assert len(histories) == 1
+    assert [json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()] == [
+        "root_agent_failed",
+    ]
+
+
+def test_ordinary_root_omission_never_loads_public_extension(tmp_path, monkeypatch):
+    legacy = runner._load_sibling("managed_runner")
+    (tmp_path / "AGENTS.md").write_text("Ordinary root profile.\n")
+
+    def forbidden():
+        pytest.fail("ordinary root unexpectedly loaded public extension")
+
+    monkeypatch.setattr(runner, "_public_extension", forbidden)
+    with server(lambda request, _: reply(request, admission_open=False)) as fixture:
+        assert runner.run_root(
+            SimpleNamespace(complete=lambda _messages: tool("finish", {"summary": "Ordinary."})),
+            legacy.LocalTools(tmp_path), ControlClient(fixture.path),
+            "Ordinary root task.", max_turns=1, legacy=legacy,
+        ) == 0
+        assert [request["operation"] for request in fixture.requests] == ["close"]
+
+
+def test_public_image_sibling_loading_ignores_repository_module(tmp_path, monkeypatch):
+    (tmp_path / "public_tools.py").write_text("raise RuntimeError('guest replacement loaded')\n")
+    monkeypatch.chdir(tmp_path)
+    loaded = runner._load_sibling("public_tools")
+    assert Path(loaded.__file__).resolve().parent == Path(runner.__file__).resolve().parent
+    assert callable(loaded.PublicClient)
+    assert {item["function"]["name"] for item in loaded.ROOT_PUBLIC_TOOL_DEFINITIONS} == {
+        "public_activate", "public_turn", "public_status", "public_read", "public_invite",
+    }

@@ -516,3 +516,140 @@ def test_local_tools_bound_output_time_and_paths(tmp_path):
 def test_unsafe_model_endpoints_rejected(endpoint):
     with pytest.raises(ValueError):
         ModelPolicy(endpoint, "model", "env:MODEL_TOKEN")
+
+
+def test_public_guest_composes_existing_loop_and_ordinary_verification(tmp_path):
+    from src.agent.public_tools import PublicClient, PublicTools
+    from tests.unit.test_public_tools import actor, history, server, success
+
+    (tmp_path / "AGENTS.md").write_text("Use the existing verification command.\n")
+    script = [
+        message("public_read", after=0, stream_id=None, watch_seconds=0),
+        message("finish", summary="Public observation and ordinary work complete."),
+    ]
+    seen = []
+
+    def complete(messages):
+        seen.append(json.loads(json.dumps(messages)))
+        assert len(seen) <= len(script), "public observation added an inference"
+        return script[len(seen) - 1]
+
+    with server(lambda request, _: success(request, history(actor()))) as fixture:
+        tools = PublicTools(LocalTools(tmp_path), PublicClient(fixture.path, role="child"))
+        code = run_agent(
+            SimpleNamespace(complete=complete), tools, "Read the approved public history.",
+            max_turns=2,
+            verify_argv=[sys.executable, "-c", "open('verified.txt','w').write('checked')"],
+        )
+        assert code == 0
+        assert (tmp_path / "verified.txt").read_text() == "checked"
+        assert len(seen) == 2
+        assert [r["operation"] for r in fixture.requests] == ["public_read"]
+        observed = [m for m in seen[1] if m["role"] == "tool"]
+        assert len(observed) == 1
+        assert json.loads(observed[0]["content"])["execution_authorized"] is False
+
+
+@pytest.mark.parametrize("code", ["provider_uncertain", "publication_uncertain"])
+def test_public_child_main_stops_on_effect_uncertainty_without_new_model_call(
+    tmp_path, monkeypatch, capsys, code
+):
+    import io
+    from src.agent import managed_runner as child_runner
+    from src.agent import public_tools as public
+    from tests.unit.test_public_tools import SLOT, refusal, server
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("Only approved operations.\n")
+    calls, constructors = [], []
+    actual_client = public.PublicClient
+
+    def create_client(path, **kwargs):
+        constructors.append((path, kwargs))
+        return actual_client(path, **kwargs)
+
+    def complete(messages):
+        calls.append(json.loads(json.dumps(messages)))
+        assert len(calls) == 1, "an uncertain public effect reached another model call"
+        return message("public_pull", slot_id=SLOT)
+
+    monkeypatch.setattr(public, "PublicClient", create_client)
+    monkeypatch.setattr(child_runner, "BrokerClient", lambda _path: SimpleNamespace(complete=complete))
+    monkeypatch.setattr(child_runner.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"Approved public pull")))
+    with server(lambda request, _: refusal(request, code)) as fixture:
+        monkeypatch.setattr(child_runner.sys, "argv", [
+            "managed_runner.py", "--socket", "/fixture-model.sock",
+            "--public-socket", fixture.path, "--max-turns", "3",
+        ])
+        with pytest.raises(SystemExit) as stopped:
+            child_runner.main()
+        assert stopped.value.code == 4
+        assert constructors == [(fixture.path, {"role": "child"})]
+        assert len(calls) == len(fixture.requests) == 1
+        assert fixture.requests[0]["operation"] == "public_pull"
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [event["event"] for event in events] == ["agent_failed"]
+
+
+def test_child_main_omission_never_constructs_public_tools(tmp_path, monkeypatch):
+    import io
+    from src.agent import managed_runner as child_runner
+    from src.agent import public_tools as public
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("ordinary child unexpectedly constructed public transport")
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("Ordinary child profile.\n")
+    monkeypatch.setattr(public, "PublicClient", forbidden)
+    monkeypatch.setattr(public, "PublicTools", forbidden)
+    calls = []
+
+    def complete(messages):
+        calls.append(json.loads(json.dumps(messages)))
+        return message("finish", summary="Ordinary completion.")
+
+    monkeypatch.setattr(child_runner, "BrokerClient", lambda _path: SimpleNamespace(complete=complete))
+    monkeypatch.setattr(child_runner.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"Ordinary task")))
+    monkeypatch.setattr(child_runner.sys, "argv", [
+        "managed_runner.py", "--socket", "/fixture-model.sock", "--max-turns", "1",
+    ])
+    with pytest.raises(SystemExit) as stopped:
+        child_runner.main()
+    assert stopped.value.code == 0
+    assert len(calls) == 1
+
+
+def test_public_composition_preserves_sole_terminal_outcome_rule(tmp_path):
+    from src.agent.public_tools import PublicClient, PublicTools
+    from tests.unit.test_public_tools import SLOT, server
+
+    (tmp_path / "AGENTS.md").write_text("Terminal outcome must remain a sole tool call.\n")
+    mixed = message("public_pull", slot_id=SLOT)
+    terminal = message("report_outcome", outcome="declined", summary="Explicit private decline.")
+    mixed["tool_calls"].append({**terminal["tool_calls"][0], "id": "second-call"})
+    script = [mixed, terminal]
+    histories, reports = [], []
+
+    def complete(messages):
+        histories.append(json.loads(json.dumps(messages)))
+        assert len(histories) <= 2
+        return script[len(histories) - 1]
+
+    with server(lambda *_: pytest.fail("mixed terminal response dispatched a public effect")) as fixture:
+        code = run_agent(
+            SimpleNamespace(complete=complete),
+            PublicTools(LocalTools(tmp_path), PublicClient(fixture.path, role="child")),
+            "Retain the existing private outcome semantics.", max_turns=2,
+            outcome_client=SimpleNamespace(report=lambda *values: reports.append(values)),
+            verify_argv=[sys.executable, "-c", "open('unexpected-verification','w').write('bad')"],
+        )
+        assert code == 0
+        assert fixture.requests == []
+        assert reports == [("declined", "Explicit private decline.")]
+        assert len(histories) == 2
+        assert len([
+            item for item in histories[1] if item["role"] == "tool"
+            and "terminal child outcome must be the only call" in item["content"]
+        ]) == 2
+        assert not (tmp_path / "unexpected-verification").exists()

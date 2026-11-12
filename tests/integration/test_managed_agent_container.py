@@ -54,6 +54,7 @@ def agent_image(tmp_path_factory):
             "managed_runner.py",
             "managed_root_runner.py",
             "child_tools.py",
+            "public_tools.py",
             "child_outcome.py",
         ):
             shutil.copyfile(repository / "src/agent" / name, build / "src/agent" / name)
