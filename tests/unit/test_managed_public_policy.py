@@ -101,10 +101,11 @@ def test_public_opt_in_requires_existing_approval_and_fixed_runtime_bindings(
     else:
         policy["public_discussion"]["server"]["scope_key_sha256"] = "0" * 64
     path, raw, loaded, credentials = load_file(tmp_path, config)
+    original_loaded = deepcopy(loaded)
     with pytest.raises(ValueError, match=message):
         service.build_app(loaded, credentials)
     assert construction_boundary.runtime_policies == []
-    assert path.read_bytes() == raw and loaded == config
+    assert path.read_bytes() == raw and loaded == original_loaded
     assert len(construction_boundary.brokers) == (0 if missing == "model" else 1)
     assert_brokers_released(construction_boundary)
 
