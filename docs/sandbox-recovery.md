@@ -1,6 +1,16 @@
 # Command deadlines and retained sandbox work
 
-This change implements a bounded Docker command exchange and a capture-before-cleanup contract. It is a partial implementation of [OpenJules #4](https://github.com/niklas-olsson/OpenJules/issues/4). The full confined coding profile and real Docker verification remain outstanding.
+This guide describes the standalone `SandboxManager` in
+[src/sandbox/docker_driver.py](../src/sandbox/docker_driver.py), originally
+introduced as bounded command-exchange and capture-before-cleanup work for
+[OpenJules #4](https://github.com/niklas-olsson/OpenJules/issues/4). The procedures
+below retain that manager's local accounting and trusted capture acknowledgement.
+
+Managed installations use the separate [managed service](managed-service.md) and
+[managed Docker runtime](managed-docker-runtime.md), with durable journals,
+profile-specific confinement, capture and explicit host cleanup. Use those
+guides for managed workers; the standalone capture flag below is not their
+canonical capture or cleanup receipt.
 
 ## Command outcomes
 
@@ -20,7 +30,7 @@ Use immutable Docker container IDs. Container names and shortened aliases do not
 
 `cleanup_sandbox` returns `CleanupResult` with termination, capture, container removal, workspace removal and pending-execution facts. It stops the container first. It does not remove the container or workspace by default.
 
-A trusted caller may supply `artifact_capture_confirmed=True` only after it has durably saved and validated the necessary work. In `run_sandbox`, the corresponding field is `context.artifact_capture_confirmed`. This acknowledgement is not inferred from an exit code, passing tests, a model response or a successful stop request. The current task executor has no canonical capture receipt and does not set it, so its workspaces and stopped containers are retained, including after successful tasks. This is a behavior change: disk usage and the stopped-container count grow until an operator completes capture and cleanup. There is no retention quota or automatic garbage collection in this slice.
+A trusted caller may supply `artifact_capture_confirmed=True` only after it has durably saved and validated the necessary work. In `run_sandbox`, the corresponding field is `context.artifact_capture_confirmed`. This acknowledgement is not inferred from an exit code, passing tests, a model response or a successful stop request. The standalone [task executor](../src/worker/executor.py) has no canonical capture receipt and does not set it, so its workspaces and stopped containers are retained, including after successful tasks. Disk usage and the stopped-container count grow until an operator completes capture and cleanup. There is no retention quota or automatic garbage collection in this manager.
 
 Destructive cleanup requires confirmed termination, no pending command exchange, and that explicit capture acknowledgement. Removal uses ordinary Docker removal, not force removal, so a runtime state race cannot silently kill a newly active container. Stop, removal or capture uncertainty retains the workspace. An absent container still does not prove that its work was captured.
 
@@ -40,10 +50,10 @@ After a manager process restart, the operator must first reconcile outstanding e
 
 ## Operational limits
 
-This manager's quarantine and pending-call accounting are local process state. Durable supervisor restart reconciliation belongs to the worker lifecycle implementation. An operator must inspect retained work and establish capture before deleting it; there is no automatic garbage collection in this change.
+This standalone manager's quarantine and pending-call accounting are local process state. Its restart procedure remains the operator reconciliation described above. The managed path has separate [service recovery](managed-service.md#recovery) and [durable runtime reconciliation](managed-docker-runtime.md#crash-and-late-request-handling). An operator must inspect retained work and establish capture before deleting it; this manager has no automatic garbage collection.
 
-Existing clone-command shell interpolation, setup behavior, and configuration being loaded after initial sandbox creation are outside this change. This patch does not establish a confined coding profile, validate admission policy, or bound the initial Docker container-create request.
+Existing clone-command shell interpolation, setup behavior, and configuration being loaded after initial sandbox creation remain limits of this standalone path. This manager does not establish a confined coding profile, validate admission policy, or bound the initial Docker container-create request.
 
 Retaining a container and workspace does not guarantee recovery of an interrupted Docker exec output stream. No durable stdout/artifact capture service is introduced here. The acknowledgement must remain false when the required output is unavailable.
 
-Tests exercise deadline races, unknown exits, loss of Docker replies, capture gating and a real local subprocess behind a runtime fixture. That process test is not a Docker containment or sandbox-escape test. A real Docker daemon could not be accessed in the development environment used for this slice.
+The original standalone component tests exercise deadline races, unknown exits, loss of Docker replies, capture gating and a real local subprocess behind a runtime fixture. That process test is not a Docker containment or sandbox-escape test. The recorded development environment for that slice had no accessible real Docker daemon. For the managed path's separate real-Docker procedure and proof limits, see [managed runtime verification](managed-docker-runtime.md#verification).
