@@ -283,6 +283,96 @@ def test_policy_whitespace_change_and_changed_same_key_do_not_renew(tmp_path):
         DiscussionJournal(changed_policy)
 
 
+@pytest.mark.parametrize("port", [None, 1, 65535])
+def test_conversation_bootstrap_preserves_raw_binding_and_reopen(tmp_path, port):
+    policy, interpreter, status = fixture_policy(tmp_path)
+    config = Path(policy.server["config"])
+    document = json.loads(config.read_bytes())
+    if port is not None:
+        document["bootstrap"] = {"host": "127.0.0.1", "port": port}
+    # Preserve deliberately noncanonical bytes, including an absent optional
+    # field. The original four-field format must not acquire a default.
+    raw = json.dumps(document, indent=2).encode() + b"\n\n"
+    config.write_bytes(raw)
+    policy = Policy.load(policy.path)
+    assert policy.a_config == document
+    assert policy.a_config_hash == hashlib.sha256(raw).hexdigest()
+    assert policy.binding()["a_config_sha256"] == hashlib.sha256(raw).hexdigest()
+    DiscussionJournal.initialize(policy, interpreter, status)
+    turn = fixture_turn()
+    with DiscussionJournal(policy) as journal:
+        retained = journal.prepare(turn)
+    binding = (policy.state / "binding.json").read_bytes()
+    with DiscussionJournal(Policy.load(policy.path)) as reopened:
+        assert reopened.get(turn.key) == retained
+        assert reopened.status()["calls_reserved"] == 0
+        assert reopened.status()["tokens_reserved"] == 0
+    assert config.read_bytes() == raw
+    assert (policy.state / "binding.json").read_bytes() == binding
+
+
+@pytest.mark.parametrize("bootstrap", [
+    None, "127.0.0.1:12345", [], {},
+    {"host": "127.0.0.1"}, {"port": 12345},
+    {"host": "localhost", "port": 12345},
+    {"host": "::1", "port": 12345},
+    {"host": "0.0.0.0", "port": 12345},
+    {"host": "198.51.100.1", "port": 12345},
+    {"host": "127.0.0.1", "port": True},
+    {"host": "127.0.0.1", "port": "12345"},
+    {"host": "127.0.0.1", "port": 12345.0},
+    {"host": "127.0.0.1", "port": 0},
+    {"host": "127.0.0.1", "port": 65536},
+    {"host": "127.0.0.1", "port": 12345, "nodes": []},
+])
+def test_conversation_bootstrap_refuses_unapproved_endpoint(tmp_path, bootstrap):
+    policy, _, _ = fixture_policy(tmp_path)
+    config = Path(policy.server["config"])
+    document = json.loads(config.read_bytes())
+    document["bootstrap"] = bootstrap
+    private_json(config, document)
+    before = config.read_bytes()
+    with pytest.raises(DiscussionError, match="invalid_policy"):
+        Policy.load(policy.path)
+    assert config.read_bytes() == before
+    assert not policy.state.exists()
+    assert not Path(document["state_directory"]).exists()
+
+
+@pytest.mark.parametrize("change", ["add", "port", "remove", "whitespace"])
+def test_changed_conversation_bootstrap_cannot_rebind_retained_journal(tmp_path, change):
+    policy, interpreter, status = fixture_policy(tmp_path)
+    config = Path(policy.server["config"])
+    document = json.loads(config.read_bytes())
+    if change != "add":
+        document["bootstrap"] = {"host": "127.0.0.1", "port": 12345}
+    private_json(config, document)
+    original = config.read_bytes()
+    policy = Policy.load(policy.path)
+    DiscussionJournal.initialize(policy, interpreter, status)
+    turn = fixture_turn()
+    with DiscussionJournal(policy) as journal:
+        retained = journal.prepare(turn)
+    files = {path.name: path.read_bytes() for path in policy.state.iterdir()}
+    if change == "remove":
+        del document["bootstrap"]
+    elif change in {"add", "port"}:
+        document["bootstrap"] = {"host": "127.0.0.1", "port": 23456}
+    if change == "whitespace":
+        config.write_bytes(original + b" ")
+    else:
+        private_json(config, document)
+    changed = Policy.load(policy.path)
+    assert changed.a_config_hash != policy.a_config_hash
+    with pytest.raises(DiscussionError, match="state_conflict"):
+        DiscussionJournal(changed)
+    assert {path.name: path.read_bytes() for path in policy.state.iterdir()} == files
+    config.write_bytes(original)
+    with DiscussionJournal(Policy.load(policy.path)) as reopened:
+        assert reopened.get(turn.key) == retained
+        assert reopened.status()["calls_reserved"] == 0
+
+
 def test_prepared_key_limit_survives_reopen_without_charging_allowance(
     tmp_path, monkeypatch,
 ):
