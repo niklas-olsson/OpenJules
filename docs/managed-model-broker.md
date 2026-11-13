@@ -233,7 +233,7 @@ base's Debian archive keyring; the manifest retains that keyring identity and
 signature results. Acquisition does not build an agent image.
 
 ```sh
-sudo python3 tools/managed_image.py acquire \
+sudo python3 -m tools.managed_image acquire \
   --base-manifest sha256:APPROVED_PLATFORM_MANIFEST \
   --snapshot APPROVED_UTC_SNAPSHOT \
   --source-commit APPROVED_HELPER_COMMIT \
@@ -245,14 +245,18 @@ The uppercase arguments are explicit operator choices, not runnable identifiers.
 Review the resulting `inputs.json` and retain its SHA-256. A build accepts that
 exact document and hash, reacquires only the declared bytes, verifies their
 signed and content-addressed parents, and passes only the recipe, five helpers
-and selected packages to Docker. Its rootful test interpreter must already have
-the repository's test dependencies installed. The build disables networking,
-uses the imported immutable base config ID, and uses only local packages.
+and selected packages to Docker. The separately approved qualification manifest
+supplies a finite wheel set for Python 3.12. The tool counts its metadata discovery and wheel acquisition, then
+creates an owned empty venv and installs the exact wheels offline with hashes and
+no dependency resolution. It checks the complete installed set before running
+tests. The build disables networking, uses the imported immutable base config ID, and uses only local packages.
 
 ```sh
-sudo python3 tools/managed_image.py build \
+sudo python3 -m tools.managed_image build \
   --approved-inputs /var/tmp/openjules-image-inputs/inputs.json \
   --approved-inputs-sha256 sha256:APPROVED_INPUT_DOCUMENT_HASH \
+  --approved-qualification docker/managed-image-qualification.json \
+  --approved-qualification-sha256 sha256:APPROVED_QUALIFICATION_DOCUMENT_HASH \
   --output /var/tmp/openjules-image-output
 ```
 
@@ -273,8 +277,8 @@ invocation. Every input size is reserved before its download; failed transfers
 remain charged. Public registry authorization and HTTP overhead have separate
 bounded reservations. All owned daemon data, context, caches and archive copies
 are measured. Storage is sampled during operations and excess stops the
-candidate; this is not a filesystem quota. Already installed host tools and test
-dependencies are prerequisites, not measured downloads. Resource reports state
+candidate; this is not a filesystem quota. Already installed Python, Git and Docker host tools are prerequisites, not
+measured downloads. The native test wheel set and its venv are included. Resource reports state
 that boundary explicitly. The separate acquisition and build reports are not
 one combined 30-minute or 2-GiB claim.
 
@@ -282,7 +286,7 @@ After explicitly approving `artifact.json`, transfer that record and exact archi
 to another supported host. Verify before using the ordinary image load command:
 
 ```sh
-python3 tools/managed_image.py verify \
+python3 -m tools.managed_image verify \
   --archive managed-agent.docker.tar --record artifact.json \
   --record-sha256 sha256:APPROVED_ARTIFACT_RECORD_HASH
 docker image load --input managed-agent.docker.tar

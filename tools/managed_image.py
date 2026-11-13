@@ -739,6 +739,12 @@ def inspect_loaded(daemon, record):
 
 
 def build(args, root, budget, manifest):
+    from tools.managed_image_qualification import provision
+
+    qualification_python, qualification_inputs = provision(
+        args.repository, root, budget, args.approved_qualification,
+        args.approved_qualification_sha256,
+    )
     restore_inputs(args, root, budget, manifest)
     context = root / "context"
     shutil.copytree(root / "source", context)
@@ -788,8 +794,9 @@ def build(args, root, budget, manifest):
         daemon.run(["image", "load", "--input", str(verification)])
         inspect_loaded(daemon, record)
         env = daemon.env | {"OPENJULES_MANAGED_DOCKER_TESTS": "1", "OPENJULES_MANAGED_AGENT_IMAGE_ID": image_id,
-                            "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
-        test_command = [sys.executable, "-m", "pytest", "-v", *TESTS]
+                            "LITELLM_LOCAL_MODEL_COST_MAP": "True", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                            "PYTHONNOUSERSITE": "1"}
+        test_command = [qualification_python, "-m", "pytest", "-p", "pytest_asyncio.plugin", "-v", *TESTS]
         output = budget.run(test_command, cwd=args.repository, env=env)
         (root / "native-tests.txt").write_bytes(output)
         text = output.decode(errors="replace")
@@ -797,6 +804,7 @@ def build(args, root, budget, manifest):
         record["qualification"] = {"tests": list(TESTS), "native": True, "provider": "deterministic HTTP fixtures",
                                    "authority": "fixtures", "fresh_import": True, "test_revision": subprocess.check_output(
                                        ["git", "-c", "safe.directory=" + str(args.repository), "-C", str(args.repository), "rev-parse", "HEAD"], text=True).strip()}
+        record["qualification"]["python_inputs"] = qualification_inputs
     verification.unlink()
     shutil.rmtree(root / "verification-daemon")
     record["measurements"] = budget.report()
@@ -816,6 +824,8 @@ def main(argv=None):
     sealed = sub.add_parser("build")
     sealed.add_argument("--approved-inputs", required=True, type=Path)
     sealed.add_argument("--approved-inputs-sha256", required=True)
+    sealed.add_argument("--approved-qualification", required=True, type=Path)
+    sealed.add_argument("--approved-qualification-sha256", required=True)
     for command in (prepare, sealed):
         command.add_argument("--repository", type=Path, default=Path.cwd())
         command.add_argument("--output", type=Path, required=True)
@@ -851,6 +861,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         main()
-    except (Refused, OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+    except (ValueError, OSError, KeyError, TypeError) as error:
         print("Managed image candidate refused: " + str(error), file=sys.stderr)
         raise SystemExit(1)
