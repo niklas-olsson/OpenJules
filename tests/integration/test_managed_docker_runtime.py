@@ -21,6 +21,11 @@ import pytest
 
 from src.worker.docker_runtime import DockerProfile, ManagedDockerRuntime
 from src.worker.lifecycle import RuntimeCapabilities, WorkerSpec
+from src.worker.destination import DestinationState, initialize_destination
+from src.worker.lifecycle import WorkerLifecycle
+from src.worker.managed_dispatch import DispatchJournal
+from src.api.worker_lifecycle import create_worker_app
+from fastapi.testclient import TestClient
 
 pytestmark = [
     pytest.mark.integration,
@@ -146,6 +151,119 @@ def test_real_git_change_capture_and_stopped_incarnation(provisioned):
         mount["Destination"] == "/var/run/docker.sock"
         for mount in container.attrs["Mounts"]
     )
+
+
+def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(provisioned, tmp_path):
+    """Actual Docker/Git/capture and HTTP, with explicit fixture readiness.
+
+    This does not qualify portable policy, local ceilings, remote transport,
+    canonical authority or multiple hosts. Existing combined tests cover those
+    canonical root/child paths independently of destination wire identity.
+    """
+    _, profile, spec, worker_id, client = provisioned
+    state_root = tmp_path / "bound-state"
+    config = {
+        "state_directory": str(state_root),
+        "lifecycle_database": str(state_root / "workers.sqlite3"),
+        "execution_destination": {"destination_id": "native-docker-fixture"},
+        "profiles": [asdict(profile)],
+    }
+    initialize_destination(config)
+    state = DestinationState.load(config)
+    binding = state.binding(spec.scope, spec.profile)
+    runtime = ManagedDockerRuntime(
+        state_root / "runtime", [profile], ready, client,
+        journal_binding=state.member("runtime"),
+    )
+    lifecycle = WorkerLifecycle(config["lifecycle_database"], runtime, destination=state)
+    DispatchJournal(state_root / "dispatcher", journal_binding=state.member("dispatcher"))
+    state.activate()
+    token = "native-destination-credential-" * 2
+    query = asdict(spec.scope) | binding | {"schema_version": "2"}
+    body = asdict(spec) | {"schema_version": 2, "destination_binding": binding}
+    original_ensure = runtime.ensure
+    calls = []
+
+    def lose_first_reply(worker, original_spec):
+        nonlocal owned
+        owned = worker
+        calls.append(worker)
+        result = original_ensure(worker, original_spec)
+        if len(calls) == 1:
+            raise ConnectionError("fixture loses reply after actual Docker creation")
+        return result
+
+    runtime.ensure = lose_first_reply
+    owned = None
+    try:
+        with TestClient(create_worker_app(lifecycle, {token: {spec.scope}}), headers={"Authorization": "Bearer " + token}) as http:
+            wrong = http.post("/api/v2/workers/ensure", json=body | {
+                "destination_binding": binding | {"journal_incarnation": "0" * 32},
+            })
+            assert wrong.status_code == 409 and not calls
+            first = http.post("/api/v2/workers/ensure", json=body)
+            assert first.status_code == 200, first.text
+            assert owned == first.json()["worker_id"]
+            assert first.json()["state"] == "unknown" and calls == [owned]
+        reopened_state = DestinationState.load(config)
+        runtime = ManagedDockerRuntime(
+            state_root / "runtime", [profile], ready, client,
+            journal_binding=reopened_state.member("runtime"),
+        )
+        resumed_ensure = runtime.ensure
+
+        def count_recovery_ensure(worker, original_spec):
+            calls.append(worker)
+            return resumed_ensure(worker, original_spec)
+
+        runtime.ensure = count_recovery_ensure
+        reopened = WorkerLifecycle(
+            config["lifecycle_database"], runtime, destination=reopened_state,
+        )
+        with TestClient(create_worker_app(reopened, {token: {spec.scope}}), headers={"Authorization": "Bearer " + token}) as http:
+            recovered = http.post("/api/v2/workers/ensure", json=body)
+            assert recovered.status_code == 200, recovered.text
+            assert recovered.json()["worker_id"] == owned
+            assert recovered.json()["destination_binding"] == binding
+            assert recovered.json()["state"] == "ready" and calls == [owned]
+            reopened.begin_execution(spec.scope, owned, "destination-native-root")
+            receipt = runtime.execute_attempt(owned, spec, "destination-native-root", "approved fixture change", 20)
+            assert receipt.exit_code == 0, receipt.log
+            assert receipt.termination_confirmed and receipt.artifacts_captured and receipt.launch_fenced
+            assert "+implemented" in receipt.patch and Path(receipt.capture_path).is_file()
+            reopened.record_execution_end(
+                spec.scope, owned, "destination-native-root",
+                termination_confirmed=True, artifacts_captured=True,
+            )
+            observed = http.get("/api/v2/workers/" + owned, params=query)
+            assert observed.status_code == 200 and observed.json()["state"] == "stopped"
+            assert observed.json()["termination_confirmed"] and observed.json()["artifacts_captured"]
+            listed = http.get("/api/v2/workers", params=query | {
+                "profile": spec.profile, "launch_key": spec.launch_key,
+            })
+            assert listed.json()["workers"] == [observed.json()]
+            for action in ("drain", "stop"):
+                controlled = http.post("/api/v2/workers/" + owned + "/" + action, json=asdict(spec.scope) | {
+                    "schema_version": 2, "destination_binding": binding, "request_key": action,
+                })
+                assert controlled.status_code == 200 and controlled.json()["state"] == "stopped"
+            assert calls == [owned]
+            container = client.containers.get(runtime._name(owned))
+            assert not container.attrs["State"]["Running"]
+            assert container.attrs["HostConfig"]["PidsLimit"] == profile.pids_limit
+            assert container.attrs["HostConfig"]["ReadonlyRootfs"] is True
+            assert container.attrs["HostConfig"]["NetworkMode"] == "none"
+    finally:
+        if owned is not None:
+            # Only this test's acknowledged actual container/volume are removed.
+            try:
+                client.containers.get(runtime._name(owned)).remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            try:
+                client.volumes.get("openjules-work-" + __import__("hashlib").sha256(owned.encode()).hexdigest()[:40]).remove()
+            except docker.errors.NotFound:
+                pass
 
 
 @pytest.mark.parametrize("watchdog_kind", ["root", "children"])

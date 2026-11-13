@@ -20,6 +20,8 @@ import threading
 import time
 from uuid import uuid4
 
+from src.worker.destination import connect_journal
+
 from src.polyphony.managed_client import (
     AuthorityRejected,
     AuthorityUnavailable,
@@ -41,13 +43,14 @@ def _json(value) -> str:
 
 
 class DispatchJournal:
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, *, journal_binding=None):
+        self.journal_binding = journal_binding
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.database = self.directory / "dispatch.sqlite3"
         self.locks = self.directory / "dispatch-locks"
         self.locks.mkdir(exist_ok=True, mode=0o700)
-        with self.connection() as db:
+        with self.connection(initializing=True) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS deliveries ("
@@ -55,10 +58,12 @@ class DispatchJournal:
                 "request_key TEXT NOT NULL,phase TEXT NOT NULL,binding TEXT,"
                 "artifacts TEXT NOT NULL DEFAULT '{}',reason TEXT NOT NULL DEFAULT '')"
             )
+            if self.journal_binding is not None:
+                self.journal_binding.seal(db)
 
     @contextmanager
-    def connection(self):
-        db = sqlite3.connect(self.database, timeout=10)
+    def connection(self, *, initializing=False):
+        db = connect_journal(self.database, binding=self.journal_binding, initializing=initializing, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         try:
@@ -142,6 +147,7 @@ class ManagedDispatcher:
         max_parallel: int = 16,
         model_broker=None,
         child_supervisor=None,
+        journal_binding=None,
     ):
         if (
             isinstance(poll_interval_seconds, bool)
@@ -156,7 +162,7 @@ class ManagedDispatcher:
         self.runtime = runtime
         self.authority = authority
         self.profiles = {(p.deployment_id, p.repository, p.name): p for p in profiles}
-        self.journal = DispatchJournal(state_directory)
+        self.journal = DispatchJournal(state_directory, journal_binding=journal_binding)
         self.poll_interval_seconds = poll_interval_seconds
         self.max_parallel = max_parallel
         self.model_broker = model_broker

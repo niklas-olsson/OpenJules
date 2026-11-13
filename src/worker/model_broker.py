@@ -28,6 +28,8 @@ from typing import Callable, Mapping
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .destination import connect_journal
+
 from src.worker.bounded_http import HTTPResponseRejected, post_bounded_json
 
 from src.agent.managed_runner import TOOL_DEFINITIONS
@@ -443,7 +445,9 @@ class ModelBroker:
         permission: Callable[[ModelBinding], float],
         *,
         peer_uids: Mapping[tuple[str, str, str], int] | None = None,
+        journal_binding=None,
     ):
+        self.journal_binding = journal_binding
         self.root = Path(state_directory).resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if stat.S_IMODE(self.root.stat().st_mode) & 0o077:
@@ -489,7 +493,7 @@ class ModelBroker:
             self._service_lock.close()
             raise ValueError("another model broker owns this state") from None
         try:
-            with self.connection() as db:
+            with self.connection(initializing=True) as db:
                 db.executescript(
                     "CREATE TABLE IF NOT EXISTS policies(scope TEXT PRIMARY KEY,fingerprint TEXT NOT NULL);"
                     "CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, spec TEXT NOT NULL, "
@@ -520,13 +524,15 @@ class ModelBroker:
                         raise ValueError(
                             "approved model policy changed; use a new profile name"
                         )
+                if self.journal_binding is not None:
+                    self.journal_binding.seal(db)
         except BaseException:
             self._service_lock.close()
             raise
 
     @contextmanager
-    def connection(self):
-        db = sqlite3.connect(self.database, timeout=10)
+    def connection(self, *, initializing=False):
+        db = connect_journal(self.database, binding=self.journal_binding, initializing=initializing, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         try:
@@ -580,6 +586,9 @@ class ModelBroker:
         The service must restore its known live workers first. This probe does
         not infer which journalled workers the canonical runtime still owns.
         """
+        if self.journal_binding is not None:
+            with self.connection():
+                pass
         with self.guard:
             if self.closed or any(
                 not endpoint.thread.is_alive()

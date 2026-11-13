@@ -25,6 +25,9 @@ from src.polyphony.managed_client import (
 from src.worker.lifecycle import RuntimeCapabilities, WorkerLifecycle, WorkerScope
 from src.worker.managed_dispatch import ManagedDispatcher
 from src.worker.execution_context import enter_managed_context, validate_managed_installation
+from src.worker.destination import (
+    DestinationState, destination_configuration, initialize_destination,
+)
 
 
 def _read_object(path: Path, *, private: bool = False) -> dict:
@@ -50,13 +53,15 @@ def _read_object(path: Path, *, private: bool = False) -> dict:
     if not isinstance(data, dict):
         raise ValueError("configuration must be an object")
     children = data.get("children")
-    if duplicate and isinstance(children, list) and any(
-        isinstance(item, dict) and isinstance(item.get("policy"), dict)
-        and "public_discussion" in item["policy"] for item in children
-    ):
+    if duplicate and ("execution_destination" in data or (
+        isinstance(children, list) and any(
+            isinstance(item, dict) and isinstance(item.get("policy"), dict)
+            and "public_discussion" in item["policy"] for item in children
+        )
+    )):
         # Omitted profiles retain the previous loader's last-value semantics.
         # Explicit public approval cannot be constructed from ambiguous JSON.
-        raise ValueError("managed public configuration has duplicate JSON fields")
+        raise ValueError("managed opt-in configuration has duplicate JSON fields")
     return data
 
 
@@ -75,6 +80,7 @@ def load_configuration(path: str | Path):
         "max_parallel",
         "models",
         "children",
+        "execution_destination",
     }
     required = {
         "schema_version",
@@ -88,6 +94,7 @@ def load_configuration(path: str | Path):
         raise ValueError("managed service configuration fields do not match schema")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("unsupported managed service configuration version")
+    destination_configuration(config)
     for key in ("state_directory", "lifecycle_database", "credentials_file"):
         if not isinstance(config[key], str) or not Path(config[key]).is_absolute():
             raise ValueError("managed service paths must be absolute")
@@ -136,6 +143,12 @@ def load_configuration(path: str | Path):
 
 def build_app(config: dict, credentials: dict, *, cleanup_only=False):
     validate_managed_installation()
+    # Validate the complete original set before component constructors can
+    # create state, check providers or contact canonical authority.
+    destination = DestinationState.load(config)
+
+    def journal_context(member):
+        return {"journal_binding": destination.member(member)} if destination else {}
     # Lazy import keeps the old lifecycle API available without constructing a
     # Docker client. The managed entrypoint always uses the real runtime.
     from src.worker.docker_runtime import DockerProfile, ManagedDockerRuntime
@@ -196,9 +209,10 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             model_policies,
             model_permission,
             peer_uids={key: profile_by_scope[key].uid for key in model_policies},
+            **journal_context("models"),
         )
         try:
-            if not cleanup_only:
+            if not cleanup_only and destination is None:
                 model_broker.check_ready()
         except BaseException:
             model_broker.close()
@@ -326,8 +340,9 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             readiness,
             model_broker=model_broker,
             **({"child_policies": child_policies} if child_policies else {}),
+            **journal_context("runtime"),
         )
-        lifecycle = WorkerLifecycle(config["lifecycle_database"], runtime)
+        lifecycle = WorkerLifecycle(config["lifecycle_database"], runtime, destination=destination)
         if child_policies:
             from src.worker.child_supervisor import ChildSupervisor
             from src.worker.child_broker import ChildBroker
@@ -356,6 +371,7 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
                 model_broker,
                 child_root_permission,
                 child_root_active,
+                **journal_context("children"),
             )
             child_supervisor.endpoints = ChildBroker(child_supervisor, model_broker)
             runtime.child_supervisor = child_supervisor
@@ -377,12 +393,17 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             poll_interval_seconds=config.get("poll_interval_seconds", 1),
             max_parallel=config.get("max_parallel", 16),
             model_broker=model_broker,
+            **journal_context("dispatcher"),
             **(
                 {"child_supervisor": child_supervisor}
                 if child_supervisor is not None
                 else {}
             ),
         )
+        if destination is not None:
+            destination.activate()
+            if model_broker is not None and not cleanup_only:
+                model_broker.check_ready()
         app = create_worker_app(lifecycle, credentials)
     except BaseException:
         if child_supervisor is not None:
@@ -451,6 +472,15 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    identity = parser.add_mutually_exclusive_group()
+    identity.add_argument(
+        "--initialize-destination", action="store_true",
+        help="initialize a fresh private destination journal set while the service is stopped",
+    )
+    identity.add_argument(
+        "--inspect-destination", action="store_true",
+        help="read original destination identifiers without repair or runtime calls",
+    )
     parser.add_argument(
         "--cleanup-worker",
         help="explicitly clean one fully captured executed worker while service is stopped",
@@ -458,6 +488,8 @@ def main():
     parser.add_argument("--deployment-id")
     parser.add_argument("--repository")
     args = parser.parse_args()
+    if (args.initialize_destination or args.inspect_destination) and args.cleanup_worker:
+        parser.error("destination maintenance and worker cleanup are separate stopped-service operations")
     if bool(args.cleanup_worker) != bool(args.deployment_id and args.repository) or (
         not args.cleanup_worker and (args.deployment_id or args.repository)
     ):
@@ -465,6 +497,16 @@ def main():
     try:
         enter_managed_context()
         config, credentials = load_configuration(args.config)
+        if args.initialize_destination or args.inspect_destination:
+            if args.initialize_destination:
+                result = initialize_destination(config)
+            else:
+                destination = DestinationState.load(config)
+                if destination is None:
+                    raise ValueError("no initialized execution destination is configured")
+                result = destination.inspection()
+            print(json.dumps(result, sort_keys=True))
+            return
         app = build_app(config, credentials, cleanup_only=bool(args.cleanup_worker))
     except (ValueError, TypeError, KeyError, OSError):
         parser.error(
