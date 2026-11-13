@@ -26,6 +26,8 @@ import fcntl
 import docker
 from docker.errors import NotFound
 
+from .destination import DestinationUnavailable, connect_journal
+
 from .lifecycle import (
     LifecycleConflict,
     RuntimeCapabilities,
@@ -257,7 +259,9 @@ class ManagedDockerRuntime:
         *,
         model_broker=None,
         child_policies=None,
+        journal_binding=None,
     ):
+        self.journal_binding = journal_binding
         self.root = Path(state_directory).resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.database = self.root / "journal.sqlite3"
@@ -301,7 +305,7 @@ class ManagedDockerRuntime:
         self.sources = SourceSnapshots(self.root / "sources")
         (self.root / "locks").mkdir(mode=0o700, exist_ok=True)
         (self.root / "captures").mkdir(mode=0o700, exist_ok=True)
-        with self._db() as db:
+        with self._db(initializing=True) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS profiles(
                     deployment_id TEXT NOT NULL,repository TEXT NOT NULL,name TEXT NOT NULL,fingerprint TEXT NOT NULL,
@@ -380,9 +384,12 @@ class ManagedDockerRuntime:
                         "approved profile changed; use a new profile name"
                     )
 
+            if self.journal_binding is not None:
+                self.journal_binding.seal(db)
+
     @contextmanager
-    def _db(self):
-        db = sqlite3.connect(self.database, timeout=10)
+    def _db(self, *, initializing=False):
+        db = connect_journal(self.database, binding=self.journal_binding, initializing=initializing, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
@@ -487,6 +494,12 @@ class ManagedDockerRuntime:
         return profile
 
     def capabilities(self, scope: WorkerScope, profile: str) -> RuntimeCapabilities:
+        if self.journal_binding is not None:
+            try:
+                with self._db():
+                    pass
+            except DestinationUnavailable:
+                return RuntimeCapabilities(reason="original execution destination state is unavailable")
         approved = self.profiles.get((scope.deployment_id, scope.repository, profile))
         if approved is None or approved.scope != scope:
             return RuntimeCapabilities(reason="profile is not approved for this scope")

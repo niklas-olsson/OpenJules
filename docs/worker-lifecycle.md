@@ -118,6 +118,94 @@ an unknown scoped worker is 404, conflicting replay or admission is 409, and
 unavailable managed runtime preflight is 503. Raw provider exception text is not
 returned or stored. Adapter-supplied `reason` must contain only public diagnostics.
 
+## HTTP version 2: destination identity
+
+The optional [execution destination configuration](managed-service.md#optional-execution-destination-identity)
+adds `/api/v2/workers` with `schema_version: 2`. It retains the same scoped bearer
+authorization, durable worker semantics and canonical authority boundary.
+Every operation requires an operator-approved expected destination binding:
+
+```json
+{
+  "destination_id": "execution-host-a",
+  "journal_incarnation": "11111111111111111111111111111111",
+  "policy_binding_id": "22222222222222222222222222222222",
+  "policy_binding_version": 1
+}
+```
+
+The shown opaque values are examples, not enrollable identities. Initialization
+generates the actual lowercase 32-hex-character UUID values. The destination ID
+uses `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Versions in JSON must be integers, not
+booleans or strings. GET query versions must be exactly `2` and `1`. Duplicate
+or unknown query/body fields and ambiguous JSON are rejected. V2 POST bodies
+are bounded to 65,536 bytes.
+
+All GET requests include `schema_version`, `deployment_id`, `repository` and
+the four binding fields above as flat query parameters. POST bodies include
+`schema_version`, `deployment_id`, `repository` and a nested
+`destination_binding` object containing those four fields.
+
+| Operation | V2 route | Additional input |
+| --- | --- | --- |
+| Capabilities | `GET /api/v2/workers/capabilities` | Original `profile` query field. |
+| Ensure | `POST /api/v2/workers/ensure` | `slot_id`, `generation`, original `launch_key`, `profile`. |
+| Discover | `GET /api/v2/workers` | Original `profile`, optional original `launch_key`. |
+| Observe | `GET /api/v2/workers/{worker_id}` | No additional query fields. |
+| Drain | `POST /api/v2/workers/{worker_id}/drain` | Original `request_key`. |
+| Stop | `POST /api/v2/workers/{worker_id}/stop` | Original `request_key`. |
+
+Successful snapshots and capabilities use schema 2 and echo the full verified
+nested `destination_binding`. Discovery also echoes that binding in its envelope,
+including an empty result:
+
+```json
+{
+  "schema_version": 2,
+  "destination_binding": {
+    "destination_id": "execution-host-a",
+    "journal_incarnation": "11111111111111111111111111111111",
+    "policy_binding_id": "22222222222222222222222222222222",
+    "policy_binding_version": 1
+  },
+  "workers": []
+}
+```
+
+The original full binding is committed with the worker and launch operation
+before runtime I/O. Drain/stop operation payloads retain the same binding.
+Discovery is restricted to the supplied original profile; a wrong destination,
+journal incarnation or policy ID cannot become an apparently empty response.
+Observe and control validate the expected scoped policy binding before worker
+lookup, then compare it with the worker's retained original binding.
+
+Authentication/scope checks precede identity lookup and effects. Malformed
+input is 422, an identity or immutable replay conflict is 409, and missing or
+inconsistent original state is 503. A scoped worker is 404 only after the expected
+binding validates. These errors are not evidence that a previously uncertain
+launch never happened. Keep its original reservation and reconcile the original
+journal/key. There is no cross-destination retry, replacement-journal adoption
+or remote enrollment fallback.
+
+Capabilities advertise `identity_binding: 1`, `portable_manifest: false` and
+`local_admission: false`. The last flag means the later destination-wide admission
+feature is absent; existing per-worker drain and execution admission remain.
+Identity alone must not activate multi-destination ZPM placement. Portable
+qualification and local admission are separately versioned follow-ups and must
+not reinterpret these existing IDs or upgrade old reservations silently.
+
+| Configuration/state | Compatibility |
+| --- | --- |
+| Legacy configuration and unbound journals | Existing v1 routes and behavior remain available; v2 bindings are refused. |
+| Initialized bound destination | Only v2 may create, discover, observe, drain or stop workers; v1 requests are 409. |
+| Bound files with opt-in removed | Startup and current legacy component constructors refuse the bound state. |
+| Existing populated v1 state | Destination initialization refuses migration; original v1 recovery remains available. |
+| Missing member, changed incarnation or required format/feature | No recreation, silent downgrade or empty discovery; preserve uncertainty. |
+
+The internal worker specification used by Docker, dispatcher and canonical
+authority remains schema 1. V2 is an external lifecycle identity projection,
+not a change to Polyphony's claim, grant or profile digest.
+
 ## Launch and retry guarantees
 
 The service commits the immutable specification, worker identity and operation
@@ -196,7 +284,20 @@ Run:
 
 ```bash
 python -m pytest tests/unit/test_worker_lifecycle.py tests/unit/test_worker_lifecycle_api.py
+python -m pytest tests/unit/test_execution_destination.py tests/unit/test_execution_destination_api.py
 ```
+
+Destination tests use real local SQLite/filesystem state and explicit fixture
+runtime observations. They cover wrong-destination replay, lost replies,
+partial initialization, whole-set readiness, member/table/index loss, current
+legacy refusal and exact authenticated HTTP shapes. The real Docker test
+`test_bound_destination_http_recovery_retains_one_real_runtime_and_capture`
+adds actual lost-reply recovery, one container incarnation, Git change/capture
+and terminal control under the original resource limits. It reconstructs the
+lifecycle and Docker driver from their original journals within the same test
+process; its readiness callback is explicitly a fixture. Neither case alone
+claims a fresh supervisor process, remote hosts, a live model
+provider, canonical permission, portable equivalence or destination ceilings.
 
 The tests cover concurrent ensure, lost launch/stop replies, recovery after
 crash before dispatch, scope isolation, operation conflicts, uncertain launch,

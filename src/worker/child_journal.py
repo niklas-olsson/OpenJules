@@ -11,6 +11,7 @@ import sqlite3
 import stat
 
 from .child_types import ChildPolicy, RootContext, canonical, digest
+from .destination import connect_journal
 from .child_sessions import (
     bind_session_grant,
     install_session_schema,
@@ -27,7 +28,8 @@ from .managed_public_journal import (
 
 
 class ChildJournal:
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, *, journal_binding=None):
+        self.journal_binding = journal_binding
         self.root = Path(directory).resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if stat.S_IMODE(self.root.stat().st_mode) & 0o077:
@@ -39,7 +41,14 @@ class ChildJournal:
         except BlockingIOError:
             self.service_lock.close()
             raise ValueError("another child supervisor owns this state") from None
-        with self.connection() as db:
+        try:
+            self._initialize()
+        except BaseException:
+            self.service_lock.close()
+            raise
+
+    def _initialize(self):
+        with self.connection(initializing=True) as db:
             db.executescript(
                 "CREATE TABLE IF NOT EXISTS workers("
                 "worker_id TEXT PRIMARY KEY,spec TEXT NOT NULL,policy_digest TEXT NOT NULL,"
@@ -60,10 +69,12 @@ class ChildJournal:
             columns = {row[1] for row in db.execute("PRAGMA table_info(children)")}
             if "outcome_report" not in columns:
                 db.execute("ALTER TABLE children ADD COLUMN outcome_report TEXT")
+            if self.journal_binding is not None:
+                self.journal_binding.seal(db)
 
     @contextmanager
-    def connection(self):
-        db = sqlite3.connect(self.path, timeout=10)
+    def connection(self, *, initializing=False):
+        db = connect_journal(self.path, binding=self.journal_binding, initializing=initializing, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")

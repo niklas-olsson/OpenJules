@@ -16,6 +16,10 @@ import sqlite3
 from typing import Iterator, Protocol
 from uuid import uuid4
 
+from .destination import (
+    DestinationConflict, DestinationUnavailable, connect_journal, parse_binding,
+)
+
 
 SCHEMA_VERSION = 1
 OPERATIONS = ("ensure", "discover", "observe", "drain", "stop")
@@ -197,15 +201,19 @@ class WorkerLifecycle:
     launch fences remain essential across a crash or lost remote response.
     """
 
-    def __init__(self, database: str | Path, runtime: WorkerRuntime | None = None):
+    def __init__(self, database: str | Path, runtime: WorkerRuntime | None = None, *, destination=None):
         if str(database) == ":memory:":
             raise ValueError("a persistent lifecycle database path is required")
         self.database = str(Path(database).resolve())
         self.runtime = runtime or UnavailableRuntime()
+        self.destination = destination
+        self.journal_binding = destination.member("lifecycle") if destination else None
+        if destination is not None:
+            destination.verify(initializing=True)
         Path(self.database).parent.mkdir(parents=True, exist_ok=True)
         self._lock_directory = Path(self.database + ".runtime-locks")
         self._lock_directory.mkdir(parents=True, exist_ok=True)
-        with self._transaction() as connection:
+        with self._transaction(initializing=True) as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS managed_workers (
@@ -215,6 +223,7 @@ class WorkerLifecycle:
                     slot_id TEXT NOT NULL,
                     generation INTEGER NOT NULL,
                     spec TEXT NOT NULL,
+                    destination_binding TEXT,
                     runtime_id TEXT,
                     state TEXT NOT NULL,
                     reason TEXT NOT NULL,
@@ -250,6 +259,11 @@ class WorkerLifecycle:
                 );
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(managed_workers)")}
+            if "destination_binding" not in columns:
+                connection.execute("ALTER TABLE managed_workers ADD COLUMN destination_binding TEXT")
+            if self.journal_binding is not None:
+                self.journal_binding.seal(connection)
 
     @contextmanager
     def _runtime_lock(self, worker_id: str) -> Iterator[bool]:
@@ -291,8 +305,11 @@ class WorkerLifecycle:
             )
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database, timeout=30, isolation_level=None)
+    def _transaction(self, *, initializing=False) -> Iterator[sqlite3.Connection]:
+        connection = connect_journal(
+            self.database, binding=self.journal_binding, timeout=30, isolation_level=None,
+            initializing=initializing,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN IMMEDIATE")
@@ -305,9 +322,8 @@ class WorkerLifecycle:
         finally:
             connection.close()
 
-    @staticmethod
     def _get(
-        connection: sqlite3.Connection, scope: WorkerScope, worker_id: str
+        self, connection: sqlite3.Connection, scope: WorkerScope, worker_id: str
     ) -> sqlite3.Row:
         row = connection.execute(
             "SELECT * FROM managed_workers WHERE worker_id = ? "
@@ -316,7 +332,44 @@ class WorkerLifecycle:
         ).fetchone()
         if row is None:
             raise WorkerNotFound("Worker not found in the authorized scope")
+        self._retained_binding(row)
         return row
+
+    def _retained_binding(self, row):
+        encoded = row["destination_binding"]
+        if self.destination is None:
+            if encoded is not None:
+                raise DestinationUnavailable("bound worker cannot use a legacy journal")
+            return None
+        spec = WorkerSpec(**json.loads(row["spec"]))
+        try:
+            actual = parse_binding(json.loads(encoded))
+        except (ValueError, TypeError):
+            raise DestinationUnavailable("original worker destination binding is unavailable") from None
+        if actual != self.destination.binding(spec.scope, spec.profile):
+            raise DestinationUnavailable("original worker destination binding changed")
+        return actual
+
+    def validate_binding(self, scope, binding, profile=None):
+        if self.destination is None:
+            raise DestinationConflict("this service is not an initialized v2 destination")
+        if profile is None:
+            return self.destination.profile_for_binding(scope, binding)
+        _text(profile, "profile")
+        self.destination.validate(scope, profile, binding)
+        return profile
+
+    def validate_worker_binding(self, scope, worker_id, binding):
+        profile = self.validate_binding(scope, binding)
+        with self._transaction() as connection:
+            row = self._get(connection, scope, worker_id)
+            if self._retained_binding(row) != binding or json.loads(row["spec"])["profile"] != profile:
+                raise DestinationConflict("worker belongs to a different destination policy binding")
+
+    @staticmethod
+    def _ensure_payload(spec, binding):
+        value = asdict(spec)
+        return _json(value if binding is None else {"spec": value, "destination_binding": binding})
 
     @staticmethod
     def _active(connection: sqlite3.Connection, worker_id: str) -> list[sqlite3.Row]:
@@ -330,6 +383,8 @@ class WorkerLifecycle:
     def capabilities(self, scope: WorkerScope, profile: str) -> dict:
         _text(profile, "profile")
         try:
+            if self.destination is not None and not self.destination.usable(scope, profile):
+                raise DestinationUnavailable("original destination policy is not approved for admission")
             capabilities = self.runtime.capabilities(scope, profile)
             if not isinstance(capabilities, RuntimeCapabilities):
                 raise TypeError("invalid capability response")
@@ -400,8 +455,14 @@ class WorkerLifecycle:
             scope, worker_id, pending["request_key"], pending["action"]
         )
 
-    def ensure_worker(self, spec: WorkerSpec) -> dict:
-        payload = _json(asdict(spec))
+    def ensure_worker(self, spec: WorkerSpec, destination_binding=None) -> dict:
+        if self.destination is not None:
+            if destination_binding is None:
+                raise DestinationConflict("bound destination requires the v2 identity contract")
+            self.destination.validate(spec.scope, spec.profile, destination_binding)
+        elif destination_binding is not None:
+            raise DestinationConflict("legacy destination does not accept v2 bindings")
+        payload = self._ensure_payload(spec, destination_binding)
         with self._transaction() as connection:
             existing = self._operation(
                 connection, spec.scope, spec.launch_key, "ensure", None, payload
@@ -409,6 +470,8 @@ class WorkerLifecycle:
             existing_id = existing["worker_id"] if existing else None
         if existing_id:
             return self._resume_ensure(spec, existing_id)
+        if self.destination is not None:
+            self.destination.validate(spec.scope, spec.profile, destination_binding, admission=True)
         if not self._usable(spec.scope, spec.profile):
             raise RuntimeUnavailable("Managed runtime preflight is not ready")
 
@@ -437,17 +500,18 @@ class WorkerLifecycle:
                 worker_id = uuid4().hex
                 connection.execute(
                     "INSERT INTO managed_workers "
-                    "(worker_id,deployment_id,repository,slot_id,generation,spec,state,reason) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "(worker_id,deployment_id,repository,slot_id,generation,spec,state,reason,destination_binding) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         worker_id,
                         spec.deployment_id,
                         spec.repository,
                         spec.slot_id,
                         spec.generation,
-                        payload,
+                        _json(asdict(spec)),
                         "unknown",
                         "Launch intent committed; runtime outcome not yet observed",
+                        _json(destination_binding) if destination_binding is not None else None,
                     ),
                 )
                 connection.execute(
@@ -474,7 +538,7 @@ class WorkerLifecycle:
                 row = self._get(connection, spec.scope, worker_id)
                 operation = self._operation(
                     connection, spec.scope, spec.launch_key, "ensure", worker_id,
-                    _json(asdict(spec)),
+                    self._ensure_payload(spec, self._retained_binding(row)),
                 )
                 terminal = self._terminal(row)
                 completed, draining = operation["completed"], row["draining"]
@@ -561,6 +625,7 @@ class WorkerLifecycle:
                 reason += "; " + row["reason"]
         return {
             **spec,
+            **({"destination_binding": self._retained_binding(row)} if self.destination else {}),
             "worker_id": row["worker_id"],
             "state": state,
             "reason": reason,
@@ -595,7 +660,7 @@ class WorkerLifecycle:
         return self._apply(scope, worker_id, observation)
 
     def discover_workers(
-        self, scope: WorkerScope, launch_key: str | None = None
+        self, scope: WorkerScope, launch_key: str | None = None, *, profile: str | None = None,
     ) -> list[dict]:
         if launch_key is not None:
             _text(launch_key, "launch_key")
@@ -608,15 +673,19 @@ class WorkerLifecycle:
         return [
             self.observe_worker(scope, row["worker_id"])
             for row in rows
-            if launch_key is None or json.loads(row["spec"])["launch_key"] == launch_key
+            if (launch_key is None or json.loads(row["spec"])["launch_key"] == launch_key)
+            and (profile is None or json.loads(row["spec"])["profile"] == profile)
         ]
 
     def _control(
         self, scope: WorkerScope, worker_id: str, request_key: str, action: str
     ) -> dict:
-        payload = _json({"worker_id": worker_id, "action": action})
         with self._transaction() as connection:
             row = self._get(connection, scope, worker_id)
+            binding = self._retained_binding(row)
+            payload = _json({"worker_id": worker_id, "action": action} | (
+                {"destination_binding": binding} if binding is not None else {}
+            ))
             existing = self._operation(
                 connection, scope, request_key, action, worker_id, payload
             )

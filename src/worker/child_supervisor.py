@@ -55,6 +55,8 @@ class ChildSupervisor:
         model_broker,
         root_permission,
         root_active,
+        *,
+        journal_binding=None,
     ):
         self.policies = dict(policies)
         if not self.policies or any(
@@ -73,7 +75,7 @@ class ChildSupervisor:
         )
         self.root_permission, self.root_active = root_permission, root_active
         self.boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        self.journal = ChildJournal(directory)
+        self.journal = ChildJournal(directory, journal_binding=journal_binding)
         self.sessions = ColdSessionStore(self.journal)
         self.driver = ChildRuntime(runtime, self)
         self.guard = threading.RLock()

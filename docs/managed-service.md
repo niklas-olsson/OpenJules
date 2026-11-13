@@ -15,6 +15,114 @@ and Python environment because OpenJules and Polyphony both use a `src` package.
 The service listens only on loopback. Remote access requires a deliberately
 configured HTTPS reverse proxy and the existing scoped bearer authentication.
 
+## Optional execution destination identity
+
+The first identity slice of [OpenJules #47](https://github.com/niklas-olsson/OpenJules/issues/47)
+adds an operator-enrolled execution destination. Existing configurations remain
+on the v1 lifecycle contract. This opt-in is an identity and recovery boundary;
+it does not qualify distributed placement, publish a portable execution manifest,
+or implement a host admission closure or capacity ceiling. ZPM owns placement
+and installed qualification. Polyphony still owns canonical task authority.
+
+For a fresh service, add this exact optional configuration object:
+
+```json
+"execution_destination": {"destination_id": "execution-host-a"}
+```
+
+The destination ID is an operator-selected identifier matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. State paths must be absolute and canonical.
+The state directory must be private to the service UID and otherwise empty;
+the configured lifecycle database must not already exist. Initialization also
+refuses retained optional model/child state when its feature is omitted from the
+new configuration. It does not migrate existing v1 workers or journals.
+
+With the service stopped, run:
+
+```sh
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --initialize-destination
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --inspect-destination
+```
+
+Initialization creates no worker and contacts no Docker daemon, model provider or
+canonical authority. It records one random journal incarnation, one random
+policy binding ID for each approved scoped profile, and the exact original
+journal membership. Inspection is read-only and cannot initialize or repair
+state. Its output exposes the scoped IDs and whether application journals are
+initialized, without private paths, full policy hashes or credential references.
+An operator must transfer these expected values into the consumer's approved
+configuration. A remote capabilities response is not enrollment and must never
+overwrite an existing reservation's expected identity.
+
+The fixed journal set consists of the configured lifecycle database,
+`runtime/journal.sqlite3` and `dispatcher/dispatch.sqlite3` below the state
+directory, plus `models/inference.sqlite3` and `children/children.sqlite3` when
+those features are enabled. Cold-session and managed public ownership tables
+remain inside the child journal. Dynamic public conversation journals retain
+their existing separate instance, inode and policy checks; destination identity
+does not replace those checks.
+Whole-set verification also invokes the existing optional child-schema validator,
+so loss of an enabled cold-session or public ownership table blocks readiness
+and other members' effects immediately. Bootstrap does not pre-enable those
+optional schemas.
+
+Bootstrap first publishes complete member identity markers under a durable
+initialization intent. Interrupted bootstrap can finish that same intent with
+the same IDs. Effect-free application constructors then create their initial
+tables and seal the original table/index definitions, including replay and
+uniqueness constraints. Only after every enabled member is sealed does service
+construction publish the set's durable `ready` transition. Normal lifecycle,
+runtime, dispatcher, model and child connections require that transition and
+validate the whole set before work. A partially constructed set cannot launch a
+fixture or a real worker through a lifecycle-only object.
+
+Subsequent opens require existing files, matching identities, the original
+registry and the sealed application schema. Missing/replaced files, lost tables
+or required indexes, changed identities, unsupported formats and unknown required
+features fail closed. The SQLite application ID also prevents the current
+implementation's legacy constructors from treating loss of only an identity
+table as an unbound journal. No normal startup or initialization replay repairs
+missing ready-state members. A future required feature must advance the
+versioned format/feature floor; an earlier identity-aware binary will refuse
+that state instead of silently omitting the new gate.
+
+The opaque policy ID binds the existing complete private `DockerProfile`,
+`ModelPolicy` and `ChildPolicy` fingerprints, including the optional public
+discussion policy. These fingerprints include host-local paths and credential
+reference names. They are not exported and are not portable-policy equivalence,
+Polyphony's canonical `profile_digest`, a runtime principal, or task permission.
+Different destinations have independently approved IDs. A policy change never
+reuses an ID for new input or silently upgrades a retained worker or launch key.
+
+Recovery validates the original binding. A changed current policy closes new
+admission, while the original worker/key remains reserved. Actual runtime
+recovery still needs its original host configuration and policy material.
+Existing Docker/model constructors refuse changed policies under an old profile
+name; hashes cannot reconstruct those policies. Retain or restore the original
+configuration to recover, capture and fence those workers. This first slice has
+no policy-rebinding, active-state migration or replacement-journal adoption
+command. Missing original material remains unavailable or unknown, not an empty
+destination from which a reservation may be released.
+
+All state maintenance requires a stopped service. Concurrent clones, rollback,
+shared/network-filesystem journals, and running a pre-identity OpenJules binary
+against bound files are unsupported. The checks do not establish tamper-proof
+row history or an atomic fence against a privileged administrator replacing
+state between a committed SQL transaction and a runtime effect. Keep the
+original journal set and supported service binary together.
+An isolated probe of pre-identity commit `247fe1d4647510d158eb564594a406ef33fcafc8`
+confirmed that its lifecycle implementation ignores these new markers and can
+create an identity-less fixture worker when deliberately given bound files.
+The application ID does not constrain code that predates its guard. Deployment
+must stop old services and retain matching supported source, configuration and
+journals; installed qualification must pin the actual supported revision.
+
+The [v2 HTTP contract](worker-lifecycle.md#http-version-2-destination-identity)
+requires the complete expected binding on every operation. A configured bound
+service refuses all v1 access and creation; removing the opt-in configuration
+does not make its stamped state legacy again. Legacy configurations with
+unbound state retain their existing v1 behavior.
+
 The supported entry point mounts only the authenticated worker lifecycle API.
 Legacy GitHub/Radicle webhooks, PR-review event dispatch, dashboard task creation
 and palette commands return HTTP 404 on this service. It does not import or start

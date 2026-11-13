@@ -377,6 +377,7 @@ the linked explanation. Update this map when routing changes.
 | --- | --- | --- |
 | Service configuration, ingress and readiness | [managed_service.py](src/worker/managed_service.py), [execution_context.py](src/worker/execution_context.py) | [Managed service](docs/managed-service.md) |
 | Worker state and lifecycle API | [lifecycle.py](src/worker/lifecycle.py), [worker_lifecycle.py](src/api/worker_lifecycle.py) | [Worker lifecycle](docs/worker-lifecycle.md) |
+| Optional execution destination identity and original journal set | [destination.py](src/worker/destination.py), [managed_service.py](src/worker/managed_service.py) | [Execution destination identity](docs/managed-service.md#optional-execution-destination-identity), [HTTP v2](docs/worker-lifecycle.md#http-version-2-destination-identity) |
 | Docker, source snapshots, capture and cleanup | [docker_runtime.py](src/worker/docker_runtime.py), [source_snapshot.py](src/worker/source_snapshot.py) | [Managed Docker runtime](docs/managed-docker-runtime.md) |
 | Coding tools, model access and limits | [model_broker.py](src/worker/model_broker.py), [managed_runner.py](src/agent/managed_runner.py) | [Model broker](docs/managed-model-broker.md) |
 | Child grants, cold sessions and managed public discussion | [child_supervisor.py](src/worker/child_supervisor.py), [child_client.py](src/polyphony/child_client.py), [managed_public.py](src/worker/managed_public.py) and adjacent `managed_public*.py` modules, [public_tools.py](src/agent/public_tools.py) | [Managed children](docs/managed-children.md) |
