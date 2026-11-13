@@ -201,3 +201,29 @@ def test_actual_apt_security_rows_need_no_legacy_checksum():
     assert "1%3a" not in result[1]["path"]
     with pytest.raises(Refused):
         parse_apt_selection("'https://unapproved.invalid/pkg.deb' pkg.deb 123")
+
+
+def test_qualification_executes_committed_source_without_checkout_mutations(tmp_path):
+    import subprocess
+    from tools.managed_image import TESTS, qualification_source
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for path in (*TESTS, "src/worker/example.py", "pytest.ini"):
+        target = repository / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# committed\n")
+    git = ["git", "-C", str(repository)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-qm", "source"], check=True)
+    revision = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    (repository / TESTS[0]).write_text("raise RuntimeError('dirty checkout')\n")
+    (repository / "tests/conftest.py").write_text("raise RuntimeError('untracked checkout')\n")
+    root = tmp_path / "owned"
+    (root / "qualification").mkdir(parents=True)
+    source, record = qualification_source(repository, root, Budget(root))
+    assert record["revision"] == revision
+    assert (source / TESTS[0]).read_text() == "# committed\n"
+    assert not (source / "tests/conftest.py").exists()
+    assert record["files"] == 5

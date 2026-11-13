@@ -479,7 +479,51 @@ printf 'BASE_PACKAGES_END\n'
 
 def git_file(repository, revision, path):
     require(SHA.fullmatch(revision), "source/recipe revision must be a complete Git commit")
-    return subprocess.check_output(["git", "-c", "safe.directory=" + str(repository), "-C", str(repository), "show", revision + ":" + path])
+    return subprocess.check_output(["git", "--no-replace-objects", "-c", "safe.directory=" + str(repository), "-C", str(repository), "show", revision + ":" + path])
+
+
+def qualification_source(repository, root, budget):
+    """Copy exact Git blobs into an owned snapshot; never execute checkout files."""
+    git = ["git", "--no-replace-objects", "-c", "safe.directory=" + str(repository), "-C", str(repository)]
+    revision = budget.run([*git, "rev-parse", "HEAD"], maximum=1024).decode().strip()
+    require(SHA.fullmatch(revision), "invalid native qualification revision")
+    listing = budget.run([*git, "ls-tree", "-r", "-z", revision, "--",
+                          "src", "tests", "pytest.ini", "pyproject.toml"], maximum=1024 * 1024)
+    entries = []
+    for line in listing.rstrip(b"\0").split(b"\0"):
+        description, path = line.decode().split("\t", 1)
+        mode, kind, oid = description.split()
+        require(mode in ("100644", "100755") and kind == "blob" and SHA.fullmatch(oid),
+                "qualification source must contain regular Git blobs")
+        entries.append((safe_relative(path), mode, oid))
+    require(0 < len(entries) <= 4096 and set(TESTS) <= {entry[0] for entry in entries},
+            "qualification source inventory is incomplete or oversized")
+    blobs = budget.run([*git, "cat-file", "--batch"],
+                       input="".join(oid + "\n" for _, _, oid in entries).encode(), maximum=32 * 1024 * 1024)
+    source = root / "qualification/source"
+    source.mkdir()
+    offset, records = 0, []
+    for path, mode, oid in entries:
+        end = blobs.index(b"\n", offset)
+        actual_oid, kind, length = blobs[offset:end].decode().split()
+        size = int(length)
+        require(actual_oid == oid and kind == "blob" and 0 <= size <= 16 * 1024 * 1024,
+                "unexpected qualification blob identity or size")
+        content = blobs[end + 1:end + 1 + size]
+        require(len(content) == size and blobs[end + 1 + size:end + 2 + size] == b"\n"
+                and hashlib.sha1(b"blob " + str(size).encode() + b"\0" + content).hexdigest() == oid,
+                "qualification blob content mismatch")
+        offset = end + 2 + size
+        target = source / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        target.chmod(int(mode[-3:], 8))
+        records.append(file_record(target, path) | {"git_blob": oid})
+    require(offset == len(blobs), "unexpected qualification blob payload")
+    inventory = root / "qualification/source.json"
+    inventory.write_bytes(json_bytes(records))
+    budget.check()
+    return source, {"revision": revision, "inventory_sha256": hash_file(inventory), "files": len(records)}
 
 
 def acquire(args, root, budget):
@@ -738,6 +782,28 @@ def inspect_loaded(daemon, record):
     require(image["RootFS"]["Layers"] == [x["diff_id"] for x in record["layers"]], "loaded image layer mismatch")
 
 
+def inspect_packages(daemon, image_id, manifest):
+    expected = {}
+    for line in manifest["apt"]["base_packages"]:
+        name, version, architecture = line.split("\t")
+        expected[(name, architecture)] = version
+    for item in manifest["inputs"]:
+        if item["path"].endswith(".deb"):
+            expected[(item["package"], item["architecture"])] = item["version"]
+    output = daemon.run(["run", "--rm", "--pull=never", "--network=none", "--read-only",
+                         "--cap-drop=ALL", "--security-opt=no-new-privileges", image_id,
+                         "dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${Architecture}\n"])
+    actual = {}
+    for line in output.decode().splitlines():
+        status, name, version, architecture = line.split("\t")
+        require(status == "ii " and (name, architecture) not in actual,
+                "built image contains an unconfigured or repeated package")
+        actual[(name, architecture)] = version
+    require(actual == expected, "built image package set differs from approved base and additions")
+    return ["\t".join((name, version, architecture))
+            for (name, architecture), version in sorted(actual.items())]
+
+
 def build(args, root, budget, manifest):
     from tools.managed_image_qualification import provision
 
@@ -745,6 +811,7 @@ def build(args, root, budget, manifest):
         args.repository, root, budget, args.approved_qualification,
         args.approved_qualification_sha256,
     )
+    test_source, test_source_record = qualification_source(args.repository, root, budget)
     restore_inputs(args, root, budget, manifest)
     context = root / "context"
     shutil.copytree(root / "source", context)
@@ -774,6 +841,7 @@ def build(args, root, budget, manifest):
         (root / "build.log").write_bytes(output)
         image_id = iid.read_text().strip()
         require(DIGEST.fullmatch(image_id), "builder did not return an immutable image ID")
+        installed_packages = inspect_packages(daemon, image_id, manifest)
         archive = root / "managed-agent.docker.tar"
         daemon.run(["image", "save", "--output", str(archive), image_id])
         record = inspect_archive(archive)
@@ -782,6 +850,7 @@ def build(args, root, budget, manifest):
                        "context_sha256": hash_file(root / "context.json"), "build_arguments": ["--network=none", "--pull=false", "--no-cache", "--force-rm", "PYTHON_BASE=" + manifest["base_config_id"], "OPENJULES_PACKAGE_MODE=sealed"],
                        "docker_version": daemon.version, "source_commit": manifest["source_commit"],
                        "recipe_commit": manifest["recipe_commit"],
+                       "installed_packages": installed_packages,
                        "distribution_permission": "operator-local-only; public source permission/text and bundled-notice approval pending"})
     # Remove only this command's stopped, owned daemon data. The next import is
     # into an empty daemon with no base, build cache, image or registry credential.
@@ -793,17 +862,20 @@ def build(args, root, budget, manifest):
     with Daemon(root, budget, "verification-daemon") as daemon:
         daemon.run(["image", "load", "--input", str(verification)])
         inspect_loaded(daemon, record)
+        temporary = root / "native-temporary"
+        temporary.mkdir()
         env = daemon.env | {"OPENJULES_MANAGED_DOCKER_TESTS": "1", "OPENJULES_MANAGED_AGENT_IMAGE_ID": image_id,
                             "LITELLM_LOCAL_MODEL_COST_MAP": "True", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-                            "PYTHONNOUSERSITE": "1"}
-        test_command = [qualification_python, "-m", "pytest", "-p", "pytest_asyncio.plugin", "-v", *TESTS]
-        output = budget.run(test_command, cwd=args.repository, env=env)
+                            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(temporary)}
+        test_command = [qualification_python, "-B", "-m", "pytest", "-p", "pytest_asyncio.plugin", "-p", "no:cacheprovider",
+                        "--basetemp", str(temporary / "pytest"), "-v", *TESTS]
+        output = budget.run(test_command, cwd=test_source, env=env)
         (root / "native-tests.txt").write_bytes(output)
         text = output.decode(errors="replace")
         require(" skipped" not in text and " passed" in text, "native qualification did not execute all selected tests")
         record["qualification"] = {"tests": list(TESTS), "native": True, "provider": "deterministic HTTP fixtures",
-                                   "authority": "fixtures", "fresh_import": True, "test_revision": subprocess.check_output(
-                                       ["git", "-c", "safe.directory=" + str(args.repository), "-C", str(args.repository), "rev-parse", "HEAD"], text=True).strip()}
+                                   "authority": "fixtures", "fresh_import": True,
+                                   "test_revision": test_source_record["revision"], "test_source": test_source_record}
         record["qualification"]["python_inputs"] = qualification_inputs
     verification.unlink()
     shutil.rmtree(root / "verification-daemon")

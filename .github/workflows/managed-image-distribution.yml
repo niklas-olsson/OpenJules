@@ -63,14 +63,14 @@ jobs:
           SNAPSHOT: ${{ inputs.snapshot }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
-          sudo env PATH="$PATH" "$(command -v python)" -m tools.managed_image acquire \
+          sudo env PATH="$PATH" "$(command -v python)" -B -m tools.managed_image acquire \
             --base-manifest "$APPROVED_BASE" --snapshot "$SNAPSHOT" \
             --source-commit "$SOURCE_COMMIT" --recipe-commit "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/managed-image-candidate"
       - name: Build and qualify the reviewed input set
         if: github.event_name != 'workflow_dispatch' || inputs.action == 'build'
         run: |
-          sudo env PATH="$PATH" "$(command -v python)" -m tools.managed_image build \
+          sudo env PATH="$PATH" "$(command -v python)" -B -m tools.managed_image build \
             --approved-inputs docker/managed-image-inputs.json \
             --approved-inputs-sha256 sha256:cb4eea405dcd8e0052882bd262b035c9b543a4e2dec71ab1e05d26566f3458a6 \
             --approved-qualification docker/managed-image-qualification.json \

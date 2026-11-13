@@ -5,7 +5,7 @@ FROM ${PYTHON_BASE}
 ARG OPENJULES_PACKAGE_MODE=network
 COPY docker/managed-agent-packages/ /opt/openjules-build-packages/
 RUN if [ "$OPENJULES_PACKAGE_MODE" = sealed ]; then \
-      apt-get install --yes --no-download --no-install-recommends /opt/openjules-build-packages/*.deb; \
+      dpkg --unpack /opt/openjules-build-packages/*.deb && dpkg --configure --pending; \
     elif [ "$OPENJULES_PACKAGE_MODE" = network ]; then \
       apt-get update && apt-get install --yes --no-install-recommends git ca-certificates; \
     else exit 1; fi \

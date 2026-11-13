@@ -218,8 +218,11 @@ dispatched provider request stopped processing.
 ### Finite operator-local distribution
 
 `tools/managed_image.py` separates acquisition from a sealed build of this
-production recipe. Its initial environment is rootful Linux/amd64 with Python
-3.11 or 3.12, Git, Docker CLI and `dockerd` already installed. The tool creates
+production recipe. Its initial environment is rootful Linux/amd64 with Python,
+Git, Docker CLI and `dockerd` already installed. Acquisition and archive verification
+support Python 3.11 or 3.12. The current build qualification fixture requires CPython
+3.12 and glibc 2.17 or later on the host; its binary wheel is specific to that ABI
+and architecture. The image platform is recorded separately. The tool creates
 owned temporary Docker data roots with the `vfs` driver. It never contacts an
 ambient Docker context, loads a task, contacts Polyphony or supplies a provider
 credential. Rootless Docker, remapped UIDs and other platforms are unsupported.
@@ -233,7 +236,7 @@ base's Debian archive keyring; the manifest retains that keyring identity and
 signature results. Acquisition does not build an agent image.
 
 ```sh
-sudo python3 -m tools.managed_image acquire \
+sudo python3 -B -m tools.managed_image acquire \
   --base-manifest sha256:APPROVED_PLATFORM_MANIFEST \
   --snapshot APPROVED_UTC_SNAPSHOT \
   --source-commit APPROVED_HELPER_COMMIT \
@@ -246,13 +249,15 @@ Review the resulting `inputs.json` and retain its SHA-256. A build accepts that
 exact document and hash, reacquires only the declared bytes, verifies their
 signed and content-addressed parents, and passes only the recipe, five helpers
 and selected packages to Docker. The separately approved qualification manifest
-supplies a finite wheel set for Python 3.12. The tool counts its metadata discovery and wheel acquisition, then
+supplies a finite wheel set for Python 3.12, including the actual native test import
+closure. The tool counts its metadata discovery and wheel acquisition, then
 creates an owned empty venv and installs the exact wheels offline with hashes and
 no dependency resolution. It checks the complete installed set before running
-tests. The build disables networking, uses the imported immutable base config ID, and uses only local packages.
+tests. The build disables networking, uses the imported immutable base config ID,
+unpacks the complete approved package set and configures it with `dpkg`.
 
 ```sh
-sudo python3 -m tools.managed_image build \
+sudo python3 -B -m tools.managed_image build \
   --approved-inputs /var/tmp/openjules-image-inputs/inputs.json \
   --approved-inputs-sha256 sha256:APPROVED_INPUT_DOCUMENT_HASH \
   --approved-qualification docker/managed-image-qualification.json \
@@ -263,11 +268,16 @@ sudo python3 -m tools.managed_image build \
 The command exports `managed-agent.docker.tar`, checks every ordered uncompressed
 layer against the config, then copies and imports that archive into an empty
 owned daemon. Existing managed-agent, model-runtime and child-runtime tests use
-the exact imported image ID. These trials use deterministic HTTP model and
+the exact imported image ID. Test source and configuration are copied from exact
+Git blobs at the recorded revision into an owned snapshot; dirty or untracked
+checkout files cannot enter that trial. Temporary test work, results and the
+snapshot stay inside the measured directory, with source bytecode and pytest
+caching disabled. These trials use deterministic HTTP model and
 canonical-authority fixtures. They do not qualify live model quality, a browser
 host, multi-host operation or an installed ZPM deployment. `artifact.json`
 retains the image/config identity, archive byte size and SHA-256, layer identities,
-source/recipe revisions, test revision and observed costs. No registry manifest
+source/recipe revisions, test snapshot identity, actual interpreter/ABI/libc details
+and observed costs. No registry manifest
 digest is invented from an image ID or archive hash. Rebuilding requires its own
 output identities and native qualification; identical rebuild bytes are not promised.
 
@@ -286,7 +296,7 @@ After explicitly approving `artifact.json`, transfer that record and exact archi
 to another supported host. Verify before using the ordinary image load command:
 
 ```sh
-python3 -m tools.managed_image verify \
+python3 -B -m tools.managed_image verify \
   --archive managed-agent.docker.tar --record artifact.json \
   --record-sha256 sha256:APPROVED_ARTIFACT_RECORD_HASH
 docker image load --input managed-agent.docker.tar

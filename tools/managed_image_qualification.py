@@ -8,6 +8,7 @@ from __future__ import annotations
 import email.parser
 import os
 from pathlib import Path
+import platform
 import re
 import sys
 import urllib.parse
@@ -28,7 +29,7 @@ def validate_plan(plan):
         "unsupported qualification manifest fields")
     require(plan["format"] == "openjules-image-qualification-v1" and plan["python"] == [3, 12]
             and plan["platform"] == "linux-amd64", "unsupported qualification environment")
-    require(plan["requirements"] == ["pytest", "pytest-asyncio", "docker", "httpx"],
+    require(plan["requirements"] == ["pytest", "pytest-asyncio", "docker", "httpx", "pydantic"],
             "unsupported native qualification roots")
     require(isinstance(plan["wheels"], list) and 4 <= len(plan["wheels"]) <= 32, "invalid wheel inventory")
     names, filenames = set(), set()
@@ -38,8 +39,9 @@ def validate_plan(plan):
         require(re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) and name not in names, "duplicate or invalid wheel name")
         names.add(name)
         filename = wheel["filename"]
-        require(re.fullmatch(r"[A-Za-z0-9_.+-]+-py(?:2\.)?3-none-any\.whl", filename)
-                and filename not in filenames, "qualification requires distinct universal wheels")
+        require((re.fullmatch(r"[A-Za-z0-9_.+-]+-py(?:2\.py)?3-none-any\.whl", filename)
+                 or re.fullmatch(r"pydantic_core-[0-9.]+-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64\.whl", filename))
+                and filename not in filenames, "qualification requires distinct supported wheels")
         filenames.add(filename)
         require(type(wheel["size"]) is int and 0 < wheel["size"] <= 32 * 1024 * 1024
                 and DIGEST.fullmatch(wheel["sha256"]), "invalid wheel size or SHA-256")
@@ -72,7 +74,12 @@ def check_wheel(path, expected):
 
 
 def provision(repository, root, budget, approved, expected_sha):
-    require(list(sys.version_info[:2]) == [3, 12], "qualification manifest requires Python 3.12")
+    libc_name, libc_version = platform.libc_ver()
+    require(list(sys.version_info[:2]) == [3, 12] and sys.implementation.name == "cpython"
+            and sys.platform == "linux" and platform.machine() == "x86_64"
+            and libc_name == "glibc" and re.fullmatch(r"[0-9]+\.[0-9]+", libc_version)
+            and tuple(map(int, libc_version.split("."))) >= (2, 17),
+            "qualification manifest requires CPython 3.12 on Linux amd64 with glibc 2.17 or later")
     require(approved.is_file() and not approved.is_symlink() and approved.stat().st_size <= 1024 * 1024
             and hash_file(approved) == expected_sha, "approved qualification manifest hash mismatch")
     data = approved.read_bytes()
@@ -117,6 +124,9 @@ def provision(repository, root, budget, approved, expected_sha):
     require(actual == expected, "qualification interpreter contains missing or undeclared distributions")
     (root / "qualification/manifest.json").write_bytes(data)
     return str(python), {"manifest_sha256": expected_sha, "installed_distributions": actual,
+                         "interpreter": {"version": sys.version, "implementation": sys.implementation.name,
+                                         "cache_tag": sys.implementation.cache_tag, "machine": platform.machine(),
+                                         "libc": list(platform.libc_ver()), "kernel": platform.release()},
                          "wheel_bytes": sum(wheel["size"] for wheel in plan["wheels"]),
                          "metadata_discovery_reserved_bytes": plan["discovery"]["reserved_transfer_bytes"],
                          "offline_install": True, "no_seed_ensurepip": True}
