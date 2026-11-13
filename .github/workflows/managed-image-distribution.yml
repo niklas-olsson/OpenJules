@@ -72,9 +72,9 @@ jobs:
         run: |
           sudo env PATH="$PATH" "$(command -v python)" -B -m tools.managed_image build \
             --approved-inputs docker/managed-image-inputs.json \
-            --approved-inputs-sha256 sha256:cb4eea405dcd8e0052882bd262b035c9b543a4e2dec71ab1e05d26566f3458a6 \
+            --approved-inputs-sha256 sha256:dc588f1eaff9b6e73fd94f90690cf67f5dd9ef23e39f722a98d09e5b373ec644 \
             --approved-qualification docker/managed-image-qualification.json \
-            --approved-qualification-sha256 sha256:76492598853d8b8b1a7e3fa564c74138fd37fe3ca218ccc036cca77f60ed811e \
+            --approved-qualification-sha256 sha256:49aa65991d49f9920f885b5321d13a93bb187dee69b5b74661dc83c5706e1b2f \
             --output "$RUNNER_TEMP/managed-image-candidate"
       - name: Retain safe text metadata only
         if: always()
