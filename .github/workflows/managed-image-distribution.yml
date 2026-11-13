@@ -1,0 +1,51 @@
+name: Managed image distribution
+
+on:
+  push:
+    branches: [codex/managed-image-distribution]
+    paths:
+      - tools/managed_image.py
+      - docker/Dockerfile.managed-agent
+      - docker/managed-image-inputs.json
+      - .github/workflows/managed-image-distribution.yml
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    if: github.ref == 'refs/heads/codex/managed-image-distribution'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Acquire the finite native-image input set
+        run: |
+          sudo env PATH="$PATH" "$(command -v python)" tools/managed_image.py acquire \
+            --base-manifest sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4 \
+            --snapshot 20261113T000000Z \
+            --source-commit eca71cce8bb0883eb4bf6bf7462bb65d2fa1a3b8 \
+            --recipe-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/managed-image-acquisition"
+      - name: Retain safe acquisition metadata only
+        if: always()
+        run: |
+          mkdir -p managed-image-evidence
+          for name in inputs.json acquisition-report.json resource-report.json apt-verification.txt failed-command.txt; do
+            if sudo test -f "$RUNNER_TEMP/managed-image-acquisition/$name"; then
+              sudo cp "$RUNNER_TEMP/managed-image-acquisition/$name" "managed-image-evidence/$name"
+              sudo chmod 0644 "managed-image-evidence/$name"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-image-acquisition-metadata
+          path: managed-image-evidence/
+          if-no-files-found: error

@@ -215,6 +215,96 @@ dispatched provider request stopped processing.
 
 ## Image and agent command
 
+### Finite operator-local distribution
+
+`tools/managed_image.py` separates acquisition from a sealed build of this
+production recipe. Its initial environment is rootful Linux/amd64 with Python
+3.11 or 3.12, Git, Docker CLI and `dockerd` already installed. The tool creates
+owned temporary Docker data roots with the `vfs` driver. It never contacts an
+ambient Docker context, loads a task, contacts Polyphony or supplies a provider
+credential. Rootless Docker, remapped UIDs and other platforms are unsupported.
+
+First acquire one immutable Python platform manifest and one Debian snapshot.
+Use full Git commits for the five agent helpers and the separately versioned
+production Dockerfile. The acquisition contains the original base config and
+compressed layers, signed snapshot metadata, exact selected package bytes and
+source hashes. The offline apt solver verifies every snapshot with the original
+base's Debian archive keyring; the manifest retains that keyring identity and
+signature results. Acquisition does not build an agent image.
+
+```sh
+sudo python3 tools/managed_image.py acquire \
+  --base-manifest sha256:APPROVED_PLATFORM_MANIFEST \
+  --snapshot APPROVED_UTC_SNAPSHOT \
+  --source-commit APPROVED_HELPER_COMMIT \
+  --recipe-commit APPROVED_RECIPE_COMMIT \
+  --output /var/tmp/openjules-image-inputs
+```
+
+The uppercase arguments are explicit operator choices, not runnable identifiers.
+Review the resulting `inputs.json` and retain its SHA-256. A build accepts that
+exact document and hash, reacquires only the declared bytes, verifies their
+signed and content-addressed parents, and passes only the recipe, five helpers
+and selected packages to Docker. Its rootful test interpreter must already have
+the repository's test dependencies installed. The build disables networking,
+uses the imported immutable base config ID, and uses only local packages.
+
+```sh
+sudo python3 tools/managed_image.py build \
+  --approved-inputs /var/tmp/openjules-image-inputs/inputs.json \
+  --approved-inputs-sha256 sha256:APPROVED_INPUT_DOCUMENT_HASH \
+  --output /var/tmp/openjules-image-output
+```
+
+The command exports `managed-agent.docker.tar`, checks every ordered uncompressed
+layer against the config, then copies and imports that archive into an empty
+owned daemon. Existing managed-agent, model-runtime and child-runtime tests use
+the exact imported image ID. These trials use deterministic HTTP model and
+canonical-authority fixtures. They do not qualify live model quality, a browser
+host, multi-host operation or an installed ZPM deployment. `artifact.json`
+retains the image/config identity, archive byte size and SHA-256, layer identities,
+source/recipe revisions, test revision and observed costs. No registry manifest
+digest is invented from an image ID or archive hash. Rebuilding requires its own
+output identities and native qualification; identical rebuild bytes are not promised.
+
+The first-candidate limits are 2 GiB of reserved acquisition/verification-transfer
+bytes, a 1 GiB archive, 8 GiB of observed work/daemon storage and 30 minutes per
+invocation. Every input size is reserved before its download; failed transfers
+remain charged. Public registry authorization and HTTP overhead have separate
+bounded reservations. All owned daemon data, context, caches and archive copies
+are measured. Storage is sampled during operations and excess stops the
+candidate; this is not a filesystem quota. Already installed host tools and test
+dependencies are prerequisites, not measured downloads. Resource reports state
+that boundary explicitly. The separate acquisition and build reports are not
+one combined 30-minute or 2-GiB claim.
+
+After explicitly approving `artifact.json`, transfer that record and exact archive
+to another supported host. Verify before using the ordinary image load command:
+
+```sh
+python3 tools/managed_image.py verify \
+  --archive managed-agent.docker.tar --record artifact.json \
+  --record-sha256 sha256:APPROVED_ARTIFACT_RECORD_HASH
+docker image load --input managed-agent.docker.tar
+docker image inspect sha256:APPROVED_IMAGE_CONFIG_ID
+```
+
+Approve the record's origin separately. A hash supplied by an untrusted sender
+does not establish permission or provenance. Wrong bytes, platform, config or
+layer identities refuse before image import. ZPM continues to receive an already
+loaded immutable image ID through its existing contract.
+
+The source declares MIT in `pyproject.toml`, but accompanying source permission
+text and distribution notices remain pending under OpenJules #49. The tool has
+no binary upload, registry push or release operation. CI retains text metadata
+only. Public binary publication requires the recorded applicable source and
+base/package notices first. Keep old approved manifests and artifact records
+immutable; security updates use a new acquisition, review, build and qualification.
+An operator can withdraw an old identity from future installation approval without
+rewriting its historical evidence.
+
+### Ordinary operator-built image
+
 Build from an approved base and retain the resulting immutable image ID:
 
 ```sh

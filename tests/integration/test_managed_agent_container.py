@@ -61,6 +61,8 @@ def agent_image(tmp_path_factory):
         shutil.copyfile(
             repository / "docker/Dockerfile.managed-agent", build / "Dockerfile"
         )
+        (build / "docker/managed-agent-packages").mkdir(parents=True)
+        (build / "docker/managed-agent-packages/.keep").touch()
         image, _ = client.images.build(
             path=str(build),
             rm=True,

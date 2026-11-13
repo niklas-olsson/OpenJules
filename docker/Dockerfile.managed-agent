@@ -2,8 +2,14 @@
 # through PYTHON_BASE for a reproducible base, then approve the output image ID.
 ARG PYTHON_BASE
 FROM ${PYTHON_BASE}
-RUN apt-get update && apt-get install --yes --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ARG OPENJULES_PACKAGE_MODE=network
+COPY docker/managed-agent-packages/ /opt/openjules-build-packages/
+RUN if [ "$OPENJULES_PACKAGE_MODE" = sealed ]; then \
+      apt-get install --yes --no-download --no-install-recommends /opt/openjules-build-packages/*.deb; \
+    elif [ "$OPENJULES_PACKAGE_MODE" = network ]; then \
+      apt-get update && apt-get install --yes --no-install-recommends git ca-certificates; \
+    else exit 1; fi \
+    && rm -rf /var/lib/apt/lists/* /opt/openjules-build-packages
 # Read-only guests cannot populate missing stdlib caches between Python helpers.
 # Compile the immutable stdlib at build time, retaining source-hash validation.
 RUN python3 -I -S -c 'import compileall, os, py_compile, re, sysconfig; \
