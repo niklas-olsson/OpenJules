@@ -301,15 +301,17 @@ class Daemon:
         self.path.mkdir()
         (self.path / "client-config").mkdir(mode=0o700)
         self.env["DOCKER_CONFIG"] = str(self.path / "client-config")
+        daemon_config = self.path / "daemon.json"
+        daemon_config.write_text("{}\n")
         self.env["DOCKER_HOST"] = "unix://" + str(self.path / "docker.sock")
         self.env["DOCKER_BUILDKIT"] = "0"  # No dynamically downloaded builder image.
         self.log = (self.path / "daemon.log").open("wb")
         self.process = subprocess.Popen([
-            "dockerd", "--host=" + self.env["DOCKER_HOST"],
+            "dockerd", "--config-file=" + str(daemon_config), "--host=" + self.env["DOCKER_HOST"],
             "--data-root=" + str(self.path / "data"), "--exec-root=" + str(self.path / "exec"),
             "--pidfile=" + str(self.path / "pid"), "--storage-driver=vfs", "--bridge=none",
             "--iptables=false", "--ip6tables=false", "--ip-forward=false", "--ip-masq=false",
-        ], stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+        ], stdout=self.log, stderr=subprocess.STDOUT, env=self.env, start_new_session=True)
         started = time.monotonic()
         try:
             while True:
@@ -422,6 +424,18 @@ def package_records(path):
     return records
 
 
+def parse_apt_selection(selected):
+    packages = []
+    for line in selected.splitlines():
+        if line.startswith("'"):
+            match = re.fullmatch(r"'file:/inputs/(repos/[^']+\.deb)' (\S+) ([0-9]+)(?: \S+)?", line.rstrip())
+            require(match, "unsupported apt selection encoding")
+            packages.append({"path": safe_relative(urllib.parse.unquote(match[1], errors="strict")),
+                             "filename": match[2], "size": int(match[3])})
+    require(packages and len(packages) <= 128, "empty or oversized package selection")
+    return packages
+
+
 def apt_plan(root, daemon):
     # Only signed, acquired local metadata is visible. No apt server is reached.
     command = r'''set -eu
@@ -456,13 +470,7 @@ printf 'BASE_PACKAGES_END\n'
     keyring = re.search(r"^KEYRING ([0-9a-f]{64})  /usr/share/keyrings/debian-archive-keyring.gpg$", text, re.M)
     require(keyring, "missing base keyring identity")
     selected = text.split("PACKAGES_BEGIN\n", 1)[1].split("PACKAGES_END\n", 1)[0]
-    packages = []
-    for line in selected.splitlines():
-        if line.startswith("'"):
-            match = re.fullmatch(r"'file:/inputs/(repos/[^']+\.deb)' (\S+) ([0-9]+) (\S+)", line)
-            require(match, "unsupported apt selection encoding")
-            packages.append({"path": safe_relative(match[1]), "filename": match[2], "size": int(match[3])})
-    require(packages and len(packages) <= 128, "empty or oversized package selection")
+    packages = parse_apt_selection(selected)
     base_packages = text.split("BASE_PACKAGES_BEGIN\n", 1)[1].split("BASE_PACKAGES_END\n", 1)[0]
     signatures = [line for line in text.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
     return packages, {"keyring_sha256": "sha256:" + keyring[1], "valid_signatures": signatures,
@@ -543,6 +551,8 @@ def acquire(args, root, budget):
               "source_commit": args.source_commit, "recipe_commit": args.recipe_commit,
               "apt": trust, "builder": {"kind": "docker-classic", "network": "none", "package_mode": "sealed",
               "source_permissions": "pyproject declares MIT; accompanying source permission/text remains required before public binary publication"}}
+    validate_inputs(result)
+    verify_closed_inputs(root, result, packages)
     (root / "inputs.json").write_bytes(json_bytes(result))
     (root / "acquisition-report.json").write_bytes(json_bytes(budget.report() | {"tools": tools}))
     print("INPUT_MANIFEST " + json.dumps(result, sort_keys=True))

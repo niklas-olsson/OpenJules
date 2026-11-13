@@ -149,3 +149,55 @@ def test_ambiguous_json_and_relative_paths_refuse():
     for path in ("../secret", "/absolute", "x/../secret", "x\\secret", "x//y"):
         with pytest.raises(Refused):
             safe_relative(path)
+
+
+def test_owned_command_reaps_descendant_after_leader_returns(tmp_path):
+    import os
+    import sys
+    budget = Budget(tmp_path)
+    output = budget.run([sys.executable, "-c", "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(p.pid)"])
+    child = int(output)
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
+
+
+def test_docker_environment_cannot_inherit_foreign_context(tmp_path, monkeypatch):
+    from tools.managed_image import Daemon
+    monkeypatch.setenv("DOCKER_CONTEXT", "foreign")
+    monkeypatch.setenv("DOCKER_HOST", "tcp://foreign:2376")
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    monkeypatch.setenv("DOCKER_CERT_PATH", "/private/certificates")
+    monkeypatch.setenv("DOCKER_CONFIG", "/private/docker")
+    monkeypatch.setenv("OPENAI_API_KEY", "host-only-fixture")
+    daemon = Daemon(tmp_path, Budget(tmp_path), "owned")
+    assert not any(key in daemon.env for key in (
+        "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONFIG", "OPENAI_API_KEY"))
+
+
+def test_extra_unreferenced_archive_payload_refuses(tmp_path):
+    extra = tarfile.TarInfo("index.json")
+    extra.size = 0
+    with pytest.raises(Refused, match="unreferenced"):
+        inspect_archive(archive(tmp_path, extra=extra))
+
+
+def test_expected_config_must_equal_image_id(tmp_path):
+    path = archive(tmp_path)
+    expected = inspect_archive(path)
+    expected["config_sha256"] = "sha256:" + "d" * 64
+    with pytest.raises(Refused, match="expected archive contract"):
+        inspect_archive(path, expected=expected)
+
+
+def test_actual_apt_security_rows_need_no_legacy_checksum():
+    from tools.managed_image import parse_apt_selection
+    rows = """'file:/inputs/repos/debian-security/pool/updates/main/p/perl/perl-modules-5.36_5.36.0-7%2bdeb12u4_all.deb' perl-modules-5.36_5.36.0-7+deb12u4_all.deb 2817356
+'file:/inputs/repos/debian/pool/main/g/git/git_2.39.5-0%2bdeb12u3_amd64.deb' git_1%3a2.39.5-0+deb12u3_amd64.deb 7264380 MD5Sum:b493c1ad123361900c2e3686921c8f39
+"""
+    result = parse_apt_selection(rows)
+    assert result[0]["path"].endswith("perl-modules-5.36_5.36.0-7+deb12u4_all.deb")
+    assert result[0]["size"] == 2817356
+    assert result[1]["path"].endswith("git_2.39.5-0+deb12u3_amd64.deb")
+    assert "1%3a" not in result[1]["path"]
+    with pytest.raises(Refused):
+        parse_apt_selection("'https://unapproved.invalid/pkg.deb' pkg.deb 123")
