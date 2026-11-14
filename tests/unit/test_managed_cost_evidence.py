@@ -11,7 +11,7 @@ import pytest
 
 from tools.managed_cost_evidence import (
     MEMBERS, aggregate_spans, decode, encode, privacy_check, project_report, read_archive,
-    source_binding,
+    project_resources, source_binding,
 )
 
 
@@ -31,11 +31,14 @@ def sample_report():
                    custody_unresolved=False, facts={"source_base": "a" * 40}, measurements=deepcopy(measurement),
                    resource_summary={"complete_observations": True, "sampled_max_owned_mixed_memory_bytes": 4096},
                    resource_samples=[{"available": True, "timestamp_ns": 42, "missing": [],
-                                      "processes": [{"pid": 15, "private_timeline_sentinel": 999}]}])
+                                      "host_rss_bytes": 4096, "container_charge_bytes": 0,
+                                      "processes": [{"pid": 15, "start_ticks": 100,
+                                                     "private_timeline_sentinel": 999}]}])
     rows[5].update(status="FAIL", wall_ns=900, custody_unresolved=True,
                    facts={"original_outcome": "unknown"}, measurements=deepcopy(measurement),
                    resource_summary={"complete_observations": False, "sampled_max_owned_mixed_memory_bytes": None},
-                   resource_samples=[{"available": True, "missing": ["owned_process_observation_unavailable"]},
+                   resource_samples=[{"available": True, "timestamp_ns": 43,
+                                      "missing": ["owned_process_observation_unavailable"]},
                                      {"available": False, "reason": "owned_root_exited_or_reused"}])
     return manifest, {"schema_version": 1, "investigation": "managed-costs-v1", "complete": False,
                       "samples": rows, "summary": {}, "elapsed_seconds": 20}
@@ -98,6 +101,110 @@ def test_nested_intervals_remain_separate_and_missing_times_are_not_zero():
     assert result["runtime.ensure"]["wall_ns"]["missing_count"] == 1
     assert result["runtime.ensure"]["outcomes"] == {"completed": 1, "running": 1}
     assert aggregate_spans([spans[2]])["runtime.ensure"]["wall_ns"]["sum"] is None
+
+
+def resource_row(timestamp, host, container, processes=(), **changes):
+    return {"available": True, "timestamp_ns": timestamp, "missing": [],
+            "host_rss_bytes": host, "container_charge_bytes": container,
+            "processes": list(processes), **changes}
+
+
+def io_process(pid, start, **counters):
+    return {"pid": pid, "start_ticks": start, "io": counters}
+
+
+def test_resource_projection_keeps_reused_pid_separate_and_io_nonadditive():
+    observations = [
+        resource_row(10, 100, 400, [io_process(10, 5, rchar=120), io_process(20, 6, rchar=60)]),
+        resource_row(20, 900, 10, [io_process(10, 5, rchar=100)]),
+        resource_row(30, 110, 500, [io_process(10, 15, rchar=3), io_process(20, 6, rchar=65)]),
+    ]
+    before = deepcopy(observations)
+    projected = project_resources(observations)
+    assert observations == before
+    rows = {(row["pid"], row["start_ticks"]): row for row in projected["host_io"]["identities"]}
+    assert set(rows) == {(10, 5), (10, 15), (20, 6)}
+    original = rows[10, 5]
+    assert original["counters"]["rchar"] == {
+        "first": 120, "last": 100, "maximum": 120,
+        "first_observed_timestamp_ns": 10, "last_observed_timestamp_ns": 20,
+        "observed_count": 2, "missing_count": 0,
+    }
+    assert original["rows_without_identity_evidence"] == 1 and original["failed_read_observations"] == 0
+    assert rows[10, 15]["counters"]["rchar"]["first"] == 3
+    assert rows[20, 6]["counters"]["rchar"]["last"] == 65
+    assert set(projected["host_io"]) == {"identities", "identity_count", "missing_process_read_rows",
+                                         "missing_process_read_rows_without_unconfirmed_diagnostic",
+                                         "omitted_process_read_diagnostics"}
+    assert any("must not be summed" in value for value in projected["scope"])
+
+
+def test_component_memory_peaks_are_not_added_and_missing_values_stay_missing():
+    projected = project_resources([
+        resource_row(1, 900, 10), resource_row(2, 110, 500),
+        resource_row(3, None, 200, missing=["owned_process_observation_unavailable"]),
+        {"available": False, "reason": "owned_root_exited_or_reused"},
+    ])
+    memory = projected["memory"]
+    assert memory["host_rss_bytes"] == {"observed_maximum": 900, "observed_rows": 2, "missing_rows": 1}
+    assert memory["container_charge_bytes"]["observed_maximum"] == 500
+    assert memory["simultaneous_mixed_bytes"] == {"observed_maximum": 910, "observed_rows": 2, "missing_rows": 1}
+    assert projected["available_rows"] == 3 and projected["unavailable_rows"] == 1
+    assert projected["rows_with_missing_reads"] == 1
+    unavailable = project_resources([{"available": False, "reason": "owned_root_exited_or_reused"}])
+    assert all(row["observed_maximum"] is None for row in unavailable["memory"].values())
+
+
+def test_io_missing_counters_diagnostics_and_absence_have_distinct_coverage():
+    observations = [
+        resource_row(1, 10, 0, [io_process(11, 50, rchar=0, read_bytes=20)]),
+        resource_row(2, 10, 0, [{"pid": 11, "start_ticks": 50}]),
+        resource_row(3, 0, 0, missing=["owned_process_observation_unavailable"],
+                     process_read_diagnostics=[{"pid": 11, "start_ticks": 50, "read_stage": "io"}]),
+        resource_row(4, 0, 0),  # Absence does not prove a failure or departure.
+        {"available": False, "reason": "owned_root_exited_or_reused"},
+        resource_row(6, 0, 0, missing=["owned_process_observation_unavailable"]),
+    ]
+    projected = project_resources(observations)
+    row, = projected["host_io"]["identities"]
+    assert row["process_rows"] == 2 and row["identity_evidence_rows"] == 3
+    assert row["failed_read_observations"] == 1 and row["rows_without_identity_evidence"] == 2
+    assert row["counters"]["rchar"]["first"] == row["counters"]["rchar"]["last"] == 0
+    assert row["counters"]["rchar"]["observed_count"] == 1
+    assert row["counters"]["rchar"]["missing_count"] == 2
+    assert row["counters"]["wchar"]["maximum"] is None and row["counters"]["wchar"]["missing_count"] == 3
+    assert projected["host_io"]["missing_process_read_rows"] == 2
+    assert projected["host_io"]["missing_process_read_rows_without_unconfirmed_diagnostic"] == 1
+    assert projected["unavailable_rows"] == 1
+
+
+def test_confirmed_departure_diagnostic_does_not_attribute_another_missing_identity():
+    projected = project_resources([resource_row(
+        1, 0, 0, missing=["owned_process_observation_unavailable"],
+        process_read_diagnostics=[{"pid": 11, "start_ticks": 50, "confirmed_departed": True}],
+        process_read_diagnostics_omitted=1,
+    )])
+    io = projected["host_io"]
+    assert io["missing_process_read_rows"] == 1
+    assert io["missing_process_read_rows_without_unconfirmed_diagnostic"] == 1
+    assert io["omitted_process_read_diagnostics"] == 1 and io["identity_count"] == 1
+    row, = io["identities"]
+    assert row["failed_read_observations"] == row["confirmed_departure_read_failures"] == 1
+    assert row["unconfirmed_read_failures"] == 0
+    assert all(counter["maximum"] is None for counter in row["counters"].values())
+
+
+@pytest.mark.parametrize("counter", [True, -1, 2**64, "100"])
+def test_invalid_resource_counter_is_not_coerced_to_an_observation(counter):
+    with pytest.raises(ValueError, match="resource_counter_invalid"):
+        project_resources([resource_row(1, 0, 0, [io_process(10, 5, rchar=counter)])])
+
+
+def test_resource_projection_has_finite_identity_bound_without_silent_truncation(monkeypatch):
+    import tools.managed_cost_evidence as evidence
+    monkeypatch.setattr(evidence, "MAX_IO_IDENTITIES", 1)
+    with pytest.raises(ValueError, match="resource_identity_bound"):
+        project_resources([resource_row(1, 0, 0, [io_process(10, 5), io_process(10, 6)])])
 
 
 def test_zip_provenance_uses_exact_member_bytes_and_rejects_changed_archive(tmp_path):

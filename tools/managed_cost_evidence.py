@@ -27,6 +27,8 @@ MEMBERS = {
 MAX_MEMBER = 16 * 1024 * 1024
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_PROJECTION = 4 * 1024 * 1024
+MAX_IO_IDENTITIES = 4096
+IO_COUNTERS = ("rchar", "wchar", "read_bytes", "write_bytes")
 REPORT_KEYS = frozenset({
     "schema_version", "investigation", "complete", "elapsed_seconds", "environment", "image_ids",
     "manifest_sha256", "declared_transfer_reserved_bytes", "samples", "summary", "limits",
@@ -165,6 +167,124 @@ def aggregate_spans(spans):
     return result
 
 
+def _resource_integer(value):
+    require(value is None or type(value) is int and 0 <= value < 2**64, "resource_counter_invalid")
+    return value
+
+
+def _process_identity(row):
+    require(type(row) is dict and type(row.get("pid")) is int and 0 < row["pid"] < 2**31
+            and type(row.get("start_ticks")) is int and 0 <= row["start_ticks"] < 2**64,
+            "resource_process_identity_invalid")
+    return row["pid"], row["start_ticks"]
+
+
+def project_resources(observations):
+    """Preserve observed maxima and overlapping per-identity IO, never totals."""
+    require(type(observations) is list, "resource_series_invalid")
+    available = missing_rows = missing_process_rows = unattributed_failures = omitted_diagnostics = 0
+    memory = {name: [] for name in ("host_rss_bytes", "container_charge_bytes", "simultaneous_mixed_bytes")}
+    identities = {}
+    for observation in observations:
+        require(type(observation) is dict and type(observation.get("available")) is bool,
+                "resource_observation_invalid")
+        if not observation["available"]:
+            continue
+        available += 1
+        timestamp = _resource_integer(observation.get("timestamp_ns"))
+        require(timestamp is not None, "resource_timestamp_unavailable")
+        missing = observation.get("missing", [])
+        require(type(missing) is list and all(type(code) is str for code in missing), "resource_missing_invalid")
+        missing_rows += bool(missing)
+        host = _resource_integer(observation.get("host_rss_bytes"))
+        containers = _resource_integer(observation.get("container_charge_bytes"))
+        for name, value in (("host_rss_bytes", host), ("container_charge_bytes", containers),
+                            ("simultaneous_mixed_bytes", None if host is None or containers is None else host + containers)):
+            if value is not None:
+                memory[name].append(value)
+        processes = observation.get("processes", [])
+        diagnostics = observation.get("process_read_diagnostics", [])
+        require(type(processes) is list and type(diagnostics) is list, "resource_process_rows_invalid")
+        omitted = _resource_integer(observation.get("process_read_diagnostics_omitted", 0))
+        require(omitted is not None, "resource_diagnostic_count_invalid")
+        omitted_diagnostics += omitted
+        process_values = {}
+        for process in processes:
+            identity = _process_identity(process)
+            require(identity not in process_values, "resource_process_identity_duplicate")
+            values = process.get("io")
+            require(values is None or type(values) is dict, "resource_io_invalid")
+            process_values[identity] = {} if values is None else values
+        failed, confirmed = set(), set()
+        for diagnostic in diagnostics:
+            identity = _process_identity(diagnostic)
+            require(identity not in failed, "resource_process_diagnostic_duplicate")
+            require("confirmed_departed" not in diagnostic or type(diagnostic["confirmed_departed"]) is bool,
+                    "resource_process_diagnostic_invalid")
+            failed.add(identity)
+            if diagnostic.get("confirmed_departed") is True:
+                confirmed.add(identity)
+        if "owned_process_observation_unavailable" in missing:
+            missing_process_rows += 1
+            if not failed - confirmed:
+                unattributed_failures += 1
+        for identity in sorted(set(process_values) | failed):
+            if identity not in identities:
+                require(len(identities) < MAX_IO_IDENTITIES, "resource_identity_bound")
+                identities[identity] = {
+                    "pid": identity[0], "start_ticks": identity[1], "identity_evidence_rows": 0,
+                    "process_rows": 0, "failed_read_observations": 0,
+                    "confirmed_departure_read_failures": 0, "unconfirmed_read_failures": 0,
+                    "first_evidence_timestamp_ns": timestamp, "last_evidence_timestamp_ns": timestamp,
+                    "counters": {name: {"first": None, "last": None, "maximum": None,
+                                        "first_observed_timestamp_ns": None, "last_observed_timestamp_ns": None,
+                                        "observed_count": 0, "missing_count": 0}
+                                 for name in IO_COUNTERS},
+                }
+            row = identities[identity]
+            row["identity_evidence_rows"] += 1
+            row["process_rows"] += identity in process_values
+            row["failed_read_observations"] += identity in failed
+            row["confirmed_departure_read_failures"] += identity in confirmed
+            row["unconfirmed_read_failures"] += identity in failed - confirmed
+            row["last_evidence_timestamp_ns"] = timestamp
+            values = process_values.get(identity, {})
+            for name in IO_COUNTERS:
+                value = _resource_integer(values.get(name))
+                counter = row["counters"][name]
+                if value is None:
+                    counter["missing_count"] += 1
+                    continue
+                if not counter["observed_count"]:
+                    counter.update(first=value, first_observed_timestamp_ns=timestamp)
+                counter.update(last=value, last_observed_timestamp_ns=timestamp,
+                               maximum=value if counter["maximum"] is None else max(counter["maximum"], value))
+                counter["observed_count"] += 1
+    rows = []
+    for identity in sorted(identities):
+        row = identities[identity]
+        row["rows_without_identity_evidence"] = available - row["identity_evidence_rows"]
+        rows.append(row)
+    return {
+        "available_rows": available, "unavailable_rows": len(observations) - available,
+        "rows_with_missing_reads": missing_rows,
+        "memory": {name: {"observed_maximum": max(values, default=None), "observed_rows": len(values),
+                           "missing_rows": available - len(values)} for name, values in memory.items()},
+        "host_io": {"identities": rows, "identity_count": len(rows),
+                    "missing_process_read_rows": missing_process_rows,
+                    "missing_process_read_rows_without_unconfirmed_diagnostic": unattributed_failures,
+                    "omitted_process_read_diagnostics": omitted_diagnostics},
+        "scope": [
+            "memory maxima describe retained available observations, including partial rows; missing coverage remains explicit",
+            "host RSS and container maxima are separate and nonadditive; mixed maximum uses each same-row sum and excludes pending reservations",
+            "IO counters include each process and its waited-for children, so identities overlap and must not be summed into a total or whole-tree lower bound",
+            "rchar/wchar count syscall bytes; storage-layer write accounting is not completed writeback and cancelled_write_bytes was not collected",
+            "first/last/max are observed lifetime counters, not interval deltas or monotonicity claims; fields are not a transactional multi-counter snapshot",
+            "absence from a row is not a failed read or proof of process exit; only retained diagnostics attribute failures, and unobserved short-lived processes remain outside coverage",
+        ],
+    }
+
+
 def project_report(report, manifest):
     require(type(report) is dict and set(report) <= REPORT_KEYS, "report_schema_changed")
     require(type(report["schema_version"]) is int and report["schema_version"] == 1
@@ -189,6 +309,7 @@ def project_report(report, manifest):
             row["measurements"]["phase_aggregates"] = aggregate_spans(measurement["spans"])
         if "resource_samples" in sample:
             observations = sample["resource_samples"]
+            row["resource_projection"] = project_resources(observations)
             row["resource_series_omission"] = {
                 "rows": len(observations),
                 "unavailable_reasons": dict(Counter(item["reason"] for item in observations if item.get("available") is False)),
@@ -232,6 +353,7 @@ def build_projection(archive, expected_sha256, repository, artifact_url, trial, 
             "phase count, outcomes and timing aggregates retain inclusive observations; nested or overlapping phases are not additive partitions",
             "phase timing minima and maxima describe observed intervals; missing intervals remain explicitly missing",
             "process timelines and individual span identities are omitted; resource summaries and missing/unavailable counts remain",
+            "separate observed memory maxima and bounded nonadditive per-PID/start IO first/last/max observations are preserved without a whole-tree or physical-IO total",
             "source summaries are retained as reported; sample values permit independent median/range recalculation",
             "the projection is evidence preservation, not acceptance of a run, optimization, distribution or release",
             "pattern screening does not replace independent review of public facts and their source provenance",

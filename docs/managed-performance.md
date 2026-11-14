@@ -6,6 +6,16 @@ policy, language, permission, deadline, fsync guarantee or supported execution
 mode. It is the bounded investigation from issue #55, not a performance service
 or a replacement for native correctness and installed acceptance.
 
+## Completed decision
+
+[Trial D and its decision record](managed-cost-decision.md) complete the declared
+18-case, 66-sample investigation at native revision
+`04a172b7121c35d492f9ce137ccd4880494cb8d8`: all 66 samples passed in 419.541
+seconds. The decision retains the current implementation and its recovery and
+durability boundaries. The final installed idle worker has qualified stopped
+retention, not physical removal. Raw D measurements and their exact provenance
+are retained in the [durable projection](managed-cost-evidence/trial-d.json).
+
 ## Declared inputs and cases
 
 The reviewed input is
@@ -258,7 +268,9 @@ capture before the fixture provider was released; they do not repair the missing
 resource measurement. Trial C remains failed. The bounded engine confirmation
 and diagnostic correction above applies only to a fresh trial.
 
-A fresh complete trial is still required. Any production optimization needs its own
+The separate [complete Trial D](managed-cost-decision.md) subsequently passed all
+66 samples with the reviewed observation corrections. A/B/C remain failed; their
+samples are not pooled with D. Any production optimization needs its own
 correctness/recovery review and qualification.
 
 Reproduce recorded trials from their exact investigation revision and inputs,
@@ -291,6 +303,32 @@ independent comparison. Individual process timelines are omitted. Phase interval
 become per-phase count/outcome and wall/thread-CPU aggregates; these remain
 inclusive and cannot be added into a phase partition. Unknown timing values stay
 missing. Trials are never pooled and a failed trial is never relabeled complete.
+
+New projections also retain each sample's separate observed host-RSS and
+container-charge maxima, and the largest same-observation mixed sum. Independent
+component maxima must not be added. Partial observations, unavailable rows and
+missing metric values remain explicit; these are sampled observations, not a
+continuous memory peak.
+
+For each original host PID/start identity, the projection preserves first, last
+and maximum observed `rchar`, `wchar`, `read_bytes` and `write_bytes`, their
+observation times/counts and missing coverage. Absent identities are counted
+separately from failed reads; older failures without identity diagnostics remain
+unattributed. As documented by [Linux man-pages](https://www.man7.org/linux/man-pages/man5/proc_pid_io.5.html),
+these counters include waited-for children, so identities overlap and cannot be
+summed into a whole-tree total or lower bound. `rchar`/`wchar` count syscall bytes.
+The [kernel proc documentation](https://docs.kernel.org/filesystems/proc.html)
+explains storage-layer accounting: `write_bytes` is charged when pages are dirtied,
+not when writeback completes, and truncation can cancel writes. This sampler
+does not collect `cancelled_write_bytes`. The fields are not a transactional
+multi-counter snapshot; no monotonicity, interval-delta or total physical-I/O
+claim is derived. A failed counter read followed by confirmed process departure
+is recorded separately from an unconfirmed read, without inventing missing values.
+
+Postprocessing records its own projector hash independently of the measured
+revision. A later projector can preserve these additional observations from an
+unchanged original ZIP without another native trial. The already recorded
+Trial A/B/C projections retain their original bytes and projector identities.
 
 The command refuses changed structural schemas and common private path or token
 markers. Optional `--forbid-literal` checks add review-specific private terms
