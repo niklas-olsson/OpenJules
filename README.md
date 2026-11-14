@@ -397,6 +397,7 @@ the linked explanation. Update this map when routing changes.
 | Composition and draft publication | [managed_composition.py](src/git_manager/managed_composition.py), [managed_publication.py](src/worker/managed_publication.py), [managed_github.py](src/forge/managed_github.py) | [Managed publication](docs/managed-publication.md) |
 | Standalone sandbox recovery | [docker_driver.py](src/sandbox/docker_driver.py), [executor.py](src/worker/executor.py) | [Sandbox recovery](docs/sandbox-recovery.md) |
 | Standalone public participant | [public_discussion.py](src/worker/public_discussion.py), [discussion_journal.py](src/worker/discussion_journal.py), [conversation_client.py](src/polyphony/conversation_client.py) | [Bounded public discussion](#bounded-public-discussion) |
+| Experimental standalone host signals | [outbox.py](src/polyphony/outbox.py), [controller.py](src/polyphony/controller.py), [registry.py](src/polyphony/registry.py) | [Explicit adapters, uncertainty and native tool evidence](docs/standalone-signals.md) |
 
 Polyphony owns [canonical task authority](https://github.com/niklas-olsson/keystone-polyphony/blob/main/docs/managed-runtime.md).
 ZPM owns [installation configuration](https://github.com/niklas-olsson/zero-point-modulator/blob/main/docs/single-host-installation.md),
@@ -408,7 +409,7 @@ installed pins and [joined acceptance](https://github.com/niklas-olsson/zero-poi
 | --- | --- |
 | Managed service | Authenticated lifecycle and canonical managed dispatch, isolated execution and retained capture. Publication is a separate approved host operation. |
 | Standalone HTTP/WS | Health/static only; no private reads, execution, feedback, cohort control or subscriptions. |
-| Trusted host CLI/components | Explicit legacy executor, reviewer, poller, MCP and swarm operations, refused in installed managed context. |
+| Trusted host CLI/components | Explicit legacy executor, reviewer, poller and MCP components, refused in installed managed context. Swarm start/drain remain unavailable until a production signal transport is qualified; an injected local adapter supports the experimental controller contract. |
 
 The following legacy components remain available to explicit trusted local
 callers. They are not loaded by the standalone HTTP app and are not a substitute
@@ -427,6 +428,7 @@ for canonical managed authority:
      - **Step B (Action Loop)**: Stateful ReAct loop with turn limit. Native OpenAI function calling with automatic prompt-guided JSON fallback for local LLMs lacking tool calling schemas.
      - **Step C (Verification)**: Automatically executes `config.test_command` with an adaptive fix loop if tests fail.
 3. **Keystone Polyphony Multi-Agent Swarm (`src/polyphony/`)**:
+   - Host-resource signals require an explicitly injected adapter. The MCP consumer checks actual JSON-text results, preserves attempted signal IDs and pauses on uncertain effects or acknowledgements. Direct SQL and automatic idle assumptions are refused; see [standalone host signals](docs/standalone-signals.md).
    - Auto-subscribes all agents targeting the same repo to the repo's Polyphony choir using deterministic `SWARM_KEY` derivation (`keystone-polyphony-v1:<repo>`).
    - **Baton Mutex Locks**: Prevents duplicate concurrent runs (`task:{issue_id}`) and coordinates file modifications (`file:{path}`).
    - **Liminal Space**: Broadcasts thoughts, status changes (`planning`, `busy`, `verifying`, `idle`), and audit logs.

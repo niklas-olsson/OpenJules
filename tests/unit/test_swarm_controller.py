@@ -269,62 +269,19 @@ def test_escalate_triage_logging_and_webhook():
         mock_urlopen.assert_called_once()
 
 
-def test_sqlite_outbox_bridge_full_lifecycle():
-    """Verify SQLiteOutboxBridge with WAL, table creation, lease queries, and acknowledgments."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-
-    try:
-        bridge = SQLiteOutboxBridge(db_path)
-
-        # Insert active assignment into assignments table
-        with bridge._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO assignments (assignment_id, task_id, actor_id, status, lease_expires_at, created_at)
-                VALUES ('as-1', 'task-1', 'actor-active', 'running', ?, ?)
-                """,
-                (time.time() + 600, time.time()),
-            )
-            conn.execute(
-                """
-                INSERT INTO assignments (assignment_id, task_id, actor_id, status, lease_expires_at, created_at)
-                VALUES ('as-2', 'task-2', 'actor-expired', 'running', ?, ?)
-                """,
-                (time.time() - 10, time.time() - 100),
-            )
-            conn.commit()
-
-        # Check leases
-        assert bridge.count_active_leases("actor-active") == 1
-        assert bridge.count_active_leases("actor-expired") == 0
-        assert bridge.count_active_leases("actor-unknown") == 0
-
-        # Emit and poll signal
-        sig = HostTelemetrySignal(
-            signal_id="sig-sq-1",
-            emitted_by_actor="actor-active",
-            signal_type=SignalType.SCALE_UP,
-            requested_worker_delta=2,
-            target_task_ids=["t1", "t2"],
-            unsettled_cost_snapshot=3.5,
-            rationale="Test sqlite",
-        )
-        bridge.emit_signal(sig)
-
-        pending = bridge.poll_pending_signals()
-        assert len(pending) == 1
-        assert pending[0].signal_id == "sig-sq-1"
-        assert pending[0].target_task_ids == ["t1", "t2"]
-
-        # Acknowledge
-        ack = bridge.acknowledge_signal("sig-sq-1", HostSignalStatus.FULFILLED, "Done")
-        assert ack is True
-        assert len(bridge.poll_pending_signals()) == 0
-
-    finally:
-        if os.path.exists(db_path):
-            os.remove(db_path)
+def test_sqlite_outbox_bridge_refuses_without_opening_existing_or_new_state(tmp_path):
+    """A historical API name cannot initialize or bypass the producer's ledger."""
+    from src.polyphony.outbox import OutboxError, OutboxOutcome
+    original = tmp_path / "existing.sqlite3"
+    original.write_bytes(b"retained producer-owned bytes")
+    with patch("sqlite3.connect", side_effect=AssertionError("foreign SQLite opened")) as connect:
+        for path in [original, tmp_path / "must-not-exist.sqlite3"]:
+            with pytest.raises(OutboxError) as refusal:
+                SQLiteOutboxBridge(str(path))
+            assert refusal.value.outcome is OutboxOutcome.UNSUPPORTED
+        connect.assert_not_called()
+    assert original.read_bytes() == b"retained producer-owned bytes"
+    assert not (tmp_path / "must-not-exist.sqlite3").exists()
 
 
 def test_docker_container_provisioner_agents_md_injection():

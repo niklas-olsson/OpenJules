@@ -1,321 +1,279 @@
-"""Polyphony Outbox Bridge interfaces and implementations.
+"""Explicit experimental host-signal adapters, separate from managed authority.
 
-Provides host communication with the Polyphony coordinator via:
-1. SQLiteOutboxBridge (direct WAL inspection and update on shared host mount)
-2. McpOutboxBridge (calling MCP tools using OPENJULES_HOST_KEY)
-3. InMemoryOutboxBridge (deterministic in-memory bridge for testing)
+The MCP caller is an injected, bounded transport seam. There is no production
+connector or direct-SQL compatibility path. InMemoryOutboxBridge is a fixture.
 """
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import Enum
 import json
-import logging
-import sqlite3
+import math
 import time
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
 from src.polyphony.models import HostSignalStatus, HostTelemetrySignal, SignalType
+from src.worker.execution_context import require_legacy_execution
 
-logger = logging.getLogger(__name__)
+MAX_TEXT_BYTES = 64 * 1024
+MAX_SIGNALS = 128
+MAX_TARGETS = 64
+MAX_ID_CHARS = 256
+MAX_NOTE_CHARS = 4096
+
+
+class OutboxOutcome(str, Enum):
+    REFUSED = "REFUSED"
+    UNSUPPORTED = "UNSUPPORTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class OutboxError(RuntimeError):
+    """A local safe classification, never a remote error body or credential."""
+
+    def __init__(self, outcome: OutboxOutcome, code: str):
+        self.outcome = outcome
+        self.code = code
+        super().__init__(code)
+
+
+def unsupported(code="host_signal_transport_unsupported"):
+    return OutboxError(OutboxOutcome.UNSUPPORTED, code)
+
+
+def _invalid():
+    return OutboxError(OutboxOutcome.UNKNOWN, "invalid_host_signal_result")
+
+
+def _member(value, name, default=None):
+    return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
+def _unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
+def _decode(result: Any) -> dict:
+    """Accept one bounded JSON text result and its identical SDK projection.
+
+    The pinned producer returns a JSON string. FastMCP also projects that same
+    string as structuredContent.result. Mixed/different projections are refused.
+    Direct result dictionaries and empty/multiple/non-text blocks are not data.
+    """
+    try:
+        if isinstance(result, str):
+            text = result
+        else:
+            content = _member(result, "content")
+            is_error = _member(result, "isError", False)
+            if type(is_error) is not bool or is_error or not isinstance(content, list) or len(content) != 1:
+                raise ValueError("ambiguous MCP result")
+            item = content[0]
+            if _member(item, "type") != "text":
+                raise ValueError("non-text MCP result")
+            text = _member(item, "text")
+            projection = _member(result, "structuredContent")
+            if projection is not None and projection != {"result": text}:
+                raise ValueError("different structured result")
+        if not isinstance(text, str) or len(text) > MAX_TEXT_BYTES or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+            raise ValueError("unbounded MCP text")
+        payload = json.loads(text, object_pairs_hook=_unique,
+                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+        if not isinstance(payload, dict) or type(payload.get("success")) is not bool:
+            raise ValueError("missing explicit success")
+        if payload["success"] is False:
+            if not set(payload) <= {"success", "error", "reason", "message"}:
+                raise ValueError("mixed refusal and data")
+            raise OutboxError(OutboxOutcome.REFUSED, "producer_refused_host_signal")
+        return payload
+    except OutboxError:
+        raise
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise _invalid() from None
+
+
+def _text(value, maximum, *, empty=False):
+    if not isinstance(value, str) or not (empty or value) or len(value) > maximum:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        return False
+    return not any(ord(char) < 32 for char in value if char not in "\n\t")
+
+
+def _identifier(value):
+    return _text(value, MAX_ID_CHARS) and not any(char.isspace() for char in value)
+
+
+def _signal(row):
+    fields = {"signal_id", "emitted_by_actor", "signal_type", "requested_worker_delta",
+              "target_task_ids", "unsettled_cost_snapshot", "rationale", "host_status",
+              "host_response_note", "created_at", "updated_at"}
+    if not isinstance(row, dict) or set(row) != fields:
+        raise _invalid()
+    for name in ("signal_id", "emitted_by_actor"):
+        if not _identifier(row[name]):
+            raise _invalid()
+    for name in ("rationale", "host_response_note"):
+        if not _text(row[name], MAX_NOTE_CHARS, empty=True):
+            raise _invalid()
+    targets = row["target_task_ids"]
+    if (not isinstance(targets, list) or len(targets) > MAX_TARGETS
+            or any(not _identifier(value) for value in targets)
+            or len(set(targets)) != len(targets)):
+        raise _invalid()
+    if type(row["requested_worker_delta"]) is not int or abs(row["requested_worker_delta"]) > 2**31 - 1:
+        raise _invalid()
+    for name in ("unsettled_cost_snapshot", "created_at", "updated_at"):
+        value = row[name]
+        if type(value) not in (int, float) or value < 0 or value > 1e100 or not math.isfinite(value):
+            raise _invalid()
+    if (row["host_status"] != "PENDING" or not isinstance(row["signal_type"], str)
+            or row["signal_type"] not in {item.value for item in SignalType}):
+        raise _invalid()
+    return HostTelemetrySignal(**row)
 
 
 class BaseOutboxBridge(ABC):
-    """Abstract interface for polling and acknowledging host signals from Polyphony."""
+    """Success returns data; refused/unsupported/unknown observations raise safely."""
+
+    def ensure_available(self) -> None:
+        """An explicit fixture or injected adapter may implement this boundary."""
 
     @abstractmethod
     def poll_pending_signals(self) -> List[HostTelemetrySignal]:
-        """Polls for signals awaiting OpenJules host processing (host_status == 'PENDING')."""
         pass
 
     @abstractmethod
-    def acknowledge_signal(
-        self,
-        signal_id: str,
-        new_status: HostSignalStatus | str,
-        response_note: str = "",
-    ) -> bool:
-        """Updates the status and response note for a processed signal."""
+    def acknowledge_signal(self, signal_id: str, new_status: HostSignalStatus | str,
+                           response_note: str = "") -> bool:
         pass
 
     @abstractmethod
-    def count_active_leases(self, actor_id: str, now: Optional[float] = None) -> int:
-        """Counts active task assignments/leases held by an actor in the Polyphony store."""
-        pass
+    def count_active_leases(self, actor_id: str, now: Optional[float] = None) -> Optional[int]:
+        """An absent observation is None or a classified failure, never idle zero."""
 
 
 class SQLiteOutboxBridge(BaseOutboxBridge):
-    """Direct SQLite WAL inspection and update on a shared host volume."""
+    """Refused historical API; foreign-table access is not a supported transport."""
 
     def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._init_db()
+        require_legacy_execution()
+        raise unsupported("direct_sql_host_signals_unsupported")
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        # Enable WAL mode for concurrent multi-process access
-        conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA busy_timeout = 30000;")
-        return conn
+    def ensure_available(self):
+        require_legacy_execution()
+        raise unsupported("direct_sql_host_signals_unsupported")
 
-    def _init_db(self) -> None:
-        """Ensures the host_signal_outbox and assignments tables exist."""
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS host_signal_outbox (
-                    signal_id TEXT PRIMARY KEY,
-                    emitted_by_actor TEXT NOT NULL,
-                    signal_type TEXT NOT NULL,
-                    requested_worker_delta INTEGER NOT NULL,
-                    target_task_ids TEXT NOT NULL,
-                    unsettled_cost_snapshot REAL NOT NULL,
-                    rationale TEXT NOT NULL,
-                    host_status TEXT NOT NULL DEFAULT 'PENDING',
-                    host_response_note TEXT DEFAULT '',
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                );
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS assignments (
-                    assignment_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    actor_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    lease_expires_at REAL NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                """
-            )
-            conn.commit()
+    def poll_pending_signals(self):
+        self.ensure_available()
 
-    def poll_pending_signals(self) -> List[HostTelemetrySignal]:
-        signals = []
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT signal_id, emitted_by_actor, signal_type, requested_worker_delta,
-                       target_task_ids, unsettled_cost_snapshot, rationale, host_status,
-                       host_response_note, created_at, updated_at
-                FROM host_signal_outbox
-                WHERE host_status = 'PENDING'
-                ORDER BY created_at ASC
-                """
-            )
-            for row in cursor.fetchall():
-                try:
-                    task_ids = json.loads(row["target_task_ids"]) if row["target_task_ids"] else []
-                except Exception:
-                    task_ids = []
+    def acknowledge_signal(self, signal_id, new_status, response_note=""):
+        self.ensure_available()
 
-                signals.append(
-                    HostTelemetrySignal(
-                        signal_id=row["signal_id"],
-                        emitted_by_actor=row["emitted_by_actor"],
-                        signal_type=SignalType(row["signal_type"]),
-                        requested_worker_delta=row["requested_worker_delta"],
-                        target_task_ids=task_ids,
-                        unsettled_cost_snapshot=float(row["unsettled_cost_snapshot"]),
-                        rationale=row["rationale"] or "",
-                        host_status=HostSignalStatus(row["host_status"]),
-                        host_response_note=row["host_response_note"] or "",
-                        created_at=float(row["created_at"]),
-                        updated_at=float(row["updated_at"]),
-                    )
-                )
-        return signals
-
-    def acknowledge_signal(
-        self,
-        signal_id: str,
-        new_status: HostSignalStatus | str,
-        response_note: str = "",
-    ) -> bool:
-        status_val = new_status.value if isinstance(new_status, HostSignalStatus) else str(new_status)
-        now = time.time()
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE host_signal_outbox
-                SET host_status = ?, host_response_note = ?, updated_at = ?
-                WHERE signal_id = ?
-                """,
-                (status_val, response_note, now, signal_id),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-
-    def count_active_leases(self, actor_id: str, now: Optional[float] = None) -> int:
-        current_time = now if now is not None else time.time()
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT COUNT(*) as count FROM assignments
-                WHERE actor_id = ?
-                  AND status IN ('assigned', 'running')
-                  AND lease_expires_at > ?
-                """,
-                (actor_id, current_time),
-            )
-            row = cursor.fetchone()
-            return int(row["count"]) if row else 0
-
-    def emit_signal(self, signal: HostTelemetrySignal) -> None:
-        """Utility for inserting a signal (used by testing or coordinator)."""
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO host_signal_outbox (
-                    signal_id, emitted_by_actor, signal_type, requested_worker_delta,
-                    target_task_ids, unsettled_cost_snapshot, rationale, host_status,
-                    host_response_note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    signal.signal_id,
-                    signal.emitted_by_actor,
-                    signal.signal_type.value,
-                    signal.requested_worker_delta,
-                    json.dumps(signal.target_task_ids),
-                    signal.unsettled_cost_snapshot,
-                    signal.rationale,
-                    signal.host_status.value,
-                    signal.host_response_note,
-                    signal.created_at,
-                    signal.updated_at,
-                ),
-            )
-            conn.commit()
+    def count_active_leases(self, actor_id, now=None):
+        self.ensure_available()
 
 
 class McpOutboxBridge(BaseOutboxBridge):
-    """Communicates with Polyphony MCP coordinator daemon using OPENJULES_HOST_KEY."""
+    """Decode the actual producer contract through an explicitly supplied caller.
 
-    def __init__(
-        self,
-        host_control_key: str,
-        mcp_caller: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
-        db_path: Optional[str] = None,
-    ):
+    The caller must bound its own transport lifetime and received envelope before
+    returning. This seam does not implement a connected production transport.
+    """
+
+    def __init__(self, host_control_key: str,
+                 mcp_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+                 db_path: Optional[str] = None):
+        require_legacy_execution()
+        if db_path is not None:
+            raise unsupported("direct_sql_host_signals_unsupported")
+        if not isinstance(host_control_key, str) or not host_control_key or len(host_control_key) > 4096:
+            raise unsupported("host_signal_key_unconfigured")
         self.host_control_key = host_control_key
         self.mcp_caller = mcp_caller
-        self.db_path = db_path
-        self._fallback_sqlite = SQLiteOutboxBridge(db_path) if db_path else None
+        self.ensure_available()
 
-    def poll_pending_signals(self) -> List[HostTelemetrySignal]:
-        if self.mcp_caller:
-            try:
-                res = self.mcp_caller(
-                    "openjules_poll_outbox",
-                    {"host_key": self.host_control_key},
-                )
-                raw_signals = res.get("signals", [])
-                signals = []
-                for s in raw_signals:
-                    signals.append(
-                        HostTelemetrySignal(
-                            signal_id=s["signal_id"],
-                            emitted_by_actor=s.get("emitted_by_actor", "unknown"),
-                            signal_type=SignalType(s["signal_type"]),
-                            requested_worker_delta=s.get("requested_worker_delta", 0),
-                            target_task_ids=s.get("target_task_ids", []),
-                            unsettled_cost_snapshot=float(s.get("unsettled_cost_snapshot", 0.0)),
-                            rationale=s.get("rationale", ""),
-                            host_status=HostSignalStatus(s.get("host_status", "PENDING")),
-                            host_response_note=s.get("host_response_note", ""),
-                            created_at=float(s.get("created_at", time.time())),
-                            updated_at=float(s.get("updated_at", time.time())),
-                        )
-                    )
-                return signals
-            except Exception as e:
-                logger.warning(f"MCP poll failed, falling back to SQLite if available: {e}")
+    def ensure_available(self):
+        require_legacy_execution()
+        if not callable(self.mcp_caller):
+            raise unsupported()
 
-        if self._fallback_sqlite:
-            return self._fallback_sqlite.poll_pending_signals()
-        return []
+    def _call(self, name, arguments):
+        self.ensure_available()
+        try:
+            result = self.mcp_caller(name, {"host_key": self.host_control_key, **arguments})
+        except (NotImplementedError, KeyError):
+            raise unsupported("host_signal_tool_unsupported") from None
+        except Exception:
+            raise OutboxError(OutboxOutcome.UNKNOWN, "host_signal_transport_unknown") from None
+        return _decode(result)
 
-    def acknowledge_signal(
-        self,
-        signal_id: str,
-        new_status: HostSignalStatus | str,
-        response_note: str = "",
-    ) -> bool:
-        status_val = new_status.value if isinstance(new_status, HostSignalStatus) else str(new_status)
-        if self.mcp_caller:
-            try:
-                res = self.mcp_caller(
-                    "openjules_ack_signal",
-                    {
-                        "host_key": self.host_control_key,
-                        "signal_id": signal_id,
-                        "status": status_val,
-                        "response_note": response_note,
-                    },
-                )
-                if res.get("success", False):
-                    return True
-            except Exception as e:
-                logger.warning(f"MCP ack failed, falling back to SQLite if available: {e}")
+    def poll_pending_signals(self):
+        result = self._call("openjules_poll_outbox", {"status_filter": "PENDING"})
+        if (set(result) != {"success", "data", "managed_authority", "release_authorized"}
+                or result["managed_authority"] is not False or result["release_authorized"] is not False
+                or not isinstance(result["data"], list) or len(result["data"]) > MAX_SIGNALS):
+            raise _invalid()
+        signals = [_signal(row) for row in result["data"]]
+        if len({signal.signal_id for signal in signals}) != len(signals):
+            raise _invalid()
+        return signals
 
-        if self._fallback_sqlite:
-            return self._fallback_sqlite.acknowledge_signal(signal_id, status_val, response_note)
-        return False
+    def acknowledge_signal(self, signal_id, new_status, response_note=""):
+        require_legacy_execution()
+        status = new_status.value if isinstance(new_status, HostSignalStatus) else new_status
+        if (not _identifier(signal_id) or not isinstance(status, str)
+                or status not in {"ACKNOWLEDGED", "FULFILLED", "REJECTED"}
+                or not _text(response_note, MAX_NOTE_CHARS, empty=True)):
+            raise _invalid()
+        result = self._call("openjules_ack_signal", {
+            "signal_id": signal_id, "new_status": status, "response_note": response_note,
+        })
+        if not set(result) <= {"success", "message"}:
+            raise _invalid()
+        return True
 
-    def count_active_leases(self, actor_id: str, now: Optional[float] = None) -> int:
-        if self.mcp_caller:
-            try:
-                res = self.mcp_caller(
-                    "openjules_count_active_leases",
-                    {"host_key": self.host_control_key, "actor_id": actor_id},
-                )
-                if "count" in res:
-                    return int(res["count"])
-            except Exception:
-                pass
-
-        if self._fallback_sqlite:
-            return self._fallback_sqlite.count_active_leases(actor_id, now)
-        return 0
+    def count_active_leases(self, actor_id, now=None):
+        self.ensure_available()
+        # The producer has no such tool. A successful empty poll proves no idle
+        # worker state, so do not invent a call or manufacture a zero result.
+        raise unsupported("worker_activity_observation_unsupported")
 
 
 class InMemoryOutboxBridge(BaseOutboxBridge):
-    """In-memory bridge for fast, deterministic unit testing."""
+    """Explicit deterministic fixture, never a production transport fallback."""
 
     def __init__(self):
         self.signals: Dict[str, HostTelemetrySignal] = {}
-        self.active_leases: Dict[str, int] = {}  # actor_id -> active lease count
+        self.active_leases: Dict[str, int] = {}
 
     def add_signal(self, signal: HostTelemetrySignal) -> None:
         self.signals[signal.signal_id] = signal
 
     def set_active_leases(self, actor_id: str, count: int) -> None:
+        if type(count) is not int or count < 0:
+            raise ValueError("invalid fixture activity")
         self.active_leases[actor_id] = count
 
-    def poll_pending_signals(self) -> List[HostTelemetrySignal]:
-        return [
-            s for s in sorted(self.signals.values(), key=lambda x: x.created_at)
-            if s.host_status == HostSignalStatus.PENDING
-        ]
+    def poll_pending_signals(self):
+        return [signal for signal in sorted(self.signals.values(), key=lambda item: item.created_at)
+                if signal.host_status == HostSignalStatus.PENDING]
 
-    def acknowledge_signal(
-        self,
-        signal_id: str,
-        new_status: HostSignalStatus | str,
-        response_note: str = "",
-    ) -> bool:
+    def acknowledge_signal(self, signal_id, new_status, response_note=""):
         if signal_id not in self.signals:
             return False
-        status_val = new_status if isinstance(new_status, HostSignalStatus) else HostSignalStatus(new_status)
-        sig = self.signals[signal_id]
-        sig.host_status = status_val
-        sig.host_response_note = response_note
-        sig.updated_at = time.time()
+        signal = self.signals[signal_id]
+        signal.host_status = HostSignalStatus(new_status)
+        signal.host_response_note = response_note
+        signal.updated_at = time.time()
         return True
 
-    def count_active_leases(self, actor_id: str, now: Optional[float] = None) -> int:
-        return self.active_leases.get(actor_id, 0)
+    def count_active_leases(self, actor_id, now=None):
+        return self.active_leases.get(actor_id)
