@@ -3,9 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 import pytest
-from fastapi.testclient import TestClient
 
-from src.api.webhook import app
 from src.forge.base import ForgeProvider, ProposalResult
 from src.forge.github import GitHubProvider
 from src.forge.radicle import RadicleProvider
@@ -84,27 +82,6 @@ def test_radicle_poller_repository(monkeypatch):
         assert len(second_poll) == 0
 
 
-def test_radicle_webhook_endpoint():
-    client = TestClient(app)
-
-    with patch.object(TaskExecutor, "execute_task", return_value=True) as mock_exec:
-        payload = {
-            "event_type": "openjules:run",
-            "rid": "rad:z4V1sJY123",
-            "issue_id": "issue-42",
-            "issue_title": "Implement decentralized verification",
-            "issue_body": "Verification loop details",
-            "labels": ["openjules:run"],
-            "default_branch": "master",
-        }
-
-        resp = client.post("/api/radicle/webhook", json=payload)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "dispatched"
-        assert data["forge"] == "radicle"
-        assert data["rid"] == "rad:z4V1sJY123"
-        mock_exec.assert_called_once()
 
 
 def test_task_executor_with_radicle_forge():

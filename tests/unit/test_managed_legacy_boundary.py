@@ -9,18 +9,23 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from src import cli
-from src.api import polyphony_routes, ui_routes, webhook
+from src.api import webhook
+from src.storage.dashboard_state import DashboardState
+from src.storage.sqlite_storage import SQLiteStorageProvider
 from src.mcp.server import OpenJulesMCPServer
 from src.polyphony.models import PolyphonyCohortConfig, SignalType
 from src.polyphony.provisioner import DockerContainerProvisioner
-from src.polyphony.registry import SwarmCohortRegistry
+# This explicitly imported legacy CLI singleton is outside the harmless app.
+# Its unit-test Docker dependency is a fixture, not a required local daemon.
+with patch("docker.from_env"):
+    from src.polyphony.registry import SwarmCohortRegistry
 from src.sandbox.docker_driver import SandboxManager
 from src.worker import execution_context as context
 from src.worker.dispatcher import BackgroundTasksDispatcher, TaskPayload
@@ -152,74 +157,43 @@ def test_preconstructed_cohort_and_cli_mutations_refuse_before_local_state(manag
     assert vars(registry) == vars(provisioner) == {}
 
 
-def test_dashboard_recording_and_palette_refuse_before_storage_or_queue(managed, monkeypatch):
-    storage, registry = MagicMock(), MagicMock()
-    original = {"existing": {"id": "existing", "thoughts": [], "diff": "retained"}}
-    monkeypatch.setattr(ui_routes, "tasks_db", original)
-    monkeypatch.setattr(ui_routes, "storage_provider", storage)
-    monkeypatch.setattr(polyphony_routes, "cohort_registry", registry)
-    before = json.dumps(original, sort_keys=True)
-    background = BackgroundTasks()
-    actions = [
-        lambda: ui_routes.record_ui_task(payload()),
-        lambda: ui_routes.create_ui_task(payload(), background),
-        lambda: ui_routes.add_review_comment("existing", ui_routes.ReviewCommentRequest(comment="feedback")),
-        lambda: ui_routes.execute_palette_command("existing", ui_routes.PaletteCommandRequest(command="verify")),
-        lambda: polyphony_routes.create_cohort(PolyphonyCohortConfig(swarm_id="fixture", repo_url="repo")),
-        lambda: polyphony_routes.trigger_signal(
-            "fixture", polyphony_routes.SignalTriggerRequest(signal_type=SignalType.SCALE_UP)
-        ),
-        lambda: polyphony_routes.delete_cohort("fixture"),
-    ]
-    for action in actions:
+def test_explicit_dashboard_records_refuse_in_managed_context(managed):
+    storage = MagicMock()
+    state = object.__new__(DashboardState)
+    state.storage = storage
+    state.tasks = {"existing": {"id": "existing", "diff": "retained"}}
+    before = json.dumps(state.tasks, sort_keys=True)
+    for action in (
+        lambda: DashboardState(storage), lambda: state.record_task(payload()),
+        lambda: state.get_task("existing"), lambda: state.list_tasks(),
+    ):
         refuse(action)
-    assert json.dumps(original, sort_keys=True) == before
-    assert background.tasks == []
-    assert storage.mock_calls == registry.mock_calls == []
+    assert json.dumps(state.tasks, sort_keys=True) == before
+    assert storage.mock_calls == []
 
 
-def test_existing_http_app_refuses_valid_legacy_routes_before_effects(managed, monkeypatch):
-    storage, executor, reviewer, registry = (MagicMock() for _ in range(4))
-    monkeypatch.setattr(ui_routes, "storage_provider", storage)
-    monkeypatch.setattr(ui_routes, "tasks_db", {})
-    monkeypatch.setattr(webhook, "executor", executor)
-    monkeypatch.setattr(webhook, "pr_review_handler", reviewer)
-    monkeypatch.setattr(polyphony_routes, "cohort_registry", registry)
-    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "host-secret")
+
+def test_existing_http_app_refuses_all_private_routes_after_managed_context(managed, monkeypatch):
+    from tests.integration.test_standalone_ingress import HTTP, WEBSOCKETS, concrete
+    from starlette.websockets import WebSocketDisconnect
+    effects = MagicMock(side_effect=AssertionError("effect before managed refusal"))
+    for component in (TaskExecutor, PRReviewHandler, SwarmCohortRegistry, SQLiteStorageProvider):
+        monkeypatch.setattr(component, "__init__", effects)
+    monkeypatch.setattr(BackgroundTasks, "add_task", effects)
     expected = {"detail": "managed_installation_requires_canonical_ingress"}
-    requests = [
-        ("post", "/api/tasks", payload().model_dump()),
-        ("post", "/api/tasks/anything/comments", {"comment": "feedback"}),
-        ("post", "/api/tasks/anything/command", {"command": "proposal"}),
-        ("post", "/api/polyphony/cohorts", {"swarm_id": "fixture", "repo_url": "repo"}),
-        ("post", "/api/polyphony/cohorts/fixture/signal", {"signal_type": "SCALE_UP"}),
-        ("delete", "/api/polyphony/cohorts/fixture", None),
-        ("post", "/api/radicle/webhook", {
-            "rid": "rad:fixture", "issue_id": 1, "issue_title": "do not run",
-            "event_type": "openjules:run", "labels": ["openjules:run"],
-        }),
-    ]
     with TestClient(webhook.app) as client:
-        for method, path, data in requests:
-            response = client.request(method, path, json=data)
-            assert response.status_code == 409, (path, response.text)
-            assert response.json() == expected
-        for event in ("issues", "issue_comment", "pull_request_review", "pull_request_review_comment"):
-            raw = json.dumps({"action": "created", "managed": False, "repository": {}}).encode()
-            signature = "sha256=" + hmac.new(b"host-secret", raw, hashlib.sha256).hexdigest()
-            response = client.post("/api/webhook", content=raw, headers={
-                "content-type": "application/json", "x-github-event": event,
-                "x-hub-signature-256": signature,
+        for method, path in HTTP:
+            response = client.request(method, concrete(path), content=b"invalid-json", headers={
+                "X-Hub-Signature-256": "sha256=wrong", "Authorization": "Bearer caller-value",
             })
-            assert response.status_code == 409
-            assert response.json() == expected
-        # Existing HMAC authentication still precedes the contextual refusal.
-        denied = client.post("/api/webhook", content=b"invalid-json", headers={
-            "x-github-event": "issue_comment", "x-hub-signature-256": "sha256=wrong",
-        })
-        assert denied.status_code == 401
-    assert ui_routes.tasks_db == {}
-    assert all(item.mock_calls == [] for item in (storage, executor, reviewer, registry))
+            assert response.status_code == 409 and response.json() == expected
+        for path in WEBSOCKETS:
+            with pytest.raises(WebSocketDisconnect) as denied:
+                with client.websocket_connect(concrete(path)):
+                    pytest.fail("Managed WebSocket was accepted")
+            assert denied.value.code == 1008 and denied.value.reason == expected["detail"]
+    effects.assert_not_called()
+
 
 
 @pytest.mark.parametrize("arguments", [

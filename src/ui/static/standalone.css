@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.6; }
+body { margin: 0; padding: 2rem 1rem; }
+main { max-width: 48rem; margin: auto; }
+h1, h2 { line-height: 1.25; }
+h2 { margin-top: 2rem; }
+.status { padding: 1rem; border: 2px solid currentColor; font-weight: 650; }
+a { color: inherit; }

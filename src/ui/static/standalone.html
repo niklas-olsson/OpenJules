@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenJules standalone service</title>
+  <link rel="stylesheet" href="/static/standalone.css">
+</head>
+<body>
+  <main>
+    <h1>OpenJules standalone service</h1>
+    <p class="status" role="status">Task and cohort operations are unavailable.</p>
+    <p>This intermediate service exposes health and this static status page.
+      Webhooks, private task data, guidance, palette actions, cohort controls
+      and WebSocket streams are disabled until an authenticated host-policy
+      adapter is implemented and qualified.</p>
+    <p>A webhook secret, bearer token or supplied policy does not enable these
+      routes. This page does not collect credentials or display private data.</p>
+    <h2>Existing work</h2>
+    <p>Existing task and cohort data is retained. Stopping or upgrading this
+      service does not establish that earlier work stopped or finished.
+      Reconcile unresolved work through its existing trusted host controls.</p>
+    <h2>Explicit local and managed operation</h2>
+    <p>Direct host-owned CLI commands retain their standalone trust model.
+      The separately configured managed service keeps its authenticated
+      authority and capture contracts. Neither is an automatic fallback from
+      this page.</p>
+    <p><a href="/health">Read service health</a></p>
+  </main>
+</body>
+</html>

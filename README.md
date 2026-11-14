@@ -1,7 +1,16 @@
 # OpenJules — Autonomous Sandboxed Coding Agent Service
 
 OpenJules is an open-source, asynchronous, cloud-agnostic equivalent of Google Jules.
-The system receives tasks from **GitHub issues/webhooks** or **Radicle peer-to-peer repositories (`rad:<rid>`)**, boots an isolated container sandbox (Docker-in-Docker / DinD), coordinates concurrent agents working on the same repository via **Keystone Polyphony**, executes an **Adaptive Agent Harness (Propose–Probe–Compose loop)** with **cloud or self-hosted LLMs (vLLM, llama.cpp, Ollama)**, and pushes the verified diff back as a **GitHub Pull Request** or **Radicle Patch**.
+Its managed service connects approved work to isolated Docker execution,
+retained capture and Polyphony's canonical task authority. Separate trusted
+host commands retain legacy GitHub/Radicle execution and review components,
+with explicitly configured cloud or self-hosted models.
+
+**Standalone HTTP task, webhook, cohort and WebSocket operations are currently
+unavailable.** The default server provides only a status page and health response.
+Supplying a policy, token or webhook secret does not enable work. See the
+[standalone ingress boundary](docs/managed-service.md#standalone-ingress-boundary)
+for the complete route inventory, upgrade behavior and remaining #53 work.
 
 ## Managed deployment with ZPM
 
@@ -58,8 +67,8 @@ pins, installed evidence and scope are recorded in the
 
 CI qualifies execution, recovery and the model transport against deterministic
 provider fixtures. A configured live provider and semantic task quality require
-their own qualification. The older webhook, in-memory collaboration and DinD
-paths described below do not satisfy this managed contract and are never used
+their own qualification. The older in-memory collaboration and DinD components
+described below do not satisfy this managed contract and are never used
 as a readiness fallback.
 
 New ZPM installations bind their dedicated OpenJules interpreter to a
@@ -67,14 +76,15 @@ New ZPM installations bind their dedicated OpenJules interpreter to a
 That interpreter refuses legacy CLI, webhook/UI, MCP, polling and cohort
 execution before queue, model or Docker effects. Canonical service, publication
 and owned cleanup retain their existing authority checks. Separate standalone
-interpreters keep ordinary legacy behavior, but raw legacy access to a Docker
+interpreters retain explicit trusted CLI/components; their private HTTP/WS
+operations are disabled. Raw legacy access to a Docker
 container labeled as managed is refused in every interpreter. This is an
 installation boundary, not another enrollment or task-authority database.
 
-Standalone legacy PR feedback refuses the branch shape and provenance marker
+The direct legacy PR reviewer refuses the branch shape and provenance marker
 produced by [managed publication](docs/managed-publication.md), including custom
 publication prefixes. Those feedback operations cannot enter its direct
-sandbox, model and push loop. Ordinary standalone review remains available; the
+sandbox, model and push loop. Eligible trusted direct review remains available; the
 [review boundary](docs/managed-service.md#legacy-pr-review-boundary) documents
 the conservative refusal cases and remaining ingress limits.
 
@@ -376,6 +386,7 @@ the linked explanation. Update this map when routing changes.
 | Change | Representative source | Documentation home |
 | --- | --- | --- |
 | Service configuration, ingress and readiness | [managed_service.py](src/worker/managed_service.py), [execution_context.py](src/worker/execution_context.py) | [Managed service](docs/managed-service.md) |
+| Disabled standalone HTTP/WS ingress and retained local records | [standalone_ingress.py](src/api/standalone_ingress.py), [webhook.py](src/api/webhook.py), [dashboard_state.py](src/storage/dashboard_state.py) | [Standalone ingress boundary](docs/managed-service.md#standalone-ingress-boundary) |
 | Worker state and lifecycle API | [lifecycle.py](src/worker/lifecycle.py), [worker_lifecycle.py](src/api/worker_lifecycle.py) | [Worker lifecycle](docs/worker-lifecycle.md) |
 | Optional execution destination identity and original journal set | [destination.py](src/worker/destination.py), [managed_service.py](src/worker/managed_service.py) | [Execution destination identity](docs/managed-service.md#optional-execution-destination-identity), [HTTP v2](docs/worker-lifecycle.md#http-version-2-destination-identity) |
 | Docker, source snapshots, capture and cleanup | [docker_runtime.py](src/worker/docker_runtime.py), [source_snapshot.py](src/worker/source_snapshot.py) | [Managed Docker runtime](docs/managed-docker-runtime.md) |
@@ -392,44 +403,16 @@ installed pins and [joined acceptance](https://github.com/niklas-olsson/zero-poi
 
 ## Architecture Overview
 
-```
-          GitHub Webhook                                Radicle Node / Webhook
-   (issue labeled openjules:run)                     (issue labeled openjules:run)
-                 │                                                 │
-                 ▼                                                 ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                 OpenJules API (FastAPI Control Plane)            │
-        │          /api/webhook (GitHub)   |   /api/radicle/webhook        │
-        └─────────────────────────────────┬────────────────────────────────┘
-                                          │
-                                          ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │            Pluggable Task Dispatcher & Worker                    │
-        │      (BackgroundTasksDispatcher / RadicleNodePoller)             │
-        └─────────────────────────────────┬────────────────────────────────┘
-                                          │
-                                          ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │               Keystone Polyphony Swarm Coordination              │
-        │         (Repo-Scoped Swarm Key, Batons, Thoughts, Backlog)       │
-        └─────────────────────────────────┬────────────────────────────────┘
-                                          │
-                                          ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                     Sandbox Manager (Docker-py)                  │
-        │           Mounts /workspace, sets 4G RAM & 2 CPU quota           │
-        └─────────────────────────────────┬────────────────────────────────┘
-                                          │
-                  ┌───────────────────────┴───────────────────────┐
-                  ▼                                               ▼
-     ┌─────────────────────────┐                     ┌─────────────────────────┐
-     │  Adaptive Agent Harness │                     │   Pluggable Forge Layer │
-     │  Propose-Probe-Compose  │                     │   GitHubProvider        │
-     │  EXPERIENCE.md Memory   │                     │   RadicleProvider       │
-     └─────────────────────────┘                     └─────────────────────────┘
-```
+| Entry point | Current behavior |
+| --- | --- |
+| Managed service | Authenticated lifecycle and canonical managed dispatch, isolated execution and retained capture. Publication is a separate approved host operation. |
+| Standalone HTTP/WS | Health/static only; no private reads, execution, feedback, cohort control or subscriptions. |
+| Trusted host CLI/components | Explicit legacy executor, reviewer, poller, MCP and swarm operations, refused in installed managed context. |
 
-The system comprises 4 core architectural phases plus multi-forge, multi-agent swarm, self-hosted LLM, and adaptive harness support:
+The following legacy components remain available to explicit trusted local
+callers. They are not loaded by the standalone HTTP app and are not a substitute
+for canonical managed authority:
+
 1. **Repository Configuration & Sandbox Runtime (`src/sandbox/`)**:
    - `src/sandbox/config.py`: Schema parser for `.openjules.yaml` defining base image, setup scripts, test commands, timeouts, env vars, LLM parameters, and adaptive harness settings.
    - `src/sandbox/docker_driver.py`: `SandboxManager` handling container spawning with resource limits (`mem_limit="4g"`, `nano_cpus=2000000000`), workspace mounting, credential injection, command streaming, and strict `try...finally` cleanup.
@@ -453,7 +436,7 @@ The system comprises 4 core architectural phases plus multi-forge, multi-agent s
    - `src/forge/radicle.py`: Radicle integration supporting the `rad` CLI (`rad clone`, `rad patch open`) and Radicle Node HTTP API.
    - `src/git_manager/lifecycle.py`: Task branch management (`openjules/task-{issue_id}-{slug}`), Conventional Commits, diff calculation, and PR/Patch summary generation.
 5. **Control Plane & Background Task Workers (`src/api/` & `src/worker/`)**:
-   - `src/api/webhook.py`: FastAPI endpoints for GitHub HMAC-SHA256 webhooks and Radicle webhook events.
+   - `src/api/webhook.py`: Harmless status/health app. All private HTTP/WS routes refuse before importing execution or storage clients; no webhook dispatch is enabled.
    - `src/worker/dispatcher.py`: Extensible `TaskDispatcher` interface.
    - `src/worker/radicle_poller.py`: Background poller for local or self-hosted Radicle nodes (`rad:<rid>`).
    - `src/worker/executor.py`: End-to-end task runner opening PRs/Patches and posting status comments.
@@ -463,52 +446,74 @@ The system comprises 4 core architectural phases plus multi-forge, multi-agent s
 ## Quickstart
 
 ### Prerequisites
-- Python 3.11+
-- Docker & Docker Compose
-- GitHub App or Personal Access Token (for GitHub)
-- Radicle node / CLI (for decentralized Radicle collaboration)
-- LLM inference: OpenAI, Anthropic, Gemini, or a self-hosted server (**vLLM**, **llama.cpp**, **Ollama**)
+
+Python 3.11+ runs the local status service and component tests. Docker and Compose
+are needed for the container path. The status service needs no forge token,
+model provider or Docker daemon connection.
+
+For actual protected execution, use the [managed deployment](#managed-deployment-with-zpm).
+For explicit trusted legacy CLI use outside an installed managed interpreter,
+the operator supplies a Docker runtime, repository/forge credentials, relevant
+Radicle CLI/node configuration and an approved model endpoint. Those execution
+dependencies are not provisioned by the status server.
 
 ### 1. Local Development Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/openjules.git
-cd openjules
+git clone https://github.com/niklas-olsson/OpenJules.git
+cd OpenJules
+
+# Use a dedicated environment
+python3 -m venv .venv
+. .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements-dev.txt
 
 # Run test suite
 pytest
+
+# Start health/static only on literal loopback
+python -m src.cli serve --host 127.0.0.1
 ```
+
+`serve` accepts only literal `127.0.0.1` or `::1`. A hostname, wildcard bind,
+bearer token or nonempty `OPENJULES_INGRESS_POLICY` cannot enable task operations.
+The full CI suite also builds managed Docker fixture images; a local unit run
+does not qualify an installed execution environment.
 
 ### 2. Running with Docker Compose
 
-OpenJules provides flexible compose profiles for all backends:
+The sole default service exposes the same harmless status page. It does not
+receive credentials, mount execution state or start privileged DinD:
 
 ```bash
-# 1. Standard mode (GitHub + OpenJules DinD + Cloud API keys)
-docker compose up -d
-
-# 2. Multi-forge mode with self-hosted Radicle Node
-docker compose --profile radicle up -d
-
-# 3. Swarm mode with Keystone Polyphony MQTT broker
-docker compose --profile swarm up -d
-
-# 4. Self-hosted inference with vLLM
-docker compose --profile vllm up -d
-
-# 5. Lightweight inference with llama.cpp server
-docker compose --profile llamacpp up -d
+docker compose up -d --build openjules
+curl http://127.0.0.1:8000/health
+# {"status":"ok","service":"openjules","standalone_ingress":{"state":"disabled","policy":"missing","reason":"standalone_ingress_unavailable"}}
 ```
 
-Check health:
+The container listens on `0.0.0.0:8000` internally; Compose publishes its port
+only on host `127.0.0.1:8000`. To request the existing host-owned legacy DinD
+runtime explicitly:
+
 ```bash
-curl http://localhost:8000/health
-# {"status":"ok","service":"openjules","forges":["github","radicle"]}
+docker compose --profile legacy-runtime up -d dind
 ```
+
+This starts infrastructure only. It does not enable the HTTP server or configure
+a host CLI to use that container-internal daemon. The `radicle`, `swarm`, `vllm`
+and `llamacpp` profiles are also explicit optional infrastructure, not admission.
+Configure a trusted CLI's Docker endpoint and credentials on the operator-owned
+host through its existing environment/runtime setup. The default status container
+is no longer a credential-bearing CLI environment.
+
+When upgrading, stop the old ingress and reconcile already-running workers with
+trusted host controls. Existing task databases, volumes and uncertain work are
+retained. An old DinD container can still be running after this configuration
+change; a disabled status page does not certify its work stopped or completed.
+See [upgrade and validation details](docs/managed-service.md#upgrade-retained-work-and-validation).
 
 ---
 
@@ -582,7 +587,7 @@ Every agent operating on the same repository automatically joins that repository
 OpenJules natively supports Radicle peer-to-peer code collaboration:
 - **Repository IDs (`rad:<rid>`)**: Clones and works on decentralized repos without a centralized server.
 - **Radicle Patches**: Changes are proposed via `rad patch open` rather than GitHub PRs.
-- **Dual Triggers**: Webhooks (`POST /api/radicle/webhook`) and background polling (`RadicleNodePoller`).
+- **Explicit Local Polling**: `RadicleNodePoller` remains a trusted host component. The standalone `POST /api/radicle/webhook` is unavailable under the ingress boundary above.
 
 ---
 

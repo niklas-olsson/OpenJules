@@ -128,11 +128,121 @@ Legacy GitHub/Radicle webhooks, PR-review event dispatch, dashboard task creatio
 and palette commands return HTTP 404 on this service. It does not import or start
 the standalone legacy executor, poller or MCP server, or initialize an in-memory
 Polyphony facade. Package exports still load the facade's class definitions.
-The separate `openjules run`, `openjules serve` and `openjules mcp` commands remain
-legacy interfaces. The managed installation context below now explicitly refuses
-their execution in the dedicated installed interpreter. Use the canonical managed
-entrypoints for protected work and a separate standalone interpreter for ordinary
-legacy operation.
+The separate `openjules run` and `openjules mcp` commands remain trusted host
+interfaces. `openjules serve` exposes only harmless health/static content; its
+private and effectful operations are unavailable. The managed installation
+context below refuses all these commands in the dedicated installed interpreter.
+Use canonical managed entrypoints for protected work and an explicitly configured
+separate standalone interpreter for trusted local legacy operation.
+
+## Standalone ingress boundary
+
+The first delivery of [#53](https://github.com/niklas-olsson/OpenJules/issues/53)
+closes anonymous standalone admission. It does not implement an authenticated
+positive adapter. `src.api.webhook:app` constructs only refusal routes and the
+status page. Startup, imports and its lifespan do not construct an executor,
+reviewer, dashboard store, cohort registry/provisioner, Docker or model client,
+forge credential resolver, poller, background queue or WebSocket subscription.
+The managed installation selector remains the existing separate refusal check.
+
+Only `GET`/`HEAD` on `/`, `/health` and `/static/standalone.css` are public. The
+page contains no script, forms, credentials or retained task data. It states
+that work, comments and palette controls are unavailable. No action claims a
+verification, commit, push or publication. `/health` reports process liveness
+and the disabled ingress state; it is not execution readiness. The old dashboard
+JavaScript and broad static directory are not served. Swagger/OpenAPI routes
+are disabled.
+
+### Complete standalone route inventory
+
+The ASGI gate refuses every other HTTP request with a fixed HTTP 503 JSON reason
+before reading the body, parsing event data or invoking any route. Exact legacy
+routes also refuse when their routers are mounted separately. New private routes
+cannot gain admission merely by being added to the app.
+
+| Method/path | Private read or effect that remains unavailable |
+| --- | --- |
+| `POST /api/webhook` | GitHub issue/review dispatch, task records, forge/model/runtime effects |
+| `POST /api/radicle/webhook` | Radicle dispatch and runtime/forge effects |
+| `GET /api/tasks` | Retained task listing |
+| `POST /api/tasks` | Task record creation and execution |
+| `GET /api/tasks/{task_id}` | Private task detail |
+| `GET /api/tasks/{task_id}/diff` | Retained code diff |
+| `POST /api/tasks/{task_id}/comments` | Private task discussion and feedback dispatch |
+| `POST /api/tasks/{task_id}/command` | Palette controls, including former verify/commit/push stubs |
+| `GET /api/polyphony/state` | Private collaboration state |
+| `GET /api/polyphony/cohorts` | Cohort listing |
+| `POST /api/polyphony/cohorts` | Cohort creation and provisioning |
+| `GET /api/polyphony/cohorts/{swarm_id}` | Cohort detail |
+| `DELETE /api/polyphony/cohorts/{swarm_id}` | Worker drain and cohort removal |
+| `POST /api/polyphony/cohorts/{swarm_id}/signal` | Resource-control signal dispatch |
+| WebSocket `/ws/tasks/{task_id}` | Task subscription and observation |
+| WebSocket `/api/polyphony/ws/{swarm_id}` | Cohort subscription and observation |
+
+Both WebSockets close before accept with ASGI close code `1008`; the network
+server may render that denied upgrade as an HTTP rejection. They never subscribe,
+read private state or emit private events. There is no browser token collection.
+
+### Policy and network configuration
+
+`OPENJULES_INGRESS_POLICY` is classified once when constructing this disabled
+app. An absent selector reports `standalone_ingress_unavailable`. An empty,
+whitespace-only, over-4096-character or NUL-containing selector reports
+`standalone_ingress_policy_invalid`. Every other value reports
+`standalone_ingress_policy_unsupported`. No selected file is opened and no policy
+content is interpreted or validated. HTTP refusals expose only the fixed reason;
+health exposes `state: disabled`, the classification and that reason.
+
+A nonempty value, an existing file, a valid GitHub HMAC, a bearer token, a proxy
+header or a caller-supplied approval cannot enable any operation. There is no
+HTTP compatibility switch. Positive policy, principal mapping, enrollment,
+operation-specific receipts and recovery remain later #53 work; adding them
+requires a separate reviewed contract. The pure signature helper rejects an
+absent secret, but it is not an admission path in this delivery.
+
+`openjules serve` defaults to literal `127.0.0.1` and accepts only that address or
+literal `::1`. Hostnames and wildcard addresses are rejected before Uvicorn starts.
+The Docker image still listens on `0.0.0.0:8000` **inside its container**. The
+supported Compose file publishes only `127.0.0.1:8000:8000` on the host. Its sole
+default service is the status app, with no credentials, source or execution-data
+mounts, no execution environment and no privileged DinD dependency. `dind` now
+requires the explicit `legacy-runtime` profile. Optional model, broker and Radicle
+profiles remain operator-selected infrastructure; none enables HTTP admission.
+This is a source/configuration boundary, not a qualification of public hosting or
+an arbitrary reverse proxy.
+
+### Upgrade, retained work and validation
+
+Stop admission through the old standalone server before replacing it. Starting
+this revision does not erase or migrate dashboard SQLite files, cohort records,
+workspaces, Docker volumes or previously started workers. An old already-running
+DinD container does not stop merely because its service has gained a profile.
+Use the existing trusted host/runtime controls to reconcile retained work and
+uncertain effects. Stopping or refusing the HTTP service is not proof that prior
+execution completed, stopped or was captured; do not delete state to make the
+new status service appear empty.
+
+`openjules run`, the direct reviewer, poller, MCP and swarm CLI remain explicit
+trusted host operations outside installed managed context. The host operator
+must supply their runtime, model endpoint, forge credentials and state paths;
+the status-only Compose service no longer provisions them. This preserves the
+existing local execution contract without inventing a network grant.
+Repository-qualified dashboard identity and durable legacy keys remain in the
+explicit local `DashboardState` component. Its constructor requires an injected
+store, and recording data says `recorded`, not that execution began. It is never
+imported by the HTTP app.
+
+`test_standalone_ingress.py` exercises the actual app and route inventory. Fresh
+processes cover missing, invalid and unsupported policy selectors while sentinels
+reject execution/private-storage imports, private reads, writes, background
+queues, network connections and subprocess launches. Every private route and
+both WebSockets refuse with zero effects while the harmless routes respond;
+existing real SQLite bytes remain unchanged. Additional checks cover body-free
+refusal, correctly signed fixture events, independently mounted routers, literal
+CLI/Compose bindings and explicit trusted CLI dispatch. Managed-context tests
+retain import/direct-method refusal and recheck an already constructed app.
+These are ASGI/component and configuration checks, not live GitHub delivery,
+provider inference, a Docker deployment or implemented positive admission.
 
 
 ## Managed installation context
@@ -181,9 +291,9 @@ canonical service configurations without granting any legacy execution.
 | Managed worker HTTP service, legacy webhook/UI routes | HTTP 404, as before. |
 | Legacy run/serve/MCP/swarm command in the installed interpreter | Refused before loading its executor, provider or Docker dependencies; CLI exits 2 with `managed_installation_requires_canonical_ingress`. |
 | Fresh standalone legacy app import in managed context | Refused before global storage, executor/reviewer or cohort provisioner construction. |
-| Previously constructed legacy mutation route after managed context is observed | HTTP 409 with the same fixed reason before storage/queue/effects. GitHub HMAC authentication remains first. |
+| Previously constructed standalone private route after managed context is observed | HTTP 409 with the same fixed reason before body parsing, HMAC, storage, queue or effects; WebSocket upgrade remains refused. |
 | Direct or preconstructed executor/reviewer/MCP/poller/cohort/sandbox object | The shared refusal is rechecked before its effects. Injected dependencies do not waive it. |
-| Separate standalone interpreter with no marker or explicit managed context | Ordinary legacy behavior remains available, including eligible issue/review workflows. |
+| Separate standalone interpreter with no marker or explicit managed context | Trusted direct CLI/components remain available. Standalone HTTP/WS private operations remain unavailable even with supplied policy or credentials. |
 | Legacy raw access to an actual managed-labeled container | Read-only ownership inspection is permitted; exec, file write, stop, removal and quarantine are refused. |
 
 Raw legacy container operations require the exact immutable container ID and
@@ -263,57 +373,39 @@ optional diagnostic field; they never serialize it as null.
 
 ## Legacy PR review boundary
 
-The separately enabled standalone webhook and direct `PRReviewHandler` refuse
+The direct, host-invoked `PRReviewHandler` refuses
 feedback whose branch ends in a slash followed by exactly 64 lowercase hexadecimal
 characters, or whose supplied PR body or feedback contains
 `<!-- openjules-publication:`. Every current managed publication policy appends
 its operation digest to a slash-terminated prefix, so the branch check also covers
-custom prefixes. A `/jules` mention cannot override refusal. The webhook returns
-HTTP 409 with `managed_publication_requires_canonical_review` before queuing work;
-the direct handler raises `ReviewSourceRejected` before reading execution
+custom prefixes. A `/jules` mention cannot override refusal. The direct handler
+raises `ReviewSourceRejected` with `managed_publication_requires_canonical_review`
+before reading execution
 configuration or credentials or invoking sandbox, model, commit or push operations.
-Malformed review-event source values return a fixed HTTP 400 reason. Missing or
-null optional PR bodies remain valid absent context.
+Malformed direct source values raise `ReviewSourceRejected`; missing or null
+optional PR bodies remain valid absent context.
 
-GitHub general pull-request conversation comments use the
-[`issue_comment` event](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment),
-which identifies the PR through `issue.pull_request` and supplies no actual head
-branch for the review guard. A created comment containing `/jules run` or
-`/openjules run` with that PR indicator now returns HTTP 409 with
-`pull_request_comment_requires_review_event` before constructing a task or
-queuing the legacy executor. An empty object is still a PR indicator. Removing
-or omitting the publication marker or PR body does not enable this issue-task
-path. A null or non-object indicator, or malformed source context consumed by
-the triggered path, returns HTTP 400 with `invalid_issue_comment_source`.
-Responses contain no supplied body, repository output or credentials.
+The standalone HTTP gate now refuses **all** GitHub events with HTTP 503 before
+signature checks or source parsing, including ordinary issues, general PR
+conversation commands and review events. The historical event-specific 400/409
+and ignored-event responses no longer describe that disabled interface. No
+renamed branch, erased marker or correctly signed event restores HTTP admission.
+Managed installations retain their earlier blanket legacy refusal and expose
+no legacy review route on the canonical service.
 
-This deliberately ends the previous behavior where a general PR conversation
-run command could start an unrelated legacy issue task. Valid untriggered PR
-comments and other comment actions remain ignored. Ordinary issue run commands
-keep their existing payload and dispatch behavior. The actual
-`pull_request_review` and `pull_request_review_comment` routes retain the branch
-and marker guard above; eligible standalone PR feedback uses those existing
-review events, while managed feedback requires the canonical review path.
-
-A configured `GITHUB_WEBHOOK_SECRET` is checked before JSON parsing or routing.
-The standalone webhook's existing permissive behavior when that secret is empty
-is unchanged. This refusal does not turn that interface into authenticated
-managed admission, and marker absence grants no managed authority. The guard
-tests exercise the actual app with signed payloads and explicit constructor,
-executor and forge fixtures; they do not claim a live GitHub webhook delivery.
-
-Ordinary generated and ad hoc standalone branches retain their existing review
-event flow. An ordinary branch with the same branch shape, or text quoting
+Ordinary generated and ad hoc standalone branches remain eligible for the
+explicit trusted direct handler. An ordinary branch with the same branch shape, or text quoting
 the literal marker, is conservatively refused. These public signals only reject
 legacy automation; their absence grants no canonical authority. A renamed branch
 with erased provenance is outside this standalone branch/marker check. It does
 not waive the managed-installation refusal above. In a separate unmarked
-standalone interpreter, legacy component initialization is unchanged. The
-installed managed service still exposes no legacy review route.
+standalone interpreter, explicit legacy component initialization is unchanged.
+Direct guard tests use fixture execution/forge clients and branch/marker values
+produced by the actual publication component. They do not claim live GitHub
+delivery or managed PR iteration.
 
-This boundary does not implement managed PR iteration, authenticated canonical
-webhook enrollment. The managed installation explicitly refuses legacy
-entrypoints rather than routing them into a new authority adapter. Managed draft
+This boundary does not implement authenticated canonical webhook enrollment.
+The managed installation refuses legacy entrypoints. Managed draft
 feedback continues to require the canonical task/review path. Issue acceptance
 still requires the paired installer and runtime evidence for the delivered set.
 
