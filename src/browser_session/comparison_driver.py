@@ -114,8 +114,8 @@ class DriverSpec:
 
     def operation_ids(self):
         """No deadline, budget, generation, retry counter or caller run ID."""
-        scope = {"session_id": self.session_id, "backend_epoch": self.backend_epoch,
-                 "driver_actor_id": self.driver_actor_id}
+        scope = {name: getattr(self, name) for name in
+                 ("session_id", "context_id", "target_id", "backend_epoch", "driver_actor_id")}
         return tuple("compare." + sha256(canonical(scope | {"phase": phase}).encode("ascii")).hexdigest()
                      for phase in PHASES)
 
@@ -258,3 +258,368 @@ def _clock(clock):
         return wall, mono
     except Exception:
         raise DriverDenied("invalid_clock") from None
+
+
+_MISSING = object()
+
+
+class ComparisonDriver:
+    """Advance one fixed fixture comparison without owning its runtime.
+
+    At most two port calls occur in an eligible step. Successive eligible steps
+    are separated by at least 250 ms, including after a slow callback returns;
+    this permits at most eight calls/second, not four. There is no sleep or
+    scheduler. The original expiry and all counters survive every waiting phase.
+    A callback can block beyond expiry, but its return cannot authorize another
+    call or mutation. Any uncertain original remains available only by its key.
+    """
+
+    def __init__(self, spec: DriverSpec, port: ComparisonPort, clock: Clock):
+        global _process_claim
+        if type(spec) is not DriverSpec or type(port) is not ComparisonPort:
+            raise DriverDenied("invalid_configuration")
+        wall, mono = _clock(clock)
+        try:
+            spec.validate(wall)
+        except Exception:
+            raise DriverDenied("invalid_spec") from None
+        cutoff = mono + (spec.expires_at_ms - wall) / 1000
+        if not math.isfinite(cutoff) or cutoff <= mono:
+            raise DriverDenied("invalid_clock")
+        with _CLAIM_LOCK:
+            if _process_claim is not None:
+                raise DriverDenied("process_run_already_claimed")
+            self._claim = _process_claim = object()
+        self._spec, self._port, self._clock = spec, port, clock
+        self._deadline, self._last_wall, self._last_mono = cutoff, wall, mono
+        self._next_step = mono
+        self._lock = threading.Lock()
+        self._state, self._phase, self._reason = "waiting", "preflight", None
+        self._steps = self._calls = self._clicks = self._step_calls = self._preflight = 0
+        self._ids = spec.operation_ids()
+        self._prepared_key = None
+        self._pending = None
+        self._pending_state = None
+        self._uncertain = False
+        self._history = []
+        self._quotes = {}
+        self._generation = 0
+        self._human_generation = None
+        self._correction = None
+        self._result = None
+        self._last_progress = self._progress()
+
+    @property
+    def spec(self):
+        return self._spec
+
+    def _progress(self, reason=None):
+        return DriverProgress(self._state, self._phase, self._reason if reason is None else reason,
+            self._steps, self._calls, self._clicks,
+            self._pending["request"]["operation_id"] if self._pending else None,
+            self._pending_state, self._result)
+
+    def _now(self):
+        wall, mono = _clock(self._clock)
+        if wall < self._last_wall or mono < self._last_mono:
+            raise DriverDenied("clock_rollback")
+        self._last_wall, self._last_mono = wall, mono
+        if wall >= self.spec.expires_at_ms or mono >= self._deadline:
+            raise DriverDenied("driver_expired")
+        return wall, mono
+
+    def _deny(self, reason):
+        if self._state in {"completed", "expired", "refused"}:
+            return
+        if reason == "driver_expired":
+            self._state = "expired"
+        elif reason in {"clock_rollback", "invalid_clock", "step_budget", "port_budget", "claim_lost"}:
+            self._state = "refused"
+        elif self._pending is not None and reason != "operation_not_applied":
+            self._uncertain = True
+            self._state = "uncertain"
+        else:
+            self._state = "refused"
+        self._reason = reason
+
+    def _call(self, callback, *arguments):
+        with _CLAIM_LOCK:
+            if _process_claim is not self._claim:
+                raise DriverDenied("claim_lost")
+        self._now()
+        if self._step_calls >= 2 or self._calls >= self.spec.limits.port_calls:
+            raise DriverDenied("port_budget")
+        self._step_calls += 1
+        self._calls += 1  # Charge before entering a possibly failing callback.
+        try:
+            value = callback(*arguments)
+        except Exception:
+            self._deny("port_unavailable")
+            try:
+                self._now()
+            except DriverDenied as error:
+                self._deny(error.code)
+            return _MISSING
+        try:
+            self._now()
+        except DriverDenied as error:
+            # A late exact acknowledgement may still improve original facts.
+            # Its caller may retain those facts, but cannot advance or do I/O.
+            self._deny(error.code)
+        return value
+
+    def _live_return(self):
+        return self._state not in {"expired", "refused", "uncertain"}
+
+    def _read(self):
+        value = self._call(self._port.observe)
+        if value is _MISSING or not self._live_return():
+            return None
+        view = _observation(value, self.spec, self._last_wall)
+        if not view["audit_available"]:
+            raise DriverDenied("producer_audit_unavailable")
+        if view["mode"] in {"fenced", "stopping", "stopped", "lost"}:
+            raise DriverDenied("producer_unavailable")
+        return view
+
+    def _fresh_frame(self, view):
+        frame = view["frame"]
+        if frame is None or self._last_wall - frame["captured_at_ms"] > view["frame_max_age_ms"]:
+            self._reason = "fresh_observation_required"
+            return None
+        return frame
+
+    def _driver_frame(self, view, fixture, delivery):
+        if (view["mode"] != "driver" or view["actor_id"] != self.spec.driver_actor_id
+                or view["control_generation"] != self._generation):
+            raise DriverDenied("driver_control_required")
+        frame = self._fresh_frame(view)
+        if frame is None:
+            return None
+        fields = frame["projection"]["fields"]
+        if fields["fixture"] != fixture or fields["delivery"] != delivery:
+            raise DriverDenied("unexpected_fixture_state")
+        return frame
+
+    @staticmethod
+    def _quote(view):
+        frame, fields = view["frame"], view["frame"]["projection"]["fields"]
+        return {"fixture": fields["fixture"], "price": fields["price"], "delivery": fields["delivery"],
+            "total": fields["total"], "url": frame["projection"]["url"],
+            "observation_id": frame["observation_id"], "document_id": view["document_id"],
+            "document_generation": view["document_generation"], "control_generation": view["control_generation"],
+            "sequence": frame["sequence"], "captured_at_ms": frame["captured_at_ms"]}
+
+    def _probe(self, key):
+        value = self._call(self._port.operation, key)
+        if value is _MISSING or not self._live_return():
+            return False
+        if value is ABSENT:
+            return True
+        # A known retained row, including not_applied, makes this run used.
+        _acknowledgement(value, self.spec, key)
+        raise DriverDenied("original_run_already_used")
+
+    def _prepare_link(self, index, fixture, delivery, destination):
+        key = self._ids[index]
+        if self._prepared_key != key:
+            if self._probe(key):
+                self._prepared_key = key
+                self._reason = "original_key_absent"
+            return
+        view = self._read()
+        if view is None:
+            return
+        frame = self._driver_frame(view, fixture, delivery)
+        if frame is None:
+            return
+        if index == 2:
+            self._check_correction(view)
+            if view["control_generation"] != self._human_generation + 1:
+                raise DriverDenied("handback_generation_required")
+        if self._clicks >= self.spec.limits.clicks:
+            raise DriverDenied("click_budget")
+        self._now()  # Decoding and arithmetic cannot extend a callback snapshot.
+        fields = frame["projection"]["fields"]
+        request = {name: view[name] for name in ("session_id", "context_id", "target_id", "control_generation",
+                                               "document_id", "document_generation")}
+        request.update(operation_id=key, observation_id=frame["observation_id"], action="click",
+                       parameters={"x": fields["next_x"], "y": fields["next_y"], "button": "left"})
+        self._pending = {"request": request, "index": index, "destination": destination,
+                         "sequence": frame["sequence"], "captured_at_ms": frame["captured_at_ms"]}
+        self._pending_state = "unconfirmed"
+        self._clicks += 1
+        # Retain the exact request before submit. The callback gets its own copy.
+        self._quotes[("standard_alpha", "standard_beta", "corrected_alpha")[index]] = self._quote(view)
+        self._state, self._reason = "waiting", "original_submitted"
+        value = self._call(self._port.submit, request | {"parameters": dict(request["parameters"])})
+        if value is not _MISSING:
+            self._remember(value)
+
+    def _remember(self, value):
+        request = self._pending["request"]
+        ack = _acknowledgement(value, self.spec, request["operation_id"], request["control_generation"])
+        previous, current = self._pending_state, ack["state"]
+        if (previous in {"applied", "not_applied"} and current != previous
+                or previous == "unknown" and current in {"queued", "dispatched"}):
+            raise DriverDenied("contradictory_original_outcome")
+        self._pending_state = current
+        if not ack["audit_persisted"]:
+            self._deny("original_audit_unavailable")
+        elif current == "unknown":
+            self._uncertain = True
+            if self._state not in {"expired", "refused"}:
+                self._state, self._reason = "uncertain", "original_outcome_unknown"
+        elif current == "not_applied" and self._live_return():
+            self._deny("operation_not_applied")
+
+    def _pending_step(self):
+        if self._pending_state != "applied" or self._uncertain:
+            value = self._call(self._port.operation, self._pending["request"]["operation_id"])
+            if value is _MISSING:
+                return
+            if value is ABSENT:
+                self._deny("submitted_original_absent")
+                return
+            self._remember(value)
+        if not self._live_return() or self._uncertain or self._pending_state != "applied":
+            return
+        view = self._read()
+        if view is None:
+            return
+        request = self._pending["request"]
+        if (view["mode"] != "driver" or view["control_generation"] != request["control_generation"]):
+            raise DriverDenied("driver_control_required")
+        frame = self._fresh_frame(view)
+        if frame is None:
+            return
+        if view["document_generation"] <= request["document_generation"]:
+            self._reason = "new_document_required"
+            return
+        if (view["document_id"] == request["document_id"] or frame["sequence"] <= self._pending["sequence"]
+                or frame["captured_at_ms"] < self._pending["captured_at_ms"]):
+            raise DriverDenied("invalid_document_transition")
+        fixture = self._pending["destination"]
+        self._driver_frame(view, fixture, 8 if fixture == "beta" else 5)
+        index = self._pending["index"]
+        self._history.append({"phase": PHASES[index], "operation_id": request["operation_id"], "state": "applied"})
+        self._pending, self._pending_state, self._prepared_key = None, None, None
+        self._reason = None
+        if index == 0:
+            self._quotes["standard_beta"] = self._quote(view)
+            self._phase = "return_to_alpha"
+        elif index == 1:
+            self._quotes["human_checkpoint"] = self._quote(view)
+            self._phase, self._reason = "await_human", "explicit_human_turn_required"
+        else:
+            self._check_correction(view)
+            self._quotes["corrected_beta"] = self._quote(view)
+            self._finish()
+
+    def _check_correction(self, view):
+        latest = _latest_correction(view, self._human_generation)
+        if self._correction is None or latest != self._correction or latest["text"] != CORRECTION:
+            raise DriverDenied("observed_correction_required")
+
+    def _human_step(self):
+        view = self._read()
+        if view is None:
+            return
+        mode, generation = view["mode"], view["control_generation"]
+        if mode == "quiescing":
+            self._reason = "explicit_transfer_pending"
+            return
+        if mode == "human":
+            if generation <= self._generation or (self._human_generation is not None and generation != self._human_generation):
+                raise DriverDenied("unexpected_human_generation")
+            self._human_generation = generation
+            latest = _latest_correction(view, generation)
+            self._correction = latest if latest is not None and latest["text"] == CORRECTION else None
+            self._phase = "await_handback"
+            self._reason = "explicit_handback_required" if self._correction else "declared_correction_required"
+            return
+        if self._human_generation is None:
+            # Missing a brief human turn is not evidence that we observed it.
+            self._reason = "explicit_human_turn_not_observed"
+            return
+        if mode != "driver" or generation != self._human_generation + 1:
+            raise DriverDenied("handback_generation_required")
+        self._check_correction(view)
+        self._generation = generation
+        frame = self._driver_frame(view, "alpha", 12)
+        if frame is None:
+            return
+        checkpoint = self._quotes["human_checkpoint"]
+        if frame["sequence"] <= checkpoint["sequence"] or frame["captured_at_ms"] < checkpoint["captured_at_ms"]:
+            raise DriverDenied("post_handback_observation_required")
+        self._phase, self._reason = "corrected_link", "fresh_handback_observed"
+
+    def _finish(self):
+        standard = {name: self._quotes["standard_" + name] for name in ("alpha", "beta")}
+        corrected = {name: self._quotes["corrected_" + name] for name in ("alpha", "beta")}
+        if (corrected["alpha"]["control_generation"] != self._human_generation + 1
+                or corrected["beta"]["control_generation"] != self._human_generation + 1
+                or corrected["alpha"]["observation_id"] == corrected["beta"]["observation_id"]
+                or corrected["beta"]["document_generation"] <= corrected["alpha"]["document_generation"]):
+            raise DriverDenied("post_handback_observation_required")
+        for pair in (standard, corrected):
+            for quote in pair.values():
+                if quote["price"] + quote["delivery"] != quote["total"]:
+                    raise DriverDenied("comparison_equation_failed")
+            pair["alpha_minus_beta"] = pair["alpha"]["total"] - pair["beta"]["total"]
+            pair["lower_total_fixture"] = "beta" if pair["alpha_minus_beta"] > 0 else "alpha"
+        self._now()
+        result = {"schema_version": 1, "task": "alpha-beta-express-comparison",
+            **{name: getattr(self.spec, name) for name in ("session_id", "context_id", "target_id", "backend_epoch", "driver_actor_id")},
+            "historical_standard": standard, "after_explicit_handback": corrected,
+            "owner_correction": dict(self._correction), "original_operations": list(self._history)}
+        raw = (canonical(result) + "\n").encode("ascii")
+        if len(raw) > self.spec.limits.result_bytes:
+            raise DriverDenied("result_budget")
+        self._result, self._state, self._phase, self._reason = raw, "completed", "complete", None
+
+    def step(self):
+        if not self._lock.acquire(blocking=False):
+            old = self._last_progress
+            return DriverProgress(old.state, old.phase, "step_busy", old.steps, old.port_calls, old.clicks,
+                                  old.original_operation_id, old.last_known_operation_state, old.result)
+        eligible = False
+        try:
+            if self._state in {"completed", "expired", "refused"}:
+                return self._progress()
+            try:
+                _, mono = self._now()
+                if mono < self._next_step:
+                    return self._progress("step_too_soon")
+                if self._steps >= self.spec.limits.steps:
+                    raise DriverDenied("step_budget")
+                self._steps += 1
+                self._step_calls = 0
+                eligible = True
+                if self._pending is not None:
+                    self._pending_step()
+                elif self._phase == "preflight":
+                    while self._preflight < 3 and self._step_calls < 2:
+                        if not self._probe(self._ids[self._preflight]):
+                            break
+                        self._preflight += 1
+                    if self._preflight == 3 and self._live_return():
+                        self._phase = "initial_link"
+                elif self._phase == "initial_link":
+                    self._prepare_link(0, "alpha", 5, "beta")
+                elif self._phase == "return_to_alpha":
+                    self._prepare_link(1, "beta", 8, "alpha")
+                elif self._phase in {"await_human", "await_handback"}:
+                    self._human_step()
+                elif self._phase == "corrected_link":
+                    self._prepare_link(2, "alpha", 12, "beta")
+            except DriverDenied as error:
+                self._deny(error.code)
+            except Exception:
+                self._deny("invalid_projection")
+            return self._progress()
+        finally:
+            if eligible:
+                self._next_step = self._last_mono + self.spec.limits.step_interval_ms / 1000
+            self._last_progress = self._progress()
+            self._lock.release()
