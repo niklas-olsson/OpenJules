@@ -1,18 +1,17 @@
-"""Unit and integration tests for the 5 Swarm Controller extensions.
+"""Explicit local swarm components and CLI, with fixture workers.
 
 Covers:
 1. SwarmCohortRegistry & SwarmReconciliationDaemon background loop
 2. WorkerHealthMonitor container liveness detection & self-healing
-3. FastAPI REST & WebSocket endpoints (/api/polyphony/cohorts, /ws/polyphony/{swarm_id})
-4. CLI swarm commands (start, status, drain)
+3. CLI swarm commands (start, status, drain)
+
+The closed HTTP/WS boundary is covered by test_standalone_ingress.py.
 """
 
 import asyncio
-from unittest.mock import MagicMock
-from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, patch
 import pytest
 
-from src.api.webhook import app
 from src.cli import handle_swarm_cli
 from src.polyphony import (
     InMemoryOutboxBridge,
@@ -21,9 +20,13 @@ from src.polyphony import (
     SignalType,
     SwarmResourceController,
 )
-from src.polyphony.daemon import SwarmReconciliationDaemon
 from src.polyphony.health import WorkerHealthMonitor
-from src.polyphony.registry import SwarmCohortRegistry, cohort_registry
+from src.polyphony.outbox import SQLiteOutboxBridge
+# Explicit legacy components may construct their host runtime. These tests use
+# fixture workers; the actual disabled app must never import this singleton.
+with patch("docker.from_env"):
+    from src.polyphony.daemon import SwarmReconciliationDaemon
+    from src.polyphony.registry import SwarmCohortRegistry, cohort_registry
 
 
 def test_swarm_cohort_registry_and_daemon():
@@ -100,65 +103,11 @@ def test_worker_health_monitor_self_healing():
     assert heal_result["current_total_active"] == 2
 
 
-def test_polyphony_rest_api_lifecycle():
-    cohort_registry._controllers.clear()
-    cohort_registry.default_provisioner = MockContainerProvisioner()
-
-    client = TestClient(app)
-
-    # 1. Create cohort
-    create_payload = {
-        "swarm_id": "api-swarm-lifecycle",
-        "repo_url": "https://github.com/org/test-repo.git",
-        "base_worker_count": 2,
-        "max_burst_workers": 6,
-        "max_host_budget": 50.0,
-    }
-    resp = client.post("/api/polyphony/cohorts", json=create_payload)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "created"
-    assert resp.json()["base_workers_spawned"] == 2
-
-    # 2. Duplicate rejection
-    dup_resp = client.post("/api/polyphony/cohorts", json=create_payload)
-    assert dup_resp.status_code == 400
-
-    # 3. List cohorts
-    list_resp = client.get("/api/polyphony/cohorts")
-    assert list_resp.status_code == 200
-    assert len(list_resp.json()) == 1
-
-    # 4. Get cohort details
-    detail_resp = client.get("/api/polyphony/cohorts/api-swarm-lifecycle")
-    assert detail_resp.status_code == 200
-    data = detail_resp.json()
-    assert data["active_worker_count"] == 2
-    assert len(data["base_workers"]) == 2
-
-    # 5. Trigger Signal (SCALE_UP)
-    sig_resp = client.post(
-        "/api/polyphony/cohorts/api-swarm-lifecycle/signal",
-        json={
-            "signal_type": "SCALE_UP",
-            "requested_worker_delta": 2,
-            "target_task_ids": ["task-1"],
-            "rationale": "Scaling via API",
-        },
-    )
-    assert sig_resp.status_code == 200
-    assert sig_resp.json()["status"] == "reconciled"
-
-    # Verify scaled
-    scaled_resp = client.get("/api/polyphony/cohorts/api-swarm-lifecycle")
-    assert scaled_resp.json()["active_worker_count"] == 4
-
-    # 6. Delete cohort
-    del_resp = client.delete("/api/polyphony/cohorts/api-swarm-lifecycle")
-    assert del_resp.status_code == 200
-    assert del_resp.json()["status"] == "deleted"
 
 
-def test_cli_swarm_subcommands(capsys):
+def test_cli_swarm_subcommands(capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.polyphony.registry.SQLiteOutboxBridge",
+                        lambda _: SQLiteOutboxBridge(str(tmp_path / "cohort.sqlite3")))
     cohort_registry._controllers.clear()
     cohort_registry.default_provisioner = MockContainerProvisioner()
 

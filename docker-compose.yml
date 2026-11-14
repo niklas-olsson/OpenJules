@@ -3,6 +3,9 @@ services:
     image: docker:27-dind
     privileged: true
     restart: unless-stopped
+    # Explicit host-owned legacy runtime only; the disabled HTTP app needs none.
+    profiles:
+      - legacy-runtime
     environment:
       # Disables TLS for internal container-to-container communication on default network
       DOCKER_TLS_CERTDIR: ""
@@ -79,37 +82,9 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    depends_on:
-      dind:
-        condition: service_healthy
     ports:
-      - "8000:8000"
-    environment:
-      DOCKER_HOST: tcp://dind:2375
-      # GitHub App credentials
-      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-/secrets/github-app.pem}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      # Radicle settings
-      RADICLE_NODE_URL: ${RADICLE_NODE_URL:-http://radicle-node:8080/api/v1}
-      RAD_PASSPHRASE: ${RAD_PASSPHRASE:-}
-      # Keystone Polyphony multi-agent coordination
-      MQTT_HOST: ${MQTT_HOST:-polyphony-mqtt}
-      MQTT_PORT: ${MQTT_PORT:-1883}
-      # Self-hosted LLM settings (vLLM, llama.cpp, Ollama)
-      LLM_API_BASE: ${LLM_API_BASE:-}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o}
-      LLM_API_KEY: ${LLM_API_KEY:-EMPTY}
-      # Cloud Model API keys (optional fallback)
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-    volumes:
-      - ./src:/app/src:ro
-      - ./secrets:/secrets:ro
-      - workspace-data:/workspace
-      - radicle-data:/root/.radicle
+      - "127.0.0.1:8000:8000"
+    # Status-only default: no credentials, host source or execution state mounts.
     networks:
       - openjules-net
 

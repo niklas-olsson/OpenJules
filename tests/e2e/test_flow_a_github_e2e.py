@@ -1,22 +1,20 @@
-"""Flow A E2E Test: Full GitHub Issue Webhook -> Agent Sandbox -> Tests -> PR created."""
+"""Trusted local GitHub execution flow with deterministic provider/forge fixtures."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
-from fastapi.testclient import TestClient
 
 from src.agent.engine import AgentEngine
-from src.api.webhook import app
 from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import ExecResult, SandboxContext, SandboxManager
 from src.worker.executor import TaskExecutor
+from src.worker.dispatcher import TaskPayload
 
 pytestmark = pytest.mark.e2e
 
 
 def test_flow_a_github_full_lifecycle_e2e(tmp_path):
     ws_dir = str(tmp_path)
-    client = TestClient(app)
 
     # Mock Docker sandbox run
     mock_sandbox = MagicMock(spec=SandboxManager)
@@ -70,30 +68,13 @@ def test_flow_a_github_full_lifecycle_e2e(tmp_path):
         github_client=mock_gh,
     )
 
-    with patch("src.api.webhook.executor", custom_executor):
-        webhook_payload = {
-            "action": "labeled",
-            "issue": {
-                "number": 101,
-                "title": "Fix crash on divide by zero",
-                "body": "Running calc with b=0 throws exception",
-                "labels": [{"name": "openjules:run"}],
-            },
-            "repository": {
-                "full_name": "org/app",
-                "clone_url": "https://github.com/org/app.git",
-                "default_branch": "main",
-            },
-            "sender": {"login": "developer"},
-        }
-
-        resp = client.post("/api/webhook", json=webhook_payload, headers={"X-GitHub-Event": "issues"})
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "dispatched"
-        assert resp.json()["issue_id"] == 101
-
-        # Verify PR creation call
-        mock_repo.create_pull.assert_called_once()
-        pr_kwargs = mock_repo.create_pull.call_args[1]
-        assert "Fix crash on divide by zero" in pr_kwargs["title"]
-        assert "Fixes #101" in pr_kwargs["body"]
+    result = custom_executor.execute_task(TaskPayload(
+        issue_id=101, issue_title="Fix crash on divide by zero",
+        issue_body="Running calc with b=0 throws exception", repo_full_name="org/app",
+        repo_clone_url="https://github.com/org/app.git", default_branch="main", sender="developer",
+    ))
+    assert result is True
+    mock_repo.create_pull.assert_called_once()
+    pr_kwargs = mock_repo.create_pull.call_args[1]
+    assert "Fix crash on divide by zero" in pr_kwargs["title"]
+    assert "Fixes #101" in pr_kwargs["body"]

@@ -31,3 +31,6 @@ openjules-discussion = "src.worker.public_discussion:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+[tool.setuptools.package-data]
+"src" = ["ui/static/standalone.html", "ui/static/standalone.css"]

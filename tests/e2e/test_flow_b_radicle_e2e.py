@@ -1,12 +1,10 @@
-"""Flow B E2E Test: Radicle Node Webhook & Poller -> Sandbox -> rad patch open."""
+"""Trusted local Radicle execution/poller flow with deterministic fixtures."""
 
 import json
 from unittest.mock import MagicMock, patch
 import pytest
-from fastapi.testclient import TestClient
 
 from src.agent.engine import AgentEngine
-from src.api.webhook import app
 from src.forge.radicle import RadicleProvider
 from src.sandbox.config import OpenJulesConfig
 from src.sandbox.docker_driver import ExecResult, SandboxContext, SandboxManager
@@ -59,27 +57,12 @@ def test_flow_b_radicle_full_lifecycle_e2e(tmp_path):
         radicle_provider=rad_provider,
     )
 
-    client = TestClient(app)
-
-    with patch("src.api.webhook.executor", executor):
-        # 1. Trigger via Radicle Webhook
-        radicle_event = {
-            "event_type": "openjules:run",
-            "rid": "rad:z4V1sJY123",
-            "issue_id": "rad-issue-77",
-            "issue_title": "Fix gossip sync delay",
-            "issue_body": "DHT announcements taking over 10s",
-            "labels": ["openjules:run"],
-            "default_branch": "master",
-        }
-
-        resp = client.post("/api/radicle/webhook", json=radicle_event)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "dispatched"
-        assert resp.json()["forge"] == "radicle"
-
-        # Verify rad patch open was executed inside the sandbox
-        assert any("rad patch open" in c for c in executed_cmds)
+    assert executor.execute_task(TaskPayload(
+        forge="radicle", issue_id="rad-issue-77", issue_title="Fix gossip sync delay",
+        issue_body="DHT announcements taking over 10s", repo_full_name="rad:z4V1sJY123",
+        repo_clone_url="rad:z4V1sJY123", default_branch="master",
+    )) is True
+    assert any("rad patch open" in command for command in executed_cmds)
 
     # 2. Test RadicleNodePoller discovering and dispatching issues
     poller_resp = MagicMock()

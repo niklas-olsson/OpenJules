@@ -50,12 +50,15 @@ def run_cli_task(prompt: str, repo: str, branch: str = "main", test_cmd: str = N
         return 1
 
 
-def serve_dashboard(host: str = "0.0.0.0", port: int = 8000):
-    """Starts the OpenJules API server and 3-pane web interface."""
+def serve_dashboard(host: str = "127.0.0.1", port: int = 8000):
+    """Starts the disabled standalone status service on literal loopback."""
     require_legacy_execution()
+    if host not in {"127.0.0.1", "::1"}:
+        raise ValueError("standalone_serve_requires_literal_loopback")
     import uvicorn
 
-    print(f"🌐 Starting OpenJules Control Plane & Dashboard on http://{host}:{port}")
+    url_host = f"[{host}]" if host == "::1" else host
+    print(f"OpenJules standalone status: http://{url_host}:{port}; task and cohort ingress unavailable")
     uvicorn.run("src.api.webhook:app", host=host, port=port, reload=False)
 
 
@@ -155,8 +158,8 @@ def main():
     run_parser.add_argument("--test-cmd", type=str, default=None, help="Custom test command override")
 
     # Command: serve
-    serve_parser = subparsers.add_parser("serve", help="Start the FastAPI control plane and web dashboard")
-    serve_parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address")
+    serve_parser = subparsers.add_parser("serve", help="Start the standalone health/static service; task ingress unavailable")
+    serve_parser.add_argument("--host", choices=("127.0.0.1", "::1"), default="127.0.0.1", help="Literal loopback address")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
 
     # Command: polyphony
