@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "investigation": "managed-costs-v1",
+  "baseline_revision": "037fab5d37d2dfc11e2fe212cf2bc409467ee2de",
+  "zpm_revision": "e8cb65ea7c1717cc5b49c1a6199960a51ac99b9f",
+  "polyphony_revision": "6480e36355bf0d5de4e25a560d40e665fd76038c",
+  "caps": {
+    "elapsed_seconds": 1800,
+    "cleanup_reserve_seconds": 90,
+    "workers": 2,
+    "children_per_root": 2,
+    "storage_bytes": 8589934592,
+    "sampled_memory_bytes": 4294967296,
+    "fixture_transfer_bytes": 536870912
+  },
+  "cases": [
+    {
+      "id": "source-cold-reuse",
+      "kind": "source",
+      "samples": 5,
+      "limit_seconds": 20,
+      "max_transfer_bytes": 0,
+      "max_storage_bytes": 33554432,
+      "instrumented": true,
+      "params": {
+        "source_bytes": 4194304,
+        "file_count": 64
+      }
+    },
+    {
+      "id": "root",
+      "kind": "root",
+      "samples": 5,
+      "limit_seconds": 75,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 16777216,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "root-observer-control",
+      "kind": "root",
+      "samples": 5,
+      "limit_seconds": 75,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 16777216,
+      "instrumented": false,
+      "params": {}
+    },
+    {
+      "id": "two-fresh-children",
+      "kind": "children",
+      "samples": 5,
+      "limit_seconds": 75,
+      "max_transfer_bytes": 2097152,
+      "max_storage_bytes": 33554432,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "capture-small",
+      "kind": "capture",
+      "samples": 5,
+      "limit_seconds": 35,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "payload_bytes": 131072,
+        "file_count": 1,
+        "target_archive_bytes": 262144
+      }
+    },
+    {
+      "id": "capture-medium",
+      "kind": "capture",
+      "samples": 5,
+      "limit_seconds": 35,
+      "max_transfer_bytes": 5242880,
+      "max_storage_bytes": 12582912,
+      "instrumented": true,
+      "params": {
+        "payload_bytes": 4063232,
+        "file_count": 1,
+        "target_archive_bytes": 4194304
+      }
+    },
+    {
+      "id": "capture-large",
+      "kind": "capture",
+      "samples": 5,
+      "limit_seconds": 35,
+      "max_transfer_bytes": 13631488,
+      "max_storage_bytes": 33554432,
+      "instrumented": true,
+      "params": {
+        "payload_bytes": 12451840,
+        "file_count": 1,
+        "target_archive_bytes": 12582912
+      }
+    },
+    {
+      "id": "capture-many-files",
+      "kind": "capture",
+      "samples": 5,
+      "limit_seconds": 35,
+      "max_transfer_bytes": 6291456,
+      "max_storage_bytes": 20971520,
+      "instrumented": true,
+      "params": {
+        "payload_bytes": 4063232,
+        "file_count": 512,
+        "target_archive_bytes": 4194304
+      }
+    },
+    {
+      "id": "publication-one",
+      "kind": "publication",
+      "samples": 5,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "blobs": 1,
+        "total_bytes": 32768,
+        "delay_ms": 0,
+        "body_bytes_per_second": 1250000,
+        "lose_draft_reply": false
+      }
+    },
+    {
+      "id": "publication-many",
+      "kind": "publication",
+      "samples": 5,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "blobs": 32,
+        "total_bytes": 32768,
+        "delay_ms": 0,
+        "body_bytes_per_second": 1250000,
+        "lose_draft_reply": false
+      }
+    },
+    {
+      "id": "publication-delay20",
+      "kind": "publication",
+      "samples": 5,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "blobs": 32,
+        "total_bytes": 32768,
+        "delay_ms": 20,
+        "body_bytes_per_second": 1250000,
+        "lose_draft_reply": false
+      }
+    },
+    {
+      "id": "publication-delay100",
+      "kind": "publication",
+      "samples": 5,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "blobs": 32,
+        "total_bytes": 32768,
+        "delay_ms": 100,
+        "body_bytes_per_second": 1250000,
+        "lose_draft_reply": false
+      }
+    },
+    {
+      "id": "publication-lost-draft",
+      "kind": "publication",
+      "samples": 1,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 8388608,
+      "instrumented": true,
+      "params": {
+        "blobs": 32,
+        "total_bytes": 32768,
+        "delay_ms": 0,
+        "body_bytes_per_second": 1250000,
+        "lose_draft_reply": true
+      }
+    },
+    {
+      "id": "two-workers",
+      "kind": "two_workers",
+      "samples": 1,
+      "limit_seconds": 90,
+      "max_transfer_bytes": 2097152,
+      "max_storage_bytes": 33554432,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "held-provider-wrong-uid",
+      "kind": "control_denial",
+      "samples": 1,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 16777216,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "held-provider-cancel",
+      "kind": "control_cancel",
+      "samples": 1,
+      "limit_seconds": 45,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 16777216,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "installed-idle",
+      "kind": "installed_idle",
+      "samples": 1,
+      "limit_seconds": 600,
+      "max_transfer_bytes": 1048576,
+      "max_storage_bytes": 2147483648,
+      "instrumented": true,
+      "params": {}
+    },
+    {
+      "id": "hook-overhead",
+      "kind": "overhead",
+      "samples": 1,
+      "limit_seconds": 15,
+      "max_transfer_bytes": 0,
+      "max_storage_bytes": 1048576,
+      "instrumented": true,
+      "params": {}
+    }
+  ],
+  "sample_policy": "All cases except installed-idle run round-robin by repetition; reverse the declared case order on alternate repetitions. The sole installed-idle sample runs last, after all other 65 samples, and closes further admission with explicitly qualified stopped-resource retention. Each sample is a fresh process. No p95. Root controls disable timing hooks while preserving correctness, body counters and resource monitoring.",
+  "duration_policy": "Sum of per-case fail-safe maxima may exceed the whole-trial cap. Admission reserves the next case maximum plus cleanup reserve against the original trial deadline. Any unadmitted case remains NOT_RUN, and an incomplete run cannot close the investigation."
+}
