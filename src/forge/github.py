@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 class GitHubProvider(ForgeProvider):
     """Forge provider for GitHub via PyGithub."""
 
-    def __init__(self, github_client: Optional[Github] = None, token: Optional[str] = None):
-        self.token = token or os.environ.get("GITHUB_TOKEN")
-        if github_client:
+    def __init__(self, github_client: Optional[Github] = None, token: Optional[str] = None,
+                 *, allow_environment_token: bool = True):
+        self.token = token or (os.environ.get("GITHUB_TOKEN") if allow_environment_token else None)
+        if github_client is not None:
             self.client = github_client
         elif self.token:
             self.client = Github(auth=Auth.Token(self.token))

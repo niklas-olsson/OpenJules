@@ -6,11 +6,12 @@ retained capture and Polyphony's canonical task authority. Separate trusted
 host commands retain legacy GitHub/Radicle execution and review components,
 with explicitly configured cloud or self-hosted models.
 
-**Standalone HTTP task, webhook, cohort and WebSocket operations are currently
-unavailable.** The default server provides only a status page and health response.
-Supplying a policy, token or webhook secret does not enable work. See the
-[standalone ingress boundary](docs/managed-service.md#standalone-ingress-boundary)
-for the complete route inventory, upgrade behavior and remaining #53 work.
+**The default standalone server provides only a status page and health response.**
+An explicitly selected, enrolled host policy enables a limited authenticated
+GitHub issue-task API and scoped original dispatch receipts. Review, Radicle,
+cohort, private dashboard and WebSocket routes remain unavailable. See
+[explicit standalone task ingress](docs/standalone-ingress.md) for enrollment,
+credential separation, supported transport, recovery and remaining #53 scope.
 
 ## Managed deployment with ZPM
 
@@ -386,7 +387,7 @@ the linked explanation. Update this map when routing changes.
 | Change | Representative source | Documentation home |
 | --- | --- | --- |
 | Service configuration, ingress and readiness | [managed_service.py](src/worker/managed_service.py), [execution_context.py](src/worker/execution_context.py) | [Managed service](docs/managed-service.md) |
-| Disabled standalone HTTP/WS ingress and retained local records | [standalone_ingress.py](src/api/standalone_ingress.py), [webhook.py](src/api/webhook.py), [dashboard_state.py](src/storage/dashboard_state.py) | [Standalone ingress boundary](docs/managed-service.md#standalone-ingress-boundary) |
+| Default-deny standalone ingress, explicit task admission and original receipts | [standalone_ingress.py](src/api/standalone_ingress.py), [ingress_policy.py](src/api/ingress_policy.py), [ingress_http.py](src/api/ingress_http.py), [ingress_adapter.py](src/api/ingress_adapter.py), [ingress_receipts.py](src/storage/ingress_receipts.py) | [Standalone task ingress](docs/standalone-ingress.md) and [managed-service boundary](docs/managed-service.md#standalone-ingress-boundary) |
 | Pure schema-1 installation validation and static contract | [managed_configuration.py](src/worker/managed_configuration.py), [installation_validation.py](src/worker/installation_validation.py), [contract and vectors](src/worker/contracts/openjules-installation-v1.json) | [Installation configuration validation](docs/managed-service.md#installation-configuration-validation) |
 | Worker state and lifecycle API | [lifecycle.py](src/worker/lifecycle.py), [worker_lifecycle.py](src/api/worker_lifecycle.py) | [Worker lifecycle](docs/worker-lifecycle.md) |
 | Optional execution destination identity and original journal set | [destination.py](src/worker/destination.py), [managed_service.py](src/worker/managed_service.py) | [Execution destination identity](docs/managed-service.md#optional-execution-destination-identity), [HTTP v2](docs/worker-lifecycle.md#http-version-2-destination-identity) |
@@ -487,6 +488,9 @@ python -m src.cli serve --host 127.0.0.1
 
 `serve` accepts only literal `127.0.0.1` or `::1`. A hostname, wildcard bind,
 bearer token or nonempty `OPENJULES_INGRESS_POLICY` cannot enable task operations.
+The separate [positive task recipe](docs/standalone-ingress.md#first-enrollment-and-deliberate-launch)
+requires create-only journal initialization, attributable fresh-scope enrollment
+and explicit `serve --policy /absolute/policy.json` selection.
 The full CI suite also builds managed Docker fixture images; a local unit run
 does not qualify an installed execution environment.
 

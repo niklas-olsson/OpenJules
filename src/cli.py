@@ -1,6 +1,7 @@
 """OpenJules CLI — Run autonomous agent tasks and manage swarms from the terminal."""
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -50,16 +51,48 @@ def run_cli_task(prompt: str, repo: str, branch: str = "main", test_cmd: str = N
         return 1
 
 
-def serve_dashboard(host: str = "127.0.0.1", port: int = 8000):
-    """Starts the disabled standalone status service on literal loopback."""
+def serve_dashboard(host: str = "127.0.0.1", port: int = 8000, policy_path: str = None):
+    """Start the default status or explicitly enrolled loopback ingress app."""
     require_legacy_execution()
     if host not in {"127.0.0.1", "::1"}:
         raise ValueError("standalone_serve_requires_literal_loopback")
     import uvicorn
 
     url_host = f"[{host}]" if host == "::1" else host
-    print(f"OpenJules standalone status: http://{url_host}:{port}; task and cohort ingress unavailable")
-    uvicorn.run("src.api.webhook:app", host=host, port=port, reload=False)
+    if policy_path is None:
+        print(f"OpenJules standalone status: http://{url_host}:{port}; task and cohort ingress unavailable")
+        uvicorn.run("src.api.webhook:app", host=host, port=port, reload=False, workers=1, proxy_headers=False)
+    else:
+        from src.api.webhook import create_app
+        from src.api.ingress_policy import IngressError
+        app = create_app(policy_path=policy_path)
+        policy = app.state.ingress_policy
+        if policy.mode == "local_only" and policy.origin != f"http://{url_host}:{port}":
+            raise IngressError("standalone_serve_policy_transport_mismatch", 400)
+        if policy.mode == "remote":
+            print(f"OpenJules isolated backend: http://{url_host}:{port}; requires the configured HTTPS proxy for {policy.origin}")
+        else:
+            print(f"OpenJules explicit local ingress: http://{url_host}:{port}")
+        uvicorn.run(app, host=host, port=port, reload=False, workers=1, proxy_headers=False, access_log=False)
+
+
+def handle_ingress_cli(args):
+    """Explicit create-only initialization and stopped-service enrollment."""
+    require_legacy_execution()
+    from src.api.ingress_policy import IngressError, load_policy
+    from src.storage.ingress_receipts import enroll_policy, initialize_store
+    try:
+        if args.ingress_action == "init":
+            result = initialize_store(args.store)
+        elif args.ingress_action == "enroll-policy":
+            result = enroll_policy(load_policy(args.policy), activation_path=args.activation)
+        else:
+            return 2
+    except IngressError as exc:
+        print(json.dumps({"error": exc.code}, sort_keys=True))
+        return 2
+    print(json.dumps(result, sort_keys=True))
+    return 0
 
 
 def inspect_polyphony(repo: str):
@@ -123,9 +156,19 @@ def main():
     run_parser.add_argument("--test-cmd", type=str, default=None, help="Custom test command override")
 
     # Command: serve
-    serve_parser = subparsers.add_parser("serve", help="Start the standalone health/static service; task ingress unavailable")
+    serve_parser = subparsers.add_parser("serve", help="Start standalone status or explicitly enrolled local ingress")
     serve_parser.add_argument("--host", choices=("127.0.0.1", "::1"), default="127.0.0.1", help="Literal loopback address")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
+    serve_parser.add_argument("--policy", default=None, help="Exact absolute host policy path; requires prior enrollment")
+
+    ingress_parser = subparsers.add_parser("ingress", help="Initialize and enroll the original standalone ingress store")
+    ingress_sub = ingress_parser.add_subparsers(dest="ingress_action", required=True)
+    ingress_init = ingress_sub.add_parser("init", help="Create a new private receipt store without replacing existing state")
+    ingress_init.add_argument("--store", required=True)
+    ingress_enroll = ingress_sub.add_parser("enroll-policy", help="Enroll an exact policy while its service is stopped")
+    ingress_enroll.add_argument("--policy", required=True)
+    ingress_enroll.add_argument("--activation-declaration", "--activation", dest="activation", default=None,
+                                help="Private attributable fresh-scope declaration when required")
 
     # Command: polyphony
     poly_parser = subparsers.add_parser("polyphony", help="Inspect repository Polyphony swarm key and state")
@@ -153,7 +196,7 @@ def main():
     mcp_parser = subparsers.add_parser("mcp", help="Run OpenJules Model Context Protocol (MCP) server")
 
     args = parser.parse_args()
-    if args.command in {"run", "serve", "mcp", "swarm"}:
+    if args.command in {"run", "serve", "mcp", "swarm", "ingress"}:
         try:
             require_legacy_execution()
         except LegacyExecutionRefused as exc:
@@ -162,7 +205,12 @@ def main():
     if args.command == "run":
         sys.exit(run_cli_task(args.prompt, args.repo, args.branch, args.test_cmd))
     elif args.command == "serve":
-        serve_dashboard(args.host, args.port)
+        try:
+            serve_dashboard(args.host, args.port, args.policy)
+        except ValueError:
+            parser.error("standalone_ingress_policy_unavailable")
+    elif args.command == "ingress":
+        sys.exit(handle_ingress_cli(args))
     elif args.command == "polyphony":
         inspect_polyphony(args.repo)
     elif args.command == "swarm":

@@ -58,3 +58,35 @@ def test_get_app_installation_token(test_rsa_key):
             installation_id=5555,
         )
         assert tok == "ghs_installation_secret_abc123"
+
+
+def test_explicit_raw_key_content_cannot_open_another_filename(tmp_path, test_rsa_key):
+    second_key = tmp_path / "second-key.pem"
+    second_key.write_text(test_rsa_key)
+    # A selected bounded snapshot containing this pathname must be treated as
+    # invalid PEM, even if the referenced file is valid and publicly readable.
+    second_key.chmod(0o644)
+    with patch("src.worker.auth.load_private_key") as loader, patch("httpx.Client") as client:
+        token = get_app_installation_token(
+            app_id=9876, private_key_or_path=str(second_key), installation_id=5555,
+            safe_errors=True, private_key_is_content=True,
+        )
+    assert token is None
+    loader.assert_not_called()
+    client.assert_not_called()
+
+
+def test_explicit_raw_pem_content_uses_same_bounded_material(test_rsa_key):
+    response = MagicMock(status_code=201)
+    response.json.return_value = {"token": "synthetic-installation-token"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    with patch("src.worker.auth.load_private_key") as loader, patch("httpx.Client", return_value=client):
+        token = get_app_installation_token(
+            app_id=9876, private_key_or_path=test_rsa_key, installation_id=5555,
+            safe_errors=True, private_key_is_content=True,
+        )
+    assert token == "synthetic-installation-token"
+    loader.assert_not_called()
+    client.post.assert_called_once()

@@ -1,10 +1,12 @@
-"""Disabled standalone ingress until an authenticated policy adapter is qualified.
+"""Fail-closed outer gate for default status and explicitly selected ingress.
 
-No policy value, credential, origin or caller-supplied flag enables an operation
-in this intermediate delivery. This module imports no execution/storage client.
+The default selector remains status-only. Only a host-built configured app can
+pass the three supported operations to their authenticated policy adapter.
+This module imports no execution or storage client.
 """
 
 import os
+import re
 
 from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
@@ -16,6 +18,21 @@ POLICY_INVALID = "standalone_ingress_policy_invalid"
 POLICY_UNSUPPORTED = "standalone_ingress_policy_unsupported"
 POLICY_ENV = "OPENJULES_INGRESS_POLICY"
 PUBLIC_HTTP_PATHS = frozenset({"/", "/health", "/static/standalone.css"})
+
+
+def ingress_failure(status_code, code, receipt=None):
+    """Closed configured-ingress projection without private submitted input."""
+    status = "conflict" if status_code == 409 else "unsupported" if status_code == 404 else "unknown" if status_code == 503 else "refused"
+    result = {
+        "schema_version": 1, "protocol": "standalone-ingress-v1",
+        "operation_id": None, "status": status, "dispatch_state": None,
+        "managed_authority": False, "release_authorized": False, "code": code,
+    }
+    if receipt is not None:
+        for name in ("operation_id", "dispatch_state", "result"):
+            if name in receipt:
+                result[name] = receipt[name]
+    return result
 
 
 def policy_status():
@@ -56,11 +73,17 @@ async def refuse_websocket(websocket: WebSocket):
 class StandaloneIngressGate:
     """Admit only the exact harmless public files and health methods."""
 
-    def __init__(self, app, reason=UNAVAILABLE):
+    def __init__(self, app, reason=UNAVAILABLE, *, configured=False):
         self.app, self.reason = app, reason
+        self.configured = configured
 
     async def __call__(self, scope, receive, send):
         kind = scope["type"]
+        supported = self.configured and (
+            (scope.get("method") == "POST" and scope.get("path") in {"/api/tasks", "/api/webhook"})
+            or (scope.get("method") == "GET" and re.fullmatch(
+                r"/api/ingress/receipts/[A-Za-z0-9_-]{1,128}", scope.get("path", "")) is not None)
+        )
         if kind == "http" and (
             scope["method"] not in {"GET", "HEAD"}
             or scope["path"] not in PUBLIC_HTTP_PATHS
@@ -70,8 +93,18 @@ class StandaloneIngressGate:
                 status, reason = 503, self.reason
             except LegacyExecutionRefused as exc:
                 status, reason = 409, exc.reason
+                supported = False
+            if supported:
+                await self.app(scope, receive, send)
+                return
             # Never receive/parse the body or enter a legacy router/callback.
-            response = JSONResponse(status_code=status, content={"detail": reason})
+            if self.configured:
+                status = 404 if status == 503 else status
+                content = ingress_failure(status, reason)
+            else:
+                content = {"detail": reason}
+            response = JSONResponse(status_code=status, content=content,
+                                    headers={"Cache-Control": "no-store"})
             await response(scope, receive, send)
             return
         if kind == "websocket":

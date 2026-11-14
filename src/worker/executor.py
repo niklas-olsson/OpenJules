@@ -34,12 +34,15 @@ class TaskExecutor:
         github_client: Optional[Github] = None,
         radicle_provider: Optional[RadicleProvider] = None,
         polyphony_manager: Optional[PolyphonySwarmManager] = None,
+        github_provider: Optional[GitHubProvider] = None,
     ):
         require_legacy_execution()
+        if github_provider is not None and github_client is not None:
+            raise ValueError("github_provider_and_client_are_exclusive")
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self.agent_engine = agent_engine or AgentEngine(self.sandbox_manager)
         self.git_manager = git_manager or GitLifecycleManager(self.sandbox_manager)
-        self.github_provider = GitHubProvider(github_client=github_client)
+        self.github_provider = github_provider if github_provider is not None else GitHubProvider(github_client=github_client)
         self.radicle_provider = radicle_provider or RadicleProvider(sandbox_manager=self.sandbox_manager)
         self.polyphony_manager = polyphony_manager or PolyphonySwarmManager()
         self.clarification_detector = TaskClarificationDetector(
@@ -77,16 +80,17 @@ class TaskExecutor:
         )
 
         # Mint token dynamically via GitHub App JWT if credentials are present
-        effective_token = git_token or os.environ.get("GITHUB_TOKEN")
-        app_id = os.environ.get("GITHUB_APP_ID")
-        app_key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
-
-        if not effective_token and app_id and app_key_path and payload.installation_id:
-            effective_token = get_app_installation_token(
-                app_id=app_id,
-                private_key_or_path=app_key_path,
-                installation_id=payload.installation_id,
-            )
+        effective_token = git_token
+        if not effective_token:
+            effective_token = os.environ.get("GITHUB_TOKEN")
+            if not effective_token and payload.installation_id:
+                app_id = os.environ.get("GITHUB_APP_ID")
+                app_key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
+                if app_id and app_key_path:
+                    effective_token = get_app_installation_token(
+                        app_id=app_id, private_key_or_path=app_key_path,
+                        installation_id=payload.installation_id,
+                    )
 
         initial_config = OpenJulesConfig()
 
