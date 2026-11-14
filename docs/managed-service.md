@@ -132,8 +132,9 @@ and palette commands return HTTP 404 on this service. It does not import or star
 the standalone legacy executor, poller or MCP server, or initialize an in-memory
 Polyphony facade. Package exports still load the facade's class definitions.
 The separate `openjules run` and `openjules mcp` commands remain trusted host
-interfaces. `openjules serve` exposes only harmless health/static content; its
-private and effectful operations are unavailable. The managed installation
+interfaces. `openjules serve` defaults to harmless health/static content. Its
+separate [explicit task policy](standalone-ingress.md) can enable limited legacy
+issue-task admission outside managed installation context. The managed installation
 context below refuses all these commands in the dedicated installed interpreter.
 Use canonical managed entrypoints for protected work and an explicitly configured
 separate standalone interpreter for trusted local legacy operation.
@@ -274,13 +275,19 @@ demonstrate a remote host, browser runtime or live model provider.
 
 ## Standalone ingress boundary
 
-The first delivery of [#53](https://github.com/niklas-olsson/OpenJules/issues/53)
-closes anonymous standalone admission. It does not implement an authenticated
-positive adapter. `src.api.webhook:app` constructs only refusal routes and the
-status page. Startup, imports and its lifespan do not construct an executor,
+The default-deny delivery of [#53](https://github.com/niklas-olsson/OpenJules/issues/53)
+closes anonymous standalone admission. `src.api.webhook:app` still constructs only
+refusal routes and the status page. Its startup, imports and lifespan do not construct an executor,
 reviewer, dashboard store, cohort registry/provisioner, Docker or model client,
 forge credential resolver, poller, background queue or WebSocket subscription.
 The managed installation selector remains the existing separate refusal check.
+
+The separately selected [standalone task policy](standalone-ingress.md) enables
+only authenticated GitHub issue tasks, explicit operator tasks and scoped original
+dispatch-receipt reads. It requires an explicitly initialized original journal,
+stopped-service policy enrollment and attributable fresh isolated scope. It does
+not enable review, Radicle, cohort or protected managed execution. That document
+is the canonical positive-path contract and recovery guide.
 
 Only `GET`/`HEAD` on `/`, `/health` and `/static/standalone.css` are public. The
 page contains no script, forms, credentials or retained task data. It states
@@ -292,17 +299,24 @@ are disabled.
 
 ### Complete standalone route inventory
 
-The ASGI gate refuses every other HTTP request with a fixed HTTP 503 JSON reason
+The default ASGI gate refuses every other HTTP request with a fixed HTTP 503 JSON reason
 before reading the body, parsing event data or invoking any route. Exact legacy
 routes also refuse when their routers are mounted separately. New private routes
 cannot gain admission merely by being added to the app.
 
-| Method/path | Private read or effect that remains unavailable |
+The table below describes the **default status app**. For an explicitly
+configured app, only `POST /api/tasks`, `POST /api/webhook`
+and `GET /api/ingress/receipts/{operation_id}` enter the common authenticated
+policy/receipt gate. Every other private route below remains unavailable. Accepted
+task input never selects the repository, credential route or dispatch identity
+outside the approved binding.
+
+| Method/path | Default status app refusal |
 | --- | --- |
-| `POST /api/webhook` | GitHub issue/review dispatch, task records, forge/model/runtime effects |
+| `POST /api/webhook` | GitHub dispatch; explicit configured policy permits only the qualified issue-task forms |
 | `POST /api/radicle/webhook` | Radicle dispatch and runtime/forge effects |
 | `GET /api/tasks` | Retained task listing |
-| `POST /api/tasks` | Task record creation and execution |
+| `POST /api/tasks` | Task execution; explicit configured policy permits the qualified operator task form |
 | `GET /api/tasks/{task_id}` | Private task detail |
 | `GET /api/tasks/{task_id}/diff` | Retained code diff |
 | `POST /api/tasks/{task_id}/comments` | Private task discussion and feedback dispatch |
@@ -330,12 +344,11 @@ whitespace-only, over-4096-character or NUL-containing selector reports
 content is interpreted or validated. HTTP refusals expose only the fixed reason;
 health exposes `state: disabled`, the classification and that reason.
 
-A nonempty value, an existing file, a valid GitHub HMAC, a bearer token, a proxy
-header or a caller-supplied approval cannot enable any operation. There is no
-HTTP compatibility switch. Positive policy, principal mapping, enrollment,
-operation-specific receipts and recovery remain later #53 work; adding them
-requires a separate reviewed contract. The pure signature helper rejects an
-absent secret, but it is not an admission path in this delivery.
+A nonempty environment selector, an existing file, a valid GitHub HMAC, a bearer
+token, a proxy header or a caller-supplied approval cannot enable the default app.
+There is no HTTP compatibility switch. The positive path requires explicit
+`create_app(policy_path=...)` or `serve --policy ...` selection and enrollment;
+it does not reinterpret `OPENJULES_INGRESS_POLICY` as permission.
 
 `openjules serve` defaults to literal `127.0.0.1` and accepts only that address or
 literal `::1`. Hostnames and wildcard addresses are rejected before Uvicorn starts.
@@ -378,8 +391,11 @@ existing real SQLite bytes remain unchanged. Additional checks cover body-free
 refusal, correctly signed fixture events, independently mounted routers, literal
 CLI/Compose bindings and explicit trusted CLI dispatch. Managed-context tests
 retain import/direct-method refusal and recheck an already constructed app.
-These are ASGI/component and configuration checks, not live GitHub delivery,
-provider inference, a Docker deployment or implemented positive admission.
+These remain default-deny ASGI/component and configuration checks. The separate
+positive-path tests use real HMAC/HTTP, SQLite and process ownership with controlled
+adapter effects; see [their scope and limits](standalone-ingress.md#policy-maintenance-and-validation).
+Neither test set is live GitHub delivery, provider inference, a Docker deployment
+or installed managed acceptance.
 
 
 ## Managed installation context

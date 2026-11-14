@@ -1,4 +1,4 @@
-"""Harmless standalone status service; all private/effectful ingress is disabled."""
+"""Default static status and explicitly enrolled standalone task ingress."""
 
 import hashlib
 import hmac
@@ -30,16 +30,27 @@ def verify_github_signature(payload_body: bytes, signature_header: Optional[str]
     return hmac.compare_digest(expected, parts[1])
 
 
-def create_app():
+def create_app(*, policy_path=None, task_adapter=None):
     require_legacy_execution()
     status = policy_status()
+    policy, lifespan = None, None
+    if policy_path is not None:
+        from src.api.ingress_policy import load_policy
+        from src.api.ingress_http import configured_lifespan
+        policy = load_policy(policy_path)
+        status = {"state": "configured", "policy": "selected", "reason": "standalone_ingress_operation_unsupported"}
+        lifespan = configured_lifespan(policy, task_adapter)
     app = FastAPI(
-        title="OpenJules standalone status", version="0.3.0",
-        description="Health/static service; task and cohort ingress unavailable.",
-        docs_url=None, redoc_url=None, openapi_url=None,
+        title="OpenJules standalone service", version="0.3.0",
+        description="Static status; explicitly enrolled policies select limited task ingress. Health is not admission readiness.",
+        docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan,
     )
     app.state.standalone_ingress = status
-    app.add_middleware(StandaloneIngressGate, reason=status["reason"])
+    app.add_middleware(StandaloneIngressGate, reason=status["reason"], configured=policy is not None)
+    if policy is not None:
+        from src.api.ingress_http import install_routes
+        app.state.ingress_policy = policy
+        install_routes(app, policy, verify_github_signature)
     app.include_router(ui_router)
     app.include_router(ws_router)
     app.include_router(polyphony_router)

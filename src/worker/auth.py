@@ -35,10 +35,13 @@ def get_app_installation_token(
     private_key_or_path: str,
     installation_id: int | str,
     api_url: str = "https://api.github.com",
+    *, safe_errors: bool = False, private_key_is_content: bool = False,
 ) -> Optional[str]:
     """Exchanges a GitHub App JWT for a short-lived installation access token."""
     try:
-        pem = load_private_key(private_key_or_path)
+        # An admitted adapter's bounded, frozen snapshot is already key
+        # content. Never reinterpret those bytes as a second file path.
+        pem = private_key_or_path if private_key_is_content else load_private_key(private_key_or_path)
         app_jwt = generate_jwt(app_id, pem)
 
         headers = {
@@ -54,9 +57,15 @@ def get_app_installation_token(
                 token_data = resp.json()
                 return token_data.get("token")
             else:
-                logger.error(
-                    f"GitHub App token exchange failed ({resp.status_code}): {resp.text}"
-                )
+                if safe_errors:
+                    logger.error("GitHub App token exchange unavailable")
+                else:
+                    logger.error(
+                        f"GitHub App token exchange failed ({resp.status_code}): {resp.text}"
+                    )
     except Exception as e:
-        logger.error(f"Failed to generate GitHub App installation token: {e}")
+        if safe_errors:
+            logger.error("GitHub App token exchange unavailable")
+        else:
+            logger.error(f"Failed to generate GitHub App installation token: {e}")
     return None
