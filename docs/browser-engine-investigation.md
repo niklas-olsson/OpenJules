@@ -18,7 +18,7 @@ an unused output path; it does not update historical evidence.
 
 | Input | Declared value |
 | --- | --- |
-| Host | Non-root Linux x86_64, Debian 13.6, kernel 6.18.57 |
+| Host | Non-root Linux x86_64, Debian 13, kernel 6.18.57 |
 | Interpreter | Python 3.12.14 |
 | Python Playwright | 1.62.0, installed metadata inspected without starting its driver |
 | Matching browser metadata | Chromium revision 1234, version 151.0.7922.34 |
