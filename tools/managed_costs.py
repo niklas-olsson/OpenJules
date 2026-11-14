@@ -1,0 +1,718 @@
+"""Finite native managed-cost investigation. This is not a service or optimizer.
+
+Every sample is a new owned Python process. Reports contain aggregates and
+synthetic fixture identities only; private journals, headers and output stay
+in the private sample directory. The parent does not infer release from cleanup.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import resource
+import signal
+import statistics
+import subprocess
+import sys
+import threading
+import time
+
+
+# The native launcher uses ``python -m``. Case modules import this canonical
+# name, so bind it before defining cancellation and ownership state. Otherwise
+# Python would execute a second copy with a different STOP and BudgetStop.
+if __name__ == "__main__":
+    sys.modules["tools.managed_costs"] = sys.modules[__name__]
+
+
+MIB = 1024 * 1024
+MAX_REPORT = 16 * MIB
+STOP = threading.Event()
+_OWNERSHIP_LOCK = threading.Lock()
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def write_private(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(canonical(value) + b"\n")
+    os.replace(temporary, path)
+
+
+def proc_stat(pid, proc=Path("/proc")):
+    text = (proc / str(pid) / "stat").read_text()
+    fields = text[text.rfind(")") + 2:].split()
+    if len(fields) < 22:
+        raise ValueError("process_stat_incomplete")
+    return {"pid": int(pid), "ppid": int(fields[1]), "state": fields[0],
+            "start_ticks": int(fields[19]), "user_ticks": int(fields[11]),
+            "system_ticks": int(fields[12]), "rss_bytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE")}
+
+
+def _cgroup(pid):
+    values = (Path("/proc") / str(pid) / "cgroup").read_text().splitlines()
+    rows = [line[3:] for line in values if line.startswith("0::")]
+    if len(rows) != 1 or not rows[0].startswith("/") or ".." in Path(rows[0]).parts:
+        raise ValueError("cgroup_v2_unavailable")
+    return rows[0]
+
+
+@contextmanager
+def ownership_state(workdir):
+    path = Path(workdir) / "ownership.json"
+    with _OWNERSHIP_LOCK:
+        descriptor = os.open(Path(workdir) / "ownership.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            data = json.loads(path.read_bytes()) if path.exists() else {"containers": []}
+            yield data
+            write_private(path, data)
+        finally:
+            os.close(descriptor)
+
+
+def register_container(workdir, client, container_id):
+    """Register an exact owned running container for passive cgroup sampling."""
+    container = client.containers.get(container_id)
+    container.reload()
+    identity = container.id
+    pid = container.attrs.get("State", {}).get("Pid", 0)
+    state = container.attrs.get("State", {})
+    row = {"id": identity, "state": "running" if pid else ("stopped" if state.get("Status") in {"exited", "dead"} else "created"),
+           "pid": pid, "start_ticks": None, "cgroup": None,
+           "volume_names": [mount["Name"] for mount in container.attrs.get("Mounts", [])
+                            if mount.get("Type") == "volume" and mount.get("Destination") == "/workspace" and mount.get("Name")]}
+    if pid:
+        row["start_ticks"] = proc_stat(pid)["start_ticks"]
+        row["cgroup"] = _cgroup(pid)
+    with ownership_state(workdir) as data:
+        ranks = {"created": 0, "running": 1, "stopped": 2, "removed": 3}
+        original = next((old for old in data["containers"] if old["id"] == identity), None)
+        if original is not None and ranks[original["state"]] > ranks[row["state"]]:
+            return  # immutable container: a stale observer cannot reopen custody
+        data["containers"] = [old for old in data["containers"] if old["id"] != identity] + [row]
+
+
+def mark_container_terminal(workdir, container_id, state="stopped"):
+    if state not in {"stopped", "removed"}:
+        raise ValueError("invalid_terminal_observation")
+    with ownership_state(workdir) as data:
+        for row in data["containers"]:
+            if row["id"] == container_id:
+                if row["state"] != "removed":
+                    row["state"] = state
+
+
+def discover_owned_containers(workdir, client):
+    """Read-only fallback for an owned creation whose reply was lost.
+
+    Managed labels alone do not confer ownership. The exact test directory must
+    also own the source or model-socket bind mount. No deletion occurs here.
+    """
+    root = Path(workdir).resolve()
+    from docker.errors import NotFound
+    for container in client.containers.list(all=True, filters={"label": "openjules.managed=1"}):
+        try:
+            container.reload()
+        except NotFound:
+            continue  # concurrent observed removal, not a task-release receipt
+        owned = False
+        for mount in container.attrs.get("Mounts", []):
+            if mount.get("Type") != "bind" or mount.get("Destination") not in {"/source", "/run/openjules-model"}:
+                continue
+            try:
+                Path(mount["Source"]).resolve().relative_to(root)
+                owned = True
+            except (KeyError, ValueError):
+                continue
+        if owned:
+            try:
+                register_container(workdir, client, container.id)
+            except NotFound:
+                continue
+
+
+def owned_volume_bytes(workdir, client):
+    path = Path(workdir) / "ownership.json"
+    data = json.loads(path.read_bytes()) if path.exists() else {"containers": []}
+    names = {name for row in data["containers"] if row["state"] != "removed" for name in row.get("volume_names", [])}
+    if not names:
+        return 0
+    observed = {row["Name"]: row.get("UsageData", {}).get("Size") for row in client.df().get("Volumes", []) if row.get("Name") in names}
+    if any(name not in observed or type(observed[name]) is not int or observed[name] < 0 for name in names):
+        raise ValueError("owned_volume_size_unavailable")
+    return sum(observed.values())
+
+
+def tree_bytes(path):
+    total = 0
+    for directory, directories, files in os.walk(path, followlinks=False):
+        directories[:] = [name for name in directories if not (Path(directory) / name).is_symlink()]
+        for name in files:
+            entry = Path(directory) / name
+            try:
+                if not entry.is_symlink():
+                    total += entry.stat().st_size
+            except FileNotFoundError:
+                pass
+    return total
+
+
+def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=Path("/sys/fs/cgroup"), container_client=None):
+    """One simultaneous approximate RSS sum, plus separate container charge.
+
+    PID/start identities are checked before and after IO reads. Short-lived
+    processes between samples and shared-page duplication are explicit limits.
+    Missing reads are reported, never substituted with a zero measurement.
+    """
+    missing = []
+    departed = 0
+    rows = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            row = proc_stat(int(entry.name), proc)
+            rows[row["pid"]] = row
+        except (OSError, ValueError):
+            continue  # unrelated processes may exit while enumerating
+    root = rows.get(root_pid)
+    if root is None or root["start_ticks"] != root_start:
+        return {"available": False, "reason": "owned_root_exited_or_reused"}
+    selected = {root_pid}
+    while True:
+        grown = selected | {pid for pid, row in rows.items() if row["ppid"] in selected}
+        if grown == selected:
+            break
+        selected = grown
+    ownership = Path(workdir) / "ownership.json"
+    try:
+        containers = json.loads(ownership.read_bytes())["containers"] if ownership.exists() else []
+    except (OSError, ValueError, KeyError):
+        containers = []
+        missing.append("ownership_registry_unreadable")
+    container_groups = {row["cgroup"] for row in containers if row.get("cgroup")}
+    processes = []
+    for pid in sorted(selected):
+        first = rows[pid]
+        if first["state"] in {"Z", "X", "x"}:
+            continue
+        try:
+            cg = _cgroup(pid) if proc == Path("/proc") else None
+            if cg in container_groups:
+                continue
+            io = {}
+            for line in (proc / str(pid) / "io").read_text().splitlines():
+                key, value = line.split(":", 1)
+                if key in {"rchar", "wchar", "read_bytes", "write_bytes"}:
+                    io[key] = int(value.strip())
+            last = proc_stat(pid, proc)
+            if first["start_ticks"] != last["start_ticks"]:
+                raise ValueError("pid_reused")
+            processes.append({key: last[key] for key in ("pid", "start_ticks", "rss_bytes", "user_ticks", "system_ticks")} | {"io": io})
+        except FileNotFoundError:
+            # A process known to have exited during this non-atomic sample is
+            # an explicit sampling exclusion, never a fabricated zero RSS.
+            if not (proc / str(pid)).exists():
+                departed += 1
+            else:
+                missing.append("owned_process_observation_unavailable")
+        except (OSError, ValueError):
+            missing.append("owned_process_observation_unavailable")
+    container_samples = []
+    container_departures = 0
+    for row in containers:
+        if row.get("state") != "running":
+            continue
+        try:
+            observed = proc_stat(row["pid"], proc)
+            if observed["start_ticks"] != row["start_ticks"]:
+                raise ValueError("container_pid_reused")
+            group = row.get("cgroup")
+            if not isinstance(group, str) or not group.startswith("/") or ".." in Path(group).parts:
+                raise ValueError("invalid_owned_cgroup")
+            memory = int((cgroups / group.lstrip("/") / "memory.current").read_text())
+            if memory < 0 or proc_stat(row["pid"], proc)["start_ticks"] != row["start_ticks"]:
+                raise ValueError("container_counter_identity_changed")
+            container_samples.append({"id": row["id"], "init_pid": row["pid"],
+                                      "start_ticks": row["start_ticks"], "memory_current_bytes": memory})
+        except (OSError, ValueError):
+            terminal = False
+            # The stop/removal callback can race this passive observation.
+            # Confirm an actual terminal engine observation; never invent zero
+            # charge merely because a cgroup or PID read failed.
+            if container_client is not None:
+                from docker.errors import NotFound
+                try:
+                    current = container_client.containers.get(row["id"])
+                    current.reload()
+                    terminal = current.attrs.get("State", {}).get("Running") is False
+                except NotFound:
+                    terminal = True
+                except Exception:
+                    pass
+            if terminal:
+                container_departures += 1
+            else:
+                missing.append("owned_container_observation_unavailable")
+    pending_charge = 0
+    acquisition = Path(workdir) / "installed-acquisition.json"
+    if acquisition.exists() and not any(row.get("state") in {"running", "stopped", "removed"} for row in containers):
+        try:
+            pending = json.loads(acquisition.read_bytes())
+            if pending.get("worker_ceiling") != 1 or (
+                (pending.get("state"), pending.get("memory_reservation_bytes"))
+                not in {("may_acquire", 536870912), ("removed", 0)}
+            ):
+                raise ValueError("invalid_pending_acquisition")
+            pending_charge = pending["memory_reservation_bytes"]
+        except (OSError, ValueError):
+            missing.append("pending_acquisition_observation_unavailable")
+    return {"available": True, "timestamp_ns": time.monotonic_ns(),
+            "processes": processes, "containers": container_samples,
+            "host_rss_bytes": sum(row["rss_bytes"] for row in processes),
+            "container_charge_bytes": sum(row["memory_current_bytes"] for row in container_samples),
+            "pending_container_memory_reservation_bytes": pending_charge,
+            "processes_departed_during_observation": departed,
+            "containers_terminal_during_observation": container_departures,
+            "missing": sorted(set(missing))}
+
+
+def resource_summary(samples):
+    good = [row for row in samples if row.get("available")]
+    sums = [row["host_rss_bytes"] + row["container_charge_bytes"] for row in good]
+    complete = bool(good) and not any(row["missing"] for row in good)
+    gaps = [last["timestamp_ns"] - first["timestamp_ns"] for first, last in zip(good, good[1:])]
+    return {"sample_count": len(good), "target_sampling_interval_seconds": 0.1,
+            "actual_observation_gap_ns": {"minimum": min(gaps, default=None),
+                                           "median": statistics.median(gaps) if gaps else None,
+                                           "maximum": max(gaps, default=None)},
+            "sampled_max_owned_mixed_memory_bytes": max(sums, default=None) if complete else None,
+            "sampled_observed_mixed_memory_lower_bound_bytes": max(sums, default=None),
+            "pending_acquisition_reservation_max_bytes": max((row.get("pending_container_memory_reservation_bytes", 0) for row in good), default=0),
+            "observations_using_pending_acquisition_reservation": sum(row.get("pending_container_memory_reservation_bytes", 0) > 0 for row in good),
+            "complete_observations": complete,
+            "observations_with_missing_reads": sum(bool(row["missing"]) for row in good),
+            "observed_process_departures": sum(row.get("processes_departed_during_observation", 0) for row in good),
+            "observed_container_departures": sum(row.get("containers_terminal_during_observation", 0) for row in good),
+            "scopes": ["simultaneous approximate descendant RSS, not summed individual peaks",
+                       "separate owned cgroup-v2 memory.current; excludes container PIDs from host RSS",
+                       "shared pages may be counted by several host processes; daemon and kernel cost excluded",
+                       "short-lived process peaks and allocations between samples may be missed",
+                       "pending installed acquisition uses its512MiB ceiling for admission, not a measured cgroup peak",
+                       "io counters are per observed process lifetime, not whole-host physical IO"]}
+
+
+class BudgetStop(RuntimeError):
+    pass
+
+
+@contextmanager
+def ownership_hooks(workdir, monkeypatch, recorder):
+    """Observe only containers created by this sample, never host-wide cleanup."""
+    from docker.models.containers import Container, ContainerCollection
+    from docker.models.volumes import Volume
+    from src.worker.docker_runtime import ManagedDockerRuntime
+    owned = set()
+    guarded = {"uncertain": False}
+    original_create, original_start = ContainerCollection.create, Container.start
+    original_stop, original_remove = Container.stop, Container.remove
+    original_volume_remove = Volume.remove
+    original_ensure = ManagedDockerRuntime.ensure
+
+    def create(collection, *args, **kwargs):
+        if STOP.is_set():
+            raise BudgetStop("new_admission_closed")
+        if len(owned) >= 2:
+            raise BudgetStop("worker_ceiling")
+        try:
+            container = original_create(collection, *args, **kwargs)
+            owned.add(container.id)
+            register_container(workdir, collection.client, container.id)
+        except BaseException:
+            guarded["uncertain"] = True
+            raise
+        recorder.add("docker.created")
+        return container
+
+    def start(container, *args, **kwargs):
+        result = original_start(container, *args, **kwargs)
+        if container.id in owned:
+            register_container(workdir, container.client, container.id)
+            recorder.add("docker.started")
+        return result
+
+    def stop(container, *args, **kwargs):
+        result = original_stop(container, *args, **kwargs)
+        if container.id in owned:
+            container.reload()
+            if not container.attrs.get("State", {}).get("Running"):
+                mark_container_terminal(workdir, container.id)
+                recorder.add("docker.stopped")
+        return result
+
+    def remove(container, *args, **kwargs):
+        if container.id in owned and guarded["uncertain"]:
+            raise BudgetStop("owned_capture_unresolved")
+        result = original_remove(container, *args, **kwargs)
+        if container.id in owned:
+            owned.remove(container.id)
+            mark_container_terminal(workdir, container.id, "removed")
+            recorder.add("docker.removed")
+        return result
+
+    def volume_remove(volume, *args, **kwargs):
+        if guarded["uncertain"]:
+            raise BudgetStop("owned_capture_unresolved")
+        return original_volume_remove(volume, *args, **kwargs)
+
+    def ensure(runtime, worker, spec):
+        if STOP.is_set():
+            raise BudgetStop("new_admission_closed")
+        try:
+            result = original_ensure(runtime, worker, spec)
+            if result.state == "unknown":
+                guarded["uncertain"] = True
+            return result
+        except BaseException:
+            guarded["uncertain"] = True
+            raise
+
+    monkeypatch.setattr(ContainerCollection, "create", create)
+    monkeypatch.setattr(Container, "start", start)
+    monkeypatch.setattr(Container, "stop", stop)
+    monkeypatch.setattr(Container, "remove", remove)
+    monkeypatch.setattr(Volume, "remove", volume_remove)
+    monkeypatch.setattr(ManagedDockerRuntime, "ensure", ensure)
+    try:
+        yield guarded
+    finally:
+        recorder.fact("control", {"owned_containers_remaining": len(owned),
+                                  "uncertain_resources_retained": guarded["uncertain"]})
+
+
+def validate_manifest(value):
+    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("investigation") != "managed-costs-v1":
+        raise ValueError("unsupported_manifest")
+    cap = value.get("caps", {})
+    if cap != {"elapsed_seconds": 1800, "cleanup_reserve_seconds": 90,
+              "workers": 2, "children_per_root": 2, "storage_bytes": 8 * 1024**3,
+              "sampled_memory_bytes": 4 * 1024**3, "fixture_transfer_bytes": 512 * MIB}:
+        raise ValueError("investigation_caps_changed")
+    cases = value.get("cases")
+    if not isinstance(cases, list) or not 1 <= len(cases) <= 30:
+        raise ValueError("case_count_invalid")
+    ids = set()
+    kinds = {"source", "capture", "publication", "root", "children", "two_workers", "control_denial", "control_cancel", "installed_idle", "overhead"}
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != {"id", "kind", "samples", "limit_seconds", "max_transfer_bytes", "max_storage_bytes", "instrumented", "params"}:
+            raise ValueError("case_schema_invalid")
+        if not isinstance(case["id"], str) or not case["id"].replace("-", "").isalnum() or case["id"] in ids:
+            raise ValueError("case_identity_invalid")
+        ids.add(case["id"])
+        if case["kind"] not in kinds or type(case["samples"]) is not int or not 1 <= case["samples"] <= 5:
+            raise ValueError("case_parameters_invalid")
+        if type(case["limit_seconds"]) is not int or not 1 <= case["limit_seconds"] <= 600 or type(case["instrumented"]) is not bool:
+            raise ValueError("case_limits_invalid")
+        for name, maximum in (("max_transfer_bytes", 512 * MIB), ("max_storage_bytes", 8 * 1024**3)):
+            if type(case[name]) is not int or not 0 <= case[name] <= maximum:
+                raise ValueError("case_budget_invalid")
+    if sum(case["samples"] * case["max_transfer_bytes"] for case in cases) > cap["fixture_transfer_bytes"]:
+        raise ValueError("declared_transfer_exceeds_investigation_cap")
+    if sum(case["samples"] * case["max_storage_bytes"] for case in cases) > cap["storage_bytes"]:
+        raise ValueError("declared_storage_exceeds_investigation_cap")
+    return value
+
+
+def ordered_cases(manifest):
+    """Alternate comparable runs by repetition; retain the declared order."""
+    result = []
+    for sample in range(max(row["samples"] for row in manifest["cases"])):
+        rows = manifest["cases"] if sample % 2 == 0 else list(reversed(manifest["cases"]))
+        for case in rows:
+            if sample < case["samples"]:
+                result.append(case | {"sample": sample + 1})
+    return result
+
+
+def _git(*arguments):
+    return subprocess.check_output(["git", *arguments], text=True, timeout=10).strip()
+
+
+def identity(manifest):
+    revision = _git("rev-parse", "HEAD")
+    if _git("status", "--porcelain"):
+        raise ValueError("source_checkout_not_clean")
+    if _git("diff", "--name-only", manifest["baseline_revision"], "--", "src", "docker", "tests/integration"):
+        raise ValueError("production_or_existing_native_fixture_drift")
+    cpu = next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+                if line.startswith("model name") and ":" in line), "unavailable")
+    return {"source_revision": revision, "baseline_revision": manifest["baseline_revision"],
+            "production_tree": _git("rev-parse", "HEAD:src"),
+            "interpreter": sys.version.split()[0], "platform": platform.platform(),
+            "machine": platform.machine(), "kernel": platform.release(),
+            "cpu_count": os.cpu_count(), "cpu_model": cpu[:256], "clock_ticks_per_second": os.sysconf("SC_CLK_TCK")}
+
+
+def run_child(args):
+    import docker
+    import pytest
+    from tools.managed_cost_measurement import Recorder
+    from tools.managed_cost_cases import run_case as runtime_case
+    from tools.managed_cost_artifacts import run_case as artifact_case
+    case = json.loads(Path(args.case).read_bytes())
+    workdir = Path(args.work_dir)
+    workdir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    def interrupted(*_):
+        STOP.set()
+        if "_guard" in case:
+            case["_guard"]["uncertain"] = True
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    recorder = Recorder(workdir, enabled=case["instrumented"],
+                        impairment_ms=case["params"].get("delay_ms", 0),
+                        bytes_per_second=case["params"].get("body_bytes_per_second", 1250000))
+    patch = pytest.MonkeyPatch()
+    recorder.install(patch)
+    client = None
+    images = {}
+    started = time.monotonic_ns()
+    before = resource.getrusage(resource.RUSAGE_SELF)
+    report = {"case_id": case["id"], "sample": case["sample"], "status": "FAIL", "facts": {}}
+    try:
+        if case["kind"] not in {"source", "publication", "overhead"}:
+            client = docker.from_env(timeout=10)
+            client.api.max_redirects = 0
+            client.ping()
+            info = client.info()
+            if any("rootless" in option or "userns" in option for option in info.get("SecurityOptions", [])):
+                raise ValueError("unsupported_docker_topology")
+            for key, value in (("runtime", args.runtime_image), ("agent", args.agent_image)):
+                if value:
+                    image = client.images.get(value)
+                    if image.id != value:
+                        raise ValueError("immutable_image_id_changed")
+                    images[key] = (client, image.id)
+        with ownership_hooks(workdir, patch, recorder) as guard:
+            case["_guard"] = guard
+            if case["kind"] in {"source", "capture", "publication"}:
+                result = artifact_case(case, workdir, recorder, images, patch)
+            elif case["kind"] == "installed_idle":
+                from tools.managed_cost_installed import run_case
+                result = run_case(case, workdir, recorder, images, patch)
+            else:
+                result = runtime_case(case, workdir, recorder, images, patch)
+            report["facts"] = result
+        report["status"] = "CENSORED" if STOP.is_set() else "PASS"
+    except BaseException as error:
+        report["diagnostic_code"] = "budget_stop" if isinstance(error, BudgetStop) or STOP.is_set() else "case_assertion_or_prerequisite_failed"
+        report["exception_type"] = type(error).__name__ if type(error).__name__ in {"AssertionError", "ValueError", "RuntimeError", "TimeoutExpired", "BudgetStop", "FileNotFoundError", "PermissionError"} else "OtherException"
+        report["status"] = "CENSORED" if STOP.is_set() or isinstance(error, BudgetStop) else "FAIL"
+    finally:
+        after = resource.getrusage(resource.RUSAGE_SELF)
+        report.update(wall_ns=time.monotonic_ns() - started,
+                      process_cpu={"self_user_seconds": after.ru_utime - before.ru_utime,
+                                   "self_system_seconds": after.ru_stime - before.ru_stime},
+                      measurements=recorder.report())
+        if not report["measurements"].get("complete", False) and report["status"] == "PASS":
+            report["status"] = "FAIL"
+            report["diagnostic_code"] = "measurement_incomplete"
+        report["custody_unresolved"] = bool(case.get("_guard", {}).get("uncertain"))
+        if report["measurements"].get("facts", {}).get("failed_sample_cleanup") == "unresolved":
+            report["custody_unresolved"] = True
+        ownership = workdir / "ownership.json"
+        if ownership.exists():
+            try:
+                if any(row["state"] != "removed" for row in json.loads(ownership.read_bytes())["containers"]):
+                    report["custody_unresolved"] = True
+            except (OSError, ValueError, KeyError):
+                report["custody_unresolved"] = True
+        if report["custody_unresolved"] and report["status"] == "PASS":
+            report["status"] = "FAIL"
+            report["diagnostic_code"] = "original_resource_custody_unresolved"
+        running_owned_threads = any(thread.is_alive() for thread in case.get("_owned_threads", []))
+        if running_owned_threads:
+            report["custody_unresolved"] = True
+            report["status"] = "CENSORED"
+            report["diagnostic_code"] = "owned_worker_threads_unresolved"
+        else:
+            patch.undo()
+        if client is not None and not running_owned_threads:
+            client.close()
+        write_private(workdir / "sample.json", report)
+    return 0 if report["status"] == "PASS" else 1
+
+
+def summarize(rows):
+    result = {}
+    for name in sorted({row["case_id"] for row in rows}):
+        selected = [row for row in rows if row["case_id"] == name]
+        timings = [row["wall_ns"] for row in selected if row["status"] == "PASS"]
+        result[name] = {"samples": len(selected), "passed": len(timings),
+                        "wall_ns_raw": timings, "median_wall_ns": statistics.median(timings) if timings else None,
+                        "range_wall_ns": [min(timings), max(timings)] if timings else None,
+                        "percentiles_reported": False}
+    return result
+
+
+def run_suite(args):
+    import docker
+    manifest_bytes = Path(args.manifest).read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != args.manifest_sha256:
+        raise ValueError("manifest_digest_mismatch")
+    manifest = validate_manifest(json.loads(manifest_bytes))
+    environment = identity(manifest)
+    if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"} or sys.version_info[:2] != (3, 12):
+        raise ValueError("declared_host_mismatch")
+    root = Path(args.work_dir).absolute()
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    filesystem = os.statvfs(root)
+    environment["work_filesystem"] = {
+        "type": subprocess.check_output(["stat", "-f", "-c", "%T", str(root)], text=True, timeout=5).strip(),
+        "block_bytes": filesystem.f_bsize, "allocation_unit_bytes": filesystem.f_frsize,
+    }
+    caps = manifest["caps"]
+    started = time.monotonic()
+    deadline = started + caps["elapsed_seconds"]
+    rows = []
+    scheduled = ordered_cases(manifest)
+    observation_client = docker.from_env(timeout=3)
+    observation_client.api.max_redirects = 0
+    used_transfer = 0
+    stopped = None
+    for case in scheduled:
+        safe_case = {key: value for key, value in case.items()}
+        if stopped or time.monotonic() + case["limit_seconds"] + caps["cleanup_reserve_seconds"] > deadline:
+            stopped = stopped or "insufficient_remaining_case_budget"
+            rows.append({"case_id": case["id"], "sample": case["sample"], "status": "NOT_RUN", "diagnostic_code": stopped})
+            continue
+        if used_transfer + case["max_transfer_bytes"] > caps["fixture_transfer_bytes"]:
+            stopped = "insufficient_transfer_budget"
+            rows.append({"case_id": case["id"], "sample": case["sample"], "status": "NOT_RUN", "diagnostic_code": stopped})
+            continue
+        sample_dir = root / f"{case['id']}-{case['sample']}"
+        sample_dir.mkdir(mode=0o700)
+        for key in ("zpm_checkout", "polyphony_checkout", "dependency_plan"):
+            value = getattr(args, key, None)
+            if value:
+                safe_case[key] = str(Path(value).absolute())
+        case_file = sample_dir / "case.json"
+        write_private(case_file, safe_case)
+        command = [sys.executable, "-m", "tools.managed_costs", "_case", "--case", str(case_file), "--work-dir", str(sample_dir)]
+        for flag in ("runtime_image", "agent_image"):
+            if getattr(args, flag):
+                command.extend(["--" + flag.replace("_", "-"), getattr(args, flag)])
+        with (sample_dir / "private-output.log").open("wb") as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            original = proc_stat(process.pid)["start_ticks"]
+            observations = []
+            sample_deadline = time.monotonic() + case["limit_seconds"]
+            censored = None
+            missing_streak = 0
+            while process.poll() is None:
+                if len(observations) % 10 == 0:
+                    try:
+                        discover_owned_containers(sample_dir, observation_client)
+                        disk_bytes = tree_bytes(root) + owned_volume_bytes(sample_dir, observation_client)
+                        if disk_bytes > caps["storage_bytes"]:
+                            censored = "owned_storage_cap"
+                    except BaseException:
+                        censored = "owned_container_discovery_unavailable"
+                observation = sample_owned(process.pid, original, sample_dir, container_client=observation_client)
+                observations.append(observation)
+                missing_streak = missing_streak + 1 if observation.get("missing") else 0
+                if missing_streak >= 10:
+                    censored = "owned_resource_observation_unavailable"
+                if observation.get("available") and observation["host_rss_bytes"] + observation["container_charge_bytes"] + observation.get("pending_container_memory_reservation_bytes", 0) > caps["sampled_memory_bytes"]:
+                    censored = "sampled_memory_cap"
+                if time.monotonic() >= sample_deadline:
+                    censored = "case_deadline"
+                if censored:
+                    process.send_signal(signal.SIGTERM)
+                    try:
+                        process.wait(timeout=min(60, max(1, deadline - time.monotonic())))
+                    except subprocess.TimeoutExpired:
+                        # Kill only this owned process group; never claim this
+                        # releases managed resources. Original guest watchdogs
+                        # and durable journals remain the recovery authority.
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=5)
+                    break
+                time.sleep(0.1)
+        sample_path = sample_dir / "sample.json"
+        if sample_path.is_file() and sample_path.stat().st_size <= MAX_REPORT:
+            row = json.loads(sample_path.read_bytes())
+        else:
+            row = {"case_id": case["id"], "sample": case["sample"], "status": "CENSORED", "diagnostic_code": "child_report_unavailable"}
+        if row.get("case_id") != case["id"] or row.get("sample") != case["sample"]:
+            row = {"case_id": case["id"], "sample": case["sample"], "status": "FAIL", "diagnostic_code": "child_report_identity_mismatch", "custody_unresolved": True}
+        if process.returncode != 0 and row["status"] == "PASS":
+            row["status"] = "FAIL"
+            row["diagnostic_code"] = "child_exit_not_successful"
+        row["resource_summary"] = resource_summary(observations)
+        row["resource_samples"] = observations
+        if not row["resource_summary"]["complete_observations"] and row["status"] == "PASS":
+            row["status"] = "FAIL"
+            row["diagnostic_code"] = "resource_measurement_incomplete"
+        if censored:
+            row["status"] = "CENSORED"
+            row["diagnostic_code"] = censored
+            stopped = censored
+        if row.get("custody_unresolved") or row.get("diagnostic_code") == "child_report_unavailable":
+            stopped = "original_resource_custody_unresolved"
+        # Reserve the declared bound; unmeasured fixture traffic is never
+        # incorrectly treated as zero budget consumption.
+        used_transfer += case["max_transfer_bytes"]
+        rows.append(row)
+        report = {"schema_version": 1, "investigation": "managed-costs-v1", "environment": environment,
+                  "manifest_sha256": args.manifest_sha256, "image_ids": {"runtime": args.runtime_image, "agent": args.agent_image},
+                  "samples": rows, "summary": summarize(rows), "complete": False,
+                  "elapsed_seconds": time.monotonic() - started, "declared_transfer_reserved_bytes": used_transfer}
+        write_private(root / "report.json", report)
+    report = {"schema_version": 1, "investigation": "managed-costs-v1", "environment": environment,
+              "manifest_sha256": args.manifest_sha256, "image_ids": {"runtime": args.runtime_image, "agent": args.agent_image},
+              "samples": rows, "summary": summarize(rows),
+              "complete": len(rows) == len(scheduled) and all(row["status"] == "PASS" for row in rows),
+              "elapsed_seconds": time.monotonic() - started, "declared_transfer_reserved_bytes": used_transfer,
+              "limits": ["synthetic local authority/model/forge fixtures; no live provider or forge mutation",
+                         "source and Docker image reuse do not reuse an execution incarnation",
+                         "nested span wall/thread CPU is inclusive and must not be added",
+                         "five comparable samples support median/range, not p95 or a service objective",
+                         "only explicitly labeled installed idle uses real pinned sibling services"]}
+    write_private(root / "report.json", report)
+    observation_client.close()
+    return 0 if report["complete"] else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=("run", "_case"))
+    parser.add_argument("--work-dir", required=True)
+    parser.add_argument("--manifest")
+    parser.add_argument("--manifest-sha256")
+    parser.add_argument("--case")
+    parser.add_argument("--runtime-image")
+    parser.add_argument("--agent-image")
+    parser.add_argument("--zpm-checkout")
+    parser.add_argument("--polyphony-checkout")
+    parser.add_argument("--dependency-plan")
+    args = parser.parse_args(argv)
+    return run_child(args) if args.operation == "_case" else run_suite(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
