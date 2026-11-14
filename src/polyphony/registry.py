@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from src.polyphony.controller import SwarmResourceController
 from src.polyphony.models import PolyphonyCohortConfig
-from src.polyphony.outbox import BaseOutboxBridge, SQLiteOutboxBridge
+from src.polyphony.outbox import BaseOutboxBridge, unsupported
 from src.polyphony.provisioner import ContainerProvisionerProtocol, DockerContainerProvisioner
 from src.worker.execution_context import require_legacy_execution
 
@@ -17,7 +17,7 @@ class SwarmCohortRegistry:
 
     def __init__(self, default_provisioner: Optional[ContainerProvisionerProtocol] = None):
         require_legacy_execution()
-        self.default_provisioner = default_provisioner or DockerContainerProvisioner()
+        self.default_provisioner = default_provisioner
         self._controllers: Dict[str, SwarmResourceController] = {}
 
     def register_cohort(
@@ -29,18 +29,25 @@ class SwarmCohortRegistry:
     ) -> SwarmResourceController:
         """Registers a new cohort and optionally bootstraps its base worker pool."""
         require_legacy_execution()
-        bridge = outbox_bridge or SQLiteOutboxBridge(config.liminal_db_path or f"/tmp/polyphony_{config.swarm_id}.db")
-        prov = provisioner or self.default_provisioner
+        if outbox_bridge is None:
+            raise unsupported()
+        if config.liminal_db_path is not None:
+            raise unsupported("direct_sql_host_signals_unsupported")
+        if config.swarm_id in self._controllers:
+            raise ValueError("cohort_already_registered")
+        outbox_bridge.ensure_available()
+        prov = provisioner or self.default_provisioner or DockerContainerProvisioner()
 
         controller = SwarmResourceController(
             config=config,
-            outbox_bridge=bridge,
+            outbox_bridge=outbox_bridge,
             provisioner=prov,
         )
+        # Retain the controller if bootstrap becomes uncertain; replacing it
+        # would discard its in-memory action/reconciliation evidence.
+        self._controllers[config.swarm_id] = controller
         if bootstrap:
             controller.bootstrap_cohort()
-
-        self._controllers[config.swarm_id] = controller
         logger.info(f"Registered cohort {config.swarm_id} (base workers: {config.base_worker_count})")
         return controller
 
@@ -54,6 +61,7 @@ class SwarmCohortRegistry:
         require_legacy_execution()
         if swarm_id in self._controllers:
             ctrl = self._controllers[swarm_id]
+            ctrl.require_unpaused()
             if drain_workers:
                 for w in ctrl.provisioner.list_active_workers(swarm_id=swarm_id):
                     ctrl.provisioner.stop_worker(w.container_id)

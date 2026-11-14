@@ -14,6 +14,8 @@ from src.polyphony.outbox import (
     InMemoryOutboxBridge,
     McpOutboxBridge,
     SQLiteOutboxBridge,
+    OutboxError,
+    OutboxOutcome,
 )
 from src.polyphony.bootstrap import WorkerBootstrapBuilder, WorkerBootstrapPackage
 from src.polyphony.provisioner import (
@@ -36,6 +38,8 @@ __all__ = [
     "SQLiteOutboxBridge",
     "McpOutboxBridge",
     "InMemoryOutboxBridge",
+    "OutboxError",
+    "OutboxOutcome",
     "WorkerBootstrapBuilder",
     "WorkerBootstrapPackage",
     "ContainerProvisionerProtocol",

@@ -21,7 +21,6 @@ from src.polyphony import (
     SwarmResourceController,
 )
 from src.polyphony.health import WorkerHealthMonitor
-from src.polyphony.outbox import SQLiteOutboxBridge
 # Explicit legacy components may construct their host runtime. These tests use
 # fixture workers; the actual disabled app must never import this singleton.
 with patch("docker.from_env"):
@@ -105,42 +104,26 @@ def test_worker_health_monitor_self_healing():
 
 
 
-def test_cli_swarm_subcommands(capsys, tmp_path, monkeypatch):
-    monkeypatch.setattr("src.polyphony.registry.SQLiteOutboxBridge",
-                        lambda _: SQLiteOutboxBridge(str(tmp_path / "cohort.sqlite3")))
+def test_cli_swarm_mutations_are_unavailable_before_registry_or_provisioning(capsys, monkeypatch):
+    from types import SimpleNamespace
+    effects = MagicMock(side_effect=AssertionError("unavailable CLI must not provision"))
+    monkeypatch.setattr(cohort_registry, "register_cohort", effects)
+    monkeypatch.setattr(cohort_registry, "get_controller", effects)
+    for action in ["start", "drain"]:
+        assert handle_swarm_cli(SimpleNamespace(swarm_action=action)) == 2
+        assert "no qualified host-signal transport" in capsys.readouterr().out
+    effects.assert_not_called()
+
+
+def test_cli_status_describes_only_an_explicit_in_process_fixture(capsys):
+    from types import SimpleNamespace
     cohort_registry._controllers.clear()
-    cohort_registry.default_provisioner = MockContainerProvisioner()
-
-    # CLI start
-    args_start = MagicMock()
-    args_start.swarm_action = "start"
-    args_start.repo = "https://github.com/org/cli-repo.git"
-    args_start.swarm_id = "cli-test-swarm"
-    args_start.workers = 2
-    args_start.max_burst = 6
-    args_start.budget = 75.0
-
-    handle_swarm_cli(args_start)
-    captured = capsys.readouterr().out
-    assert "Started Polyphony Cohort 'cli-test-swarm'" in captured
-    assert "Base Workers: 2 / 2" in captured
-
-    # CLI status
-    args_status = MagicMock()
-    args_status.swarm_action = "status"
-    args_status.swarm_id = "cli-test-swarm"
-
-    handle_swarm_cli(args_status)
-    captured_status = capsys.readouterr().out
-    assert "Polyphony Cohort Status: cli-test-swarm" in captured_status
-    assert "Active Workers: 2" in captured_status
-
-    # CLI drain
-    args_drain = MagicMock()
-    args_drain.swarm_action = "drain"
-    args_drain.swarm_id = "cli-test-swarm"
-    args_drain.delta = 0
-
-    handle_swarm_cli(args_drain)
-    captured_drain = capsys.readouterr().out
-    assert "Drained cohort 'cli-test-swarm'" in captured_drain
+    provider = MockContainerProvisioner()
+    config = PolyphonyCohortConfig(swarm_id="cli-fixture", repo_url="https://example.invalid/repo", base_worker_count=2)
+    cohort_registry.register_cohort(config, outbox_bridge=InMemoryOutboxBridge(), provisioner=provider)
+    try:
+        assert handle_swarm_cli(SimpleNamespace(swarm_action="status", swarm_id="cli-fixture")) == 0
+        text = capsys.readouterr().out
+        assert "Polyphony Cohort Status: cli-fixture" in text and "Active Workers: 2" in text
+    finally:
+        cohort_registry.remove_cohort("cli-fixture")

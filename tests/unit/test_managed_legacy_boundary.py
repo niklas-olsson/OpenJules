@@ -21,6 +21,8 @@ from src.storage.dashboard_state import DashboardState
 from src.storage.sqlite_storage import SQLiteStorageProvider
 from src.mcp.server import OpenJulesMCPServer
 from src.polyphony.models import PolyphonyCohortConfig, SignalType
+from src.polyphony.controller import SwarmResourceController
+from src.polyphony.outbox import McpOutboxBridge, SQLiteOutboxBridge
 from src.polyphony.provisioner import DockerContainerProvisioner
 # This explicitly imported legacy CLI singleton is outside the harmless app.
 # Its unit-test Docker dependency is a fixture, not a required local daemon.
@@ -85,6 +87,9 @@ def test_constructor_guards_precede_clients_even_with_injected_dependencies(mana
         lambda: OpenJulesMCPServer(sandbox_manager=dependency, task_executor=dependency),
         lambda: DockerContainerProvisioner(sandbox_manager=dependency),
         lambda: SwarmCohortRegistry(default_provisioner=dependency),
+        lambda: McpOutboxBridge("host-key", dependency),
+        lambda: SQLiteOutboxBridge("must-not-create.sqlite3"),
+        lambda: SwarmResourceController(dependency, dependency, dependency),
         lambda: MultiRepoOrchestrator(task_executor=dependency, polyphony_manager=dependency),
     ]
     for action in actions:
@@ -142,10 +147,19 @@ def test_preconstructed_mcp_cannot_waive_refusal_by_tool_or_payload(managed, too
 def test_preconstructed_cohort_and_cli_mutations_refuse_before_local_state(managed):
     registry = object.__new__(SwarmCohortRegistry)
     provisioner = object.__new__(DockerContainerProvisioner)
+    controller = object.__new__(SwarmResourceController)
+    bridge = object.__new__(McpOutboxBridge)
+    sql_bridge = object.__new__(SQLiteOutboxBridge)
     cfg = PolyphonyCohortConfig(swarm_id="fixture", repo_url="https://example.invalid/repo")
     actions = [
         lambda: registry.register_cohort(cfg),
         lambda: registry.remove_cohort("fixture"),
+        lambda: controller.bootstrap_cohort(),
+        lambda: controller.reconcile_signals(),
+        lambda: bridge.poll_pending_signals(),
+        lambda: bridge.acknowledge_signal({}, {}, {}),
+        lambda: bridge.count_active_leases("actor"),
+        lambda: sql_bridge.poll_pending_signals(),
         lambda: provisioner.spawn_worker(cfg, "actor"),
         lambda: provisioner.stop_worker("foreign"),
         lambda: cli.run_cli_task("standalone", "unrelated/repository"),
@@ -154,7 +168,7 @@ def test_preconstructed_cohort_and_cli_mutations_refuse_before_local_state(manag
     ]
     for action in actions:
         refuse(action)
-    assert vars(registry) == vars(provisioner) == {}
+    assert all(vars(item) == {} for item in (registry, provisioner, controller, bridge, sql_bridge))
 
 
 def test_explicit_dashboard_records_refuse_in_managed_context(managed):

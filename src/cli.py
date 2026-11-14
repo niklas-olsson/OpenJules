@@ -77,65 +77,30 @@ def inspect_polyphony(repo: str):
 
 
 def handle_swarm_cli(args):
-    """Handles 'openjules swarm' subcommands."""
+    """Inspect retained in-process fixtures; connected host controls are unsupported."""
     require_legacy_execution()
-    from src.polyphony.models import PolyphonyCohortConfig, HostTelemetrySignal, SignalType
-    from src.polyphony.registry import cohort_registry
-
     action = getattr(args, "swarm_action", None)
-    if action == "start":
-        swarm_id = args.swarm_id or f"swarm-{os.urandom(4).hex()}"
-        cfg = PolyphonyCohortConfig(
-            swarm_id=swarm_id,
-            repo_url=args.repo,
-            base_worker_count=args.workers,
-            max_burst_workers=args.max_burst,
-            max_host_budget=args.budget,
-        )
-        ctrl = cohort_registry.register_cohort(cfg, bootstrap=True)
-        active = ctrl.provisioner.list_active_workers(swarm_id=swarm_id)
-        print(f"🐝 Started Polyphony Cohort '{swarm_id}'")
-        print(f"  - Target Repo: {args.repo}")
-        print(f"  - Base Workers: {len(active)} / {args.workers}")
-        print(f"  - Max Burst Cap: {args.max_burst}")
-        print(f"  - Budget Ceiling: ${args.budget:.2f}")
-
-    elif action == "status":
-        ctrl = cohort_registry.get_controller(args.swarm_id)
-        if not ctrl:
-            print(f"❌ Cohort '{args.swarm_id}' not found.")
-            return 1
-        active = ctrl.provisioner.list_active_workers(swarm_id=args.swarm_id)
-        base = [w for w in active if not w.is_burst]
-        burst = [w for w in active if w.is_burst]
-        print(f"🐝 Polyphony Cohort Status: {args.swarm_id}")
-        print(f"  - Active Workers: {len(active)} ({len(base)} base, {len(burst)} burst)")
-        print(f"  - Metered Cost: ${ctrl.internal_metered_cost:.2f} / ${ctrl.config.max_host_budget:.2f}")
-        for w in active:
-            role_badge = f"[{w.role.upper()}]"
-            burst_badge = "(burst)" if w.is_burst else "(base)"
-            print(f"    • {w.actor_id} {role_badge} {burst_badge} cid={w.container_id[:12]}")
-
-    elif action == "drain":
-        ctrl = cohort_registry.get_controller(args.swarm_id)
-        if not ctrl:
-            print(f"❌ Cohort '{args.swarm_id}' not found.")
-            return 1
-        sig = HostTelemetrySignal(
-            signal_id=f"sig-cli-drain-{os.urandom(4).hex()}",
-            emitted_by_actor="cli",
-            signal_type=SignalType.IDLE_DRAIN,
-            requested_worker_delta=args.delta,
-            rationale="CLI triggered idle drain",
-        )
-        if hasattr(ctrl.outbox_bridge, "emit_signal"):
-            ctrl.outbox_bridge.emit_signal(sig)
-        elif hasattr(ctrl.outbox_bridge, "add_signal"):
-            ctrl.outbox_bridge.add_signal(sig)
-        results = ctrl.reconcile_signals()
-        print(f"🧹 Drained cohort '{args.swarm_id}': {results}")
-    else:
+    if action in {"start", "drain"}:
+        print("Standalone cohort operation unsupported: no qualified host-signal transport is configured.")
+        return 2
+    if action != "status":
         print("Usage: openjules swarm [start|status|drain]")
+        return 2
+
+    from src.polyphony.registry import cohort_registry
+    ctrl = cohort_registry.get_controller(args.swarm_id)
+    if ctrl is None:
+        print(f"Cohort '{args.swarm_id}' not found in this process; no durable recovery is implied.")
+        return 1
+    active = ctrl.provisioner.list_active_workers(swarm_id=args.swarm_id)
+    base = [worker for worker in active if not worker.is_burst]
+    burst = [worker for worker in active if worker.is_burst]
+    print(f"Polyphony Cohort Status: {args.swarm_id}")
+    print(f"  Active Workers: {len(active)} ({len(base)} base, {len(burst)} burst)")
+    print(f"  Metered Cost: {ctrl.internal_metered_cost:.2f} / {ctrl.config.max_host_budget:.2f}")
+    if ctrl.reconciliation_required is not None:
+        print(f"  Reconciliation required: {ctrl.reconciliation_required['reason']}")
+    return 0
 
 
 def main():
@@ -170,17 +135,17 @@ def main():
     swarm_parser = subparsers.add_parser("swarm", help="Manage Polyphony Swarm Resource Cohorts")
     swarm_sub = swarm_parser.add_subparsers(dest="swarm_action", help="Swarm action (start, status, drain)")
 
-    swarm_start = swarm_sub.add_parser("start", help="Start a new managed swarm cohort")
+    swarm_start = swarm_sub.add_parser("start", help="Unavailable until a production host-signal transport is qualified")
     swarm_start.add_argument("--repo", type=str, required=True, help="Target repository URL or owner/repo")
     swarm_start.add_argument("--swarm-id", type=str, default=None, help="Custom swarm ID")
     swarm_start.add_argument("--workers", type=int, default=1, help="Base worker count")
     swarm_start.add_argument("--max-burst", type=int, default=18, help="Max burst workers ceiling")
     swarm_start.add_argument("--budget", type=float, default=100.0, help="Max host budget ceiling")
 
-    swarm_status = swarm_sub.add_parser("status", help="Inspect status of a managed swarm cohort")
+    swarm_status = swarm_sub.add_parser("status", help="Inspect an experimental cohort retained in this process")
     swarm_status.add_argument("swarm_id", type=str, help="Cohort swarm ID")
 
-    swarm_drain = swarm_sub.add_parser("drain", help="Trigger IDLE_DRAIN or stop cohort")
+    swarm_drain = swarm_sub.add_parser("drain", help="Unavailable until production transport and activity observation are qualified")
     swarm_drain.add_argument("swarm_id", type=str, help="Cohort swarm ID")
     swarm_drain.add_argument("--delta", type=int, default=0, help="Number of workers to drain (0 = all idle burst)")
 
@@ -201,7 +166,7 @@ def main():
     elif args.command == "polyphony":
         inspect_polyphony(args.repo)
     elif args.command == "swarm":
-        handle_swarm_cli(args)
+        sys.exit(handle_swarm_cli(args))
     elif args.command == "mcp":
         from src.mcp.server import OpenJulesMCPServer
 

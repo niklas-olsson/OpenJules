@@ -22,7 +22,7 @@ class HostSignalStatus(str, Enum):
 
 
 class PolyphonyCohortConfig(BaseModel):
-    """Configuration for a managed Polyphony swarm cohort."""
+    """Configuration for an experimental standalone Polyphony swarm cohort."""
 
     swarm_id: str = Field(description="Unique cohort identifier")
     repo_url: str = Field(description="Target repository clone URL or path")
@@ -49,7 +49,7 @@ class PolyphonyCohortConfig(BaseModel):
     )
     liminal_db_path: Optional[str] = Field(
         default=None,
-        description="Path to shared liminal_collab.db or SQLite database file",
+        description="Unsupported historical compatibility field; direct foreign SQLite transport is refused",
     )
 
 

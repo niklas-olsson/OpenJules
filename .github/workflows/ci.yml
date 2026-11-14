@@ -38,3 +38,42 @@ jobs:
           echo "OPENJULES_MANAGED_AGENT_IMAGE_ID=$(cat managed-agent-image.id)" >> "$GITHUB_ENV"
       - name: Run the full test suite
         run: python -m pytest -x
+
+  standalone-signal-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: niklas-olsson/keystone-polyphony
+          ref: 6480e36355bf0d5de4e25a560d40e665fd76038c
+          path: .contract-source/polyphony
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare separate consumer and producer interpreters
+        run: |
+          python -m venv "$RUNNER_TEMP/signal-consumer"
+          python -m venv "$RUNNER_TEMP/signal-producer"
+          "$RUNNER_TEMP/signal-consumer/bin/python" -m pip install -r requirements.txt
+          "$RUNNER_TEMP/signal-producer/bin/python" -m pip install -r .contract-source/polyphony/requirements.txt
+      - name: Check actual pinned tools and producer ledger
+        run: |
+          "$RUNNER_TEMP/signal-consumer/bin/python" tests/contracts/check_host_signals.py \
+            --polyphony-checkout .contract-source/polyphony \
+            --polyphony-python "$RUNNER_TEMP/signal-producer/bin/python" \
+            --work-dir "$RUNNER_TEMP/host-signal-contract"
+      - name: Retain safe contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-signal-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/host-signal-contract/report.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -28,6 +28,7 @@ class WorkerHealthMonitor:
 
     def check_and_heal(self) -> Dict[str, any]:
         """Inspects all workers for the cohort, reaps dead containers, and replenishes base workers."""
+        self.controller.require_unpaused()
         swarm_id = self.controller.config.swarm_id
         active = self.controller.provisioner.list_active_workers(swarm_id=swarm_id)
 
