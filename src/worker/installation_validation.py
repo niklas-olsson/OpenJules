@@ -151,6 +151,8 @@ def validate_configuration_bytes(
             raise ConfigurationInvalid("configuration_input_unavailable", "/configuration")
         try:
             config = parse_configuration_bytes(raw)
+            if type(config.get("schema_version")) is not int or config["schema_version"] != 1:
+                raise ConfigurationInvalid("configuration_schema_unsupported", "/schema_version")
             prepared = prepare_configuration(config)
         except ConfigurationInvalid as error:
             raise ConfigurationInvalid(error.code, "/configuration" + error.path) from None

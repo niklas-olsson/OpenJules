@@ -2,7 +2,8 @@
 
 Only explicit host initialization creates identities. The HTTP protocol exposes
 opaque identifiers; complete policy fingerprints and state paths stay private.
-This is not distributed authority, an admission ceiling or rollback protection.
+Full mode adds separately approved manifests and lifecycle-owned local admission.
+Neither mode is distributed authority or rollback protection.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ DESTINATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 OPAQUE_ID = re.compile(r"[0-9a-f]{32}\Z")
 MAX_STATE_BYTES = 1_000_000
 REQUIRED_FEATURES = ["identity_binding_v1"]
+FULL_FEATURES = REQUIRED_FEATURES + ["execution_contract_v1", "local_admission_v1", "never_admitted_v1"]
+FULL_TABLES = {"destination_admission", "execution_approvals", "full_workers", "execution_intents"}
 MARKER_COLUMNS = (
     "singleton", "format_version", "required_features", "destination_id",
     "journal_incarnation", "member", "application_schema",
@@ -71,6 +74,23 @@ def initialization_lock(root):
         except BlockingIOError:
             raise DestinationUnavailable("destination initialization is already owned") from None
         yield
+
+
+@contextmanager
+def stopped_service_lock(state):
+    """Use the dispatcher's actual ownership lock for stopped host maintenance."""
+    with initialization_lock(state.root):
+        directory = state.root / "dispatcher" / "dispatch-locks"
+        _private_directory(directory, create=True)
+        path = directory / "service.lock"
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        with os.fdopen(descriptor, "r+") as handle:
+            _private_regular(path)
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise DestinationUnavailable("execution contract maintenance requires a stopped service") from None
+            yield
 
 
 def parse_binding(value):
@@ -221,6 +241,15 @@ class JournalBinding:
     registry_path: str
     registry_json: str
 
+    @property
+    def features(self):
+        return json.loads(self.registry_json)["required_features"]
+
+    @property
+    def application_tables(self):
+        tables = APPLICATION_TABLES[self.member]
+        return tables | FULL_TABLES if self.member == "lifecycle" and self.features == FULL_FEATURES else tables
+
     def verify(self, connection, *, initializing=False):
         try:
             registry = _read(self.registry_path)
@@ -262,7 +291,7 @@ class JournalBinding:
         except (OSError, sqlite3.Error, json.JSONDecodeError):
             raise DestinationUnavailable("original destination journal identity is unavailable") from None
         if len(rows) != 1 or tuple(rows[0])[:-1] != (
-            1, canonical(REQUIRED_FEATURES), self.destination_id, self.journal_incarnation, self.member,
+            1, canonical(self.features), self.destination_id, self.journal_incarnation, self.member,
         ):
             raise DestinationUnavailable("original destination journal identity changed")
         if self.member == "children":
@@ -282,13 +311,13 @@ class JournalBinding:
                     not isinstance(required, dict) or set(required) != {"tables", "indexes"}
                     or canonical(required) != encoded
                     or not isinstance(required["tables"], dict)
-                    or set(required["tables"]) != APPLICATION_TABLES[self.member]
+                    or set(required["tables"]) != self.application_tables
                     or not isinstance(required["indexes"], dict)
                     or len(encoded) > MAX_STATE_BYTES
                     or any(not isinstance(sql, str) or not sql for sql in required["tables"].values())
                     or any(
                         not isinstance(record, dict) or set(record) != {"table", "sql"}
-                        or record["table"] not in APPLICATION_TABLES[self.member]
+                        or record["table"] not in self.application_tables
                         or (record["sql"] is not None and not isinstance(record["sql"], str))
                         for record in required["indexes"].values()
                     )
@@ -304,7 +333,7 @@ class JournalBinding:
                 raise DestinationUnavailable("original destination application schema is unavailable") from None
 
     def _application_schema(self, connection):
-        tables = APPLICATION_TABLES[self.member]
+        tables = self.application_tables
         rows = connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master").fetchall()
         definitions = {row[1]: row[3] for row in rows if row[0] == "table" and row[1] in tables}
         if set(definitions) != tables:
@@ -364,15 +393,17 @@ def connect_journal(database, *, binding=None, initializing=False, read_only=Fal
 class DestinationState:
     def __init__(self, config, value):
         self.config = config
+        self.full_mode = type(config.get("schema_version")) is int and config["schema_version"] == 2
+        features = FULL_FEATURES if self.full_mode else REQUIRED_FEATURES
         self.root = _private_directory(config["state_directory"])
         self.path = self.root / "destination.json"
         if (
-            not isinstance(value, dict) or set(value) != {
+            not isinstance(value, dict) or set(value) != ({
                 "schema_version", "phase", "destination_id", "journal_incarnation",
                 "members", "policies", "required_features",
-            }
+            } | ({"execution_contract"} if self.full_mode else set()))
             or type(value["schema_version"]) is not int or value["schema_version"] != 1
-            or value["required_features"] != REQUIRED_FEATURES
+            or value["required_features"] != features
             or not isinstance(value["phase"], str) or value["phase"] not in {"initializing", "initialized", "ready"}
             or value["destination_id"] != destination_configuration(config)
             or not isinstance(value["journal_incarnation"], str)
@@ -381,6 +412,10 @@ class DestinationState:
             or not isinstance(value["policies"], list) or not 1 <= len(value["policies"]) <= 256
         ):
             raise DestinationUnavailable("destination metadata does not match its original configuration")
+        if self.full_mode:
+            from .execution_contract import primary_configuration
+            if value["execution_contract"] != primary_configuration(config):
+                raise DestinationConflict("original full execution configuration changed")
         self.value = value
         self.destination_id = value["destination_id"]
         self.incarnation = value["journal_incarnation"]
@@ -459,6 +494,8 @@ class DestinationState:
         """Publish readiness only after every effect-free constructor sealed state."""
         with initialization_lock(self.root):
             self.verify(initializing=True)
+            if self.full_mode:
+                self.require_approvals()
             for name, path in self.value["members"].items():
                 connection = connect_journal(path, binding=self.member(name), initializing=True, read_only=True)
                 try:
@@ -509,6 +546,45 @@ class DestinationState:
         except (ValueError, OSError):
             return False
 
+    def _full_lifecycle(self):
+        if not self.full_mode:
+            raise DestinationUnavailable("full execution contract is unsupported")
+        from .lifecycle import WorkerLifecycle
+        return WorkerLifecycle(self.config["lifecycle_database"], destination=self)
+
+    def require_approvals(self):
+        """Read the original sealed approvals, without runtime/authority probes."""
+        lifecycle = self._full_lifecycle()
+        for key in self.policies:
+            from .lifecycle import WorkerScope
+            lifecycle.execution_approval(WorkerScope(*key[:2]), key[2], initializing=True)
+
+    def preview_contract(self, scope, profile, image):
+        """Freeze one inspected candidate before exposing it for host approval."""
+        from .execution_contract import project, digest, canonical_bytes
+        from .managed_configuration import prepare_configuration
+        self.verify(initializing=True)
+        if not self.full_mode or self.current != {key: item["fingerprints"] for key, item in self.policies.items()}:
+            raise DestinationConflict("original policy is unavailable for preview")
+        manifest = project(self.config, prepare_configuration(self.config),
+                           (scope.deployment_id, scope.repository, profile), image)
+        candidate = {
+            "approval_version": 1, "deployment_id": scope.deployment_id,
+            "repository": scope.repository, "profile": profile,
+            "destination_binding": self.binding(scope, profile), "manifest": manifest,
+            "execution_manifest_sha256": digest(canonical_bytes(manifest)),
+        }
+        self._full_lifecycle().retain_candidate(candidate)
+        return candidate
+
+    def approve_contract(self, raw):
+        from .execution_contract import parse_approval
+        self.verify(initializing=True)
+        candidate = parse_approval(raw)
+        self._full_lifecycle().approve_candidate(candidate)
+        return {"schema_version": 1, "approved": True,
+                "execution_manifest_sha256": candidate["execution_manifest_sha256"]}
+
     def inspection(self):
         self.verify(initializing=True)
         return {
@@ -516,8 +592,8 @@ class DestinationState:
             "destination_id": self.destination_id,
             "journal_incarnation": self.incarnation,
             "identity_binding": 1,
-            "portable_manifest": False,
-            "local_admission": False,
+            "portable_manifest": 1 if self.full_mode else False,
+            "local_admission": 1 if self.full_mode else False,
             "journals_initialized": self.value["phase"] == "ready",
             "profiles": [{
                 "deployment_id": key[0], "repository": key[1], "profile": key[2],
@@ -543,6 +619,8 @@ def initialize_destination(config):
         if path.exists() or path.is_symlink():
             state = DestinationState(config, _read(path))
             if state.value["phase"] in {"initialized", "ready"}:
+                if state.full_mode:
+                    state._full_lifecycle()
                 return state.inspection()
             if {key: item["fingerprints"] for key, item in state.policies.items()} != fingerprints:
                 raise DestinationConflict("original destination initialization policy changed")
@@ -551,14 +629,18 @@ def initialize_destination(config):
                 Path(member).exists() or Path(member).is_symlink() for member in members.values()
             ):
                 raise DestinationConflict("destination initialization refuses existing journals")
+            features = FULL_FEATURES if config.get("schema_version") == 2 else REQUIRED_FEATURES
             value = {
                 "schema_version": 1, "phase": "initializing",
-                "required_features": REQUIRED_FEATURES,
+                "required_features": features,
                 "destination_id": destination_id, "journal_incarnation": uuid4().hex,
                 "members": members,
                 "policies": [{"scope": list(key), "id": uuid4().hex, "fingerprints": value}
                              for key, value in sorted(fingerprints.items())],
             }
+            if features == FULL_FEATURES:
+                from .execution_contract import primary_configuration
+                value["execution_contract"] = primary_configuration(config)
             _write(path, value)
             state = DestinationState(config, value)
         for name, member in members.items():
@@ -582,7 +664,7 @@ def initialize_destination(config):
                         )
                         connection.execute(
                             "INSERT INTO " + IDENTITY_TABLE + " VALUES (1,1,?,?,?,?,NULL)",
-                            (canonical(REQUIRED_FEATURES), destination_id, state.incarnation, name),
+                            (canonical(state.value["required_features"]), destination_id, state.incarnation, name),
                         )
                         connection.commit()
                     finally:
@@ -602,4 +684,6 @@ def initialize_destination(config):
             connection.close()
         state.value["phase"] = "initialized"
         _write(path, state.value)
+        if state.full_mode:
+            state._full_lifecycle()
         return state.inspection()

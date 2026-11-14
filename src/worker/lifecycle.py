@@ -20,6 +20,7 @@ from uuid import uuid4
 from .destination import (
     DestinationConflict, DestinationUnavailable, connect_journal, parse_binding,
 )
+from .execution_admission import FullExecutionAdmission
 
 
 SCHEMA_VERSION = 1
@@ -224,7 +225,7 @@ class UnavailableRuntime:
     stop = observe
 
 
-class WorkerLifecycle:
+class WorkerLifecycle(FullExecutionAdmission):
     """SQLite journal for worker identity, operation intent and local admission.
 
     It stores no task requirements, task budgets, candidates or task acceptance.
@@ -240,6 +241,7 @@ class WorkerLifecycle:
         self.database = str(Path(database).resolve())
         self.runtime = runtime or UnavailableRuntime()
         self.destination = destination
+        self.full_mode = destination is not None and destination.full_mode
         self.journal_binding = destination.member("lifecycle") if destination else None
         if destination is not None:
             destination.verify(initializing=True)
@@ -295,6 +297,9 @@ class WorkerLifecycle:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(managed_workers)")}
             if "destination_binding" not in columns:
                 connection.execute("ALTER TABLE managed_workers ADD COLUMN destination_binding TEXT")
+            if self.full_mode:
+                from .execution_admission import initialize_tables
+                initialize_tables(connection, destination)
             if self.journal_binding is not None:
                 self.journal_binding.seal(connection)
 
@@ -400,9 +405,12 @@ class WorkerLifecycle:
                 raise DestinationConflict("worker belongs to a different destination policy binding")
 
     @staticmethod
-    def _ensure_payload(spec, binding):
+    def _ensure_payload(spec, binding, execution_qualification=None):
         value = asdict(spec)
-        return _json(value if binding is None else {"spec": value, "destination_binding": binding})
+        result = value if binding is None else {"spec": value, "destination_binding": binding}
+        if execution_qualification is not None:
+            result["execution_qualification"] = execution_qualification
+        return _json(result)
 
     @staticmethod
     def _active(connection: sqlite3.Connection, worker_id: str) -> list[sqlite3.Row]:
@@ -488,14 +496,18 @@ class WorkerLifecycle:
             scope, worker_id, pending["request_key"], pending["action"]
         )
 
-    def ensure_worker(self, spec: WorkerSpec, destination_binding=None) -> dict:
+    def ensure_worker(self, spec: WorkerSpec, destination_binding=None, execution_qualification=None) -> dict:
+        if execution_qualification is not None:
+            from .execution_contract import qualification
+            execution_qualification = qualification(execution_qualification)
+            self._require_full()
         if self.destination is not None:
             if destination_binding is None:
                 raise DestinationConflict("bound destination requires the v2 identity contract")
             self.destination.validate(spec.scope, spec.profile, destination_binding)
         elif destination_binding is not None:
             raise DestinationConflict("legacy destination does not accept v2 bindings")
-        payload = self._ensure_payload(spec, destination_binding)
+        payload = self._ensure_payload(spec, destination_binding, execution_qualification)
         with self._transaction() as connection:
             existing = self._operation(
                 connection, spec.scope, spec.launch_key, "ensure", None, payload
@@ -503,6 +515,11 @@ class WorkerLifecycle:
             existing_id = existing["worker_id"] if existing else None
         if existing_id:
             return self._resume_ensure(spec, existing_id)
+        if self.full_mode:
+            if execution_qualification is None:
+                raise DestinationConflict("new workers require the full execution contract")
+            self.verify_new_execution_contract(spec.scope, spec.profile,
+                                               execution_qualification["execution_manifest_sha256"])
         if self.destination is not None:
             self.destination.validate(spec.scope, spec.profile, destination_binding, admission=True)
         if not self._usable(spec.scope, spec.profile):
@@ -515,6 +532,18 @@ class WorkerLifecycle:
             if existing:
                 worker_id = existing["worker_id"]
             else:
+                disposition = None
+                if self.full_mode:
+                    from .execution_admission import read_admission, unreleased
+                    admission = read_admission(connection)
+                    reason = (
+                        "stale_admission_revision" if execution_qualification["admission_revision"] != admission["revision"]
+                        else "closed" if not admission["new_effects_open"]
+                        else "ceiling" if unreleased(connection) >= admission["worker_ceiling"] else None
+                    )
+                    if reason is not None:
+                        disposition = {"version": 1, "kind": "never_admitted", "reason": reason,
+                                       "observed_admission_revision": admission["revision"]}
                 previous = connection.execute(
                     "SELECT * FROM managed_workers WHERE deployment_id = ? "
                     "AND repository = ? AND slot_id = ? ORDER BY generation DESC",
@@ -547,6 +576,13 @@ class WorkerLifecycle:
                         _json(destination_binding) if destination_binding is not None else None,
                     ),
                 )
+                if self.full_mode:
+                    connection.execute("INSERT INTO full_workers VALUES (?,?,?)", (
+                        worker_id, _json(execution_qualification),
+                        _json(disposition) if disposition is not None else None,
+                    ))
+                    if disposition is not None:
+                        connection.execute("UPDATE managed_workers SET state='stopped',reason='never_admitted',draining=1,termination_confirmed=1,artifacts_captured=1 WHERE worker_id=?", (worker_id,))
                 connection.execute(
                     "INSERT INTO worker_operations "
                     "(deployment_id,repository,request_key,action,worker_id,payload) "
@@ -569,9 +605,11 @@ class WorkerLifecycle:
             observed = self._observe_locked(spec.scope, worker_id)
             with self._transaction() as connection:
                 row = self._get(connection, spec.scope, worker_id)
+                full = self._full_record(connection, row)
                 operation = self._operation(
                     connection, spec.scope, spec.launch_key, "ensure", worker_id,
-                    self._ensure_payload(spec, self._retained_binding(row)),
+                    self._ensure_payload(spec, self._retained_binding(row),
+                                         {key: value for key, value in full.items() if key != "disposition"} if full else None),
                 )
                 terminal = self._terminal(row)
                 completed, draining = operation["completed"], row["draining"]
@@ -658,6 +696,7 @@ class WorkerLifecycle:
                 reason += "; " + row["reason"]
         return {
             **spec,
+            **(self._full_record(connection, row) or {}),
             **({"destination_binding": self._retained_binding(row)} if self.destination else {}),
             "worker_id": row["worker_id"],
             "state": state,
@@ -784,6 +823,7 @@ class WorkerLifecycle:
         worker_id: str,
         execution_id: str,
         parent_id: str | None = None,
+        *, intent_key: str | None = None,
     ) -> None:
         """Trusted adapter admission after canonical task/grant authorization.
 
@@ -798,6 +838,12 @@ class WorkerLifecycle:
         # flight, but cannot authorize new execution. Refresh and register
         # under the same runtime lock so admission never uses that fallback.
         self._current(scope, worker_id)
+        if self.full_mode:
+            with self._transaction() as connection:
+                row = self._get(connection, scope, worker_id)
+                spec = WorkerSpec(**json.loads(row["spec"]))
+                full = self._full_record(connection, row)
+            self.verify_new_execution_contract(scope, spec.profile, full["execution_manifest_sha256"] if full else None)
         with self._runtime_lock(worker_id) as acquired:
             if not acquired:
                 raise LifecycleConflict("Runtime observation is in progress; admission is closed")
@@ -821,6 +867,8 @@ class WorkerLifecycle:
                     for item in active
                 ):
                     raise LifecycleConflict("Child requires its active admitted root")
+                if self.full_mode:
+                    self._admit_execution_intent(connection, worker_id, intent_key, execution_id)
                 connection.execute(
                     "INSERT INTO worker_executions (worker_id,execution_id,parent_id) VALUES (?,?,?)",
                     (worker_id, execution_id, parent_id),

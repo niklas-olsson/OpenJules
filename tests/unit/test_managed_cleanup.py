@@ -782,8 +782,9 @@ def test_cleanup_cli_does_not_start_service_or_restore_endpoints(
             managed_dispatcher=s.dispatcher, model_broker=None, child_supervisor=None
         )
     )
-    def configuration(_path, *, managed_context=False):
+    def configuration(_path, *, managed_context=False, credentials_required=True):
         assert managed_context
+        assert credentials_required is True
         managed_service.enter_managed_context()
         return {}, {}
 

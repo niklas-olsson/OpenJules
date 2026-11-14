@@ -30,6 +30,7 @@ from .managed_public_journal import (
 class ChildJournal:
     def __init__(self, directory: str | Path, *, journal_binding=None):
         self.journal_binding = journal_binding
+        self.admission_intent = None  # Installed by the lifecycle-owning supervisor.
         self.root = Path(directory).resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if stat.S_IMODE(self.root.stat().st_mode) & 0o077:
@@ -214,6 +215,8 @@ class ChildJournal:
         key = "openjules-child:" + digest(
             [worker_id, root["attempt_id"], request_id]
         )
+        if self.admission_intent is not None:
+            self.admission_intent(worker_id, WorkerSpec(**root["spec"]).scope, key)
         db.execute(
             "INSERT INTO intents(worker_id,request_id,payload,delivery_key) "
             "VALUES(?,?,?,?)",

@@ -227,12 +227,11 @@ launch never happened. Keep its original reservation and reconcile the original
 journal/key. There is no cross-destination retry, replacement-journal adoption
 or remote enrollment fallback.
 
-Capabilities advertise `identity_binding: 1`, `portable_manifest: false` and
-`local_admission: false`. The last flag means the later destination-wide admission
-feature is absent; existing per-worker drain and execution admission remain.
-Identity alone must not activate multi-destination ZPM placement. Portable
-qualification and local admission are separately versioned follow-ups and must
-not reinterpret these existing IDs or upgrade old reservations silently.
+Identity-only capabilities advertise `identity_binding: 1`,
+`portable_manifest: false` and `local_admission: false`; existing per-worker
+drain and execution admission remain. Identity alone must not activate
+multi-destination ZPM placement. The separately selected full contract below
+does not reinterpret these IDs or upgrade old reservations.
 
 | Configuration/state | Compatibility |
 | --- | --- |
@@ -240,7 +239,90 @@ not reinterpret these existing IDs or upgrade old reservations silently.
 | Initialized bound destination | Only v2 may create, discover, observe, drain or stop workers; v1 requests are 409. |
 | Bound files with opt-in removed | Startup and current legacy component constructors refuse the bound state. |
 | Existing populated v1 state | Destination initialization refuses migration; original v1 recovery remains available. |
+| Existing identity-only destination | Full-mode initialization refuses upgrade, including an already initialized empty destination. |
 | Missing member, changed incarnation or required format/feature | No recreation, silent downgrade or empty discovery; preserve uncertainty. |
+
+### Full execution contract v1
+
+Fresh [schema-2 service configuration](managed-service.md#full-execution-contract-and-local-admission)
+adds a full mode to the v2 transport. Full capabilities report the exact integer
+versions `identity_binding: 1`, `portable_manifest: 1` and `local_admission: 1`.
+Qualification is conjunctive: the existing `managed_dispatch`,
+`profile_supported` and `repository_access` flags must also be true, and the
+following endpoint must return the exact approved manifest. Support flags do
+not imply current readiness or admission.
+
+`GET /api/v2/workers/execution-contract` requires the usual scope, binding and
+profile query fields plus `contract_version=1`. Its closed response contains
+`schema_version: 2`, `contract_version: 1`, `deployment_id`, `repository`,
+`profile`, `destination_binding`, `manifest`, `execution_manifest_sha256` and
+this separate current admission observation:
+
+```json
+{
+  "version": 1,
+  "revision": 2,
+  "new_effects_open": true,
+  "worker_ceiling": 2,
+  "unreleased_workers": 0
+}
+```
+
+For a new full ensure, add the following original qualification triple to the
+existing body. The digest and revision shown here are illustrative:
+
+```json
+{
+  "contract_version": 1,
+  "execution_manifest_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "admission_revision": 2
+}
+```
+
+The version and revision are exact JSON integers, with revision from 1 through
+9007199254740991. The triple is committed with the original binding, worker and
+operation before external I/O. Full snapshots preserve every existing snapshot
+field and add that triple plus `disposition`, normally null. Worker-ID observe,
+drain and stop inputs remain unchanged and return the original snapshot mode.
+They never substitute today's digest or revision.
+
+| Discovery mode | Additional query fields | Exact envelope beyond `schema_version` and `destination_binding` |
+| --- | --- | --- |
+| Original identity | `profile`, optional `launch_key` | `workers` containing identity snapshots. |
+| Original full key | `profile`, original `launch_key`, all three original qualification fields | The original triple and `workers` containing full snapshots. |
+| Mixed inventory | `profile`, `contract_version=1`; no key, digest or admission revision | `contract_version: 1` and `workers` containing unchanged identity/full snapshots. |
+
+An identity discovery that would encounter a full row conflicts; it cannot hide
+the row or silently add fields. A full keyed empty result validates the original
+binding and approved digest, without asserting today's revision or readiness.
+Mixed inventory is a protocol compatibility envelope, not a migration command;
+fresh full destinations do not adopt prior identity workers. Query revisions
+use canonical positive decimal spelling. Partial triples, extra fields,
+different original tuples and wrong modes are refused.
+
+For a new valid full request, final admission compares revision, then open state,
+then the unreleased-worker ceiling in one lifecycle transaction. A refusal
+creates a permanent worker/operation tombstone with `state: "stopped"`,
+`reason: "never_admitted"`, closed per-worker admission, no active executions,
+and confirmed termination/capture. Its non-null disposition is exactly:
+
+```json
+{
+  "version": 1,
+  "kind": "never_admitted",
+  "reason": "stale_admission_revision",
+  "observed_admission_revision": 3
+}
+```
+
+The other reasons are `closed` and `ceiling`, with the stated precedence. Exact
+replay returns that same original tombstone after restart or reopening. A
+generic error, failed readiness, empty discovery or unavailable journal is not
+this receipt and cannot release an uncertain original reservation. Any prior
+committed admission, even if its external call was never sent, disqualifies a
+`never_admitted` receipt. Known original keys resolve retained history before
+current image, manifest, admission or runtime qualification. Original admitted
+work can finish and be captured after closure under its existing bounds.
 
 The internal worker specification used by Docker, dispatcher and canonical
 authority remains schema 1. V2 is an external lifecycle identity projection,
@@ -325,6 +407,7 @@ Run:
 ```bash
 python -m pytest tests/unit/test_worker_lifecycle.py tests/unit/test_worker_lifecycle_api.py
 python -m pytest tests/unit/test_execution_destination.py tests/unit/test_execution_destination_api.py
+python -m pytest tests/unit/test_full_execution_contract.py
 ```
 
 Destination tests use real local SQLite/filesystem state and explicit fixture
@@ -333,11 +416,21 @@ partial initialization, whole-set readiness, member/table/index loss, current
 legacy refusal and exact authenticated HTTP shapes. The real Docker test
 `test_bound_destination_http_recovery_retains_one_real_runtime_and_capture`
 adds actual lost-reply recovery, one container incarnation, Git change/capture
-and terminal control under the original resource limits. It reconstructs the
+and terminal control under the original resource limits. Its full-mode variant
+also binds actual inspected source/image approval, preserves the original
+qualification after host closure and executes an admitted root after closure.
+It reconstructs the
 lifecycle and Docker driver from their original journals within the same test
 process; its readiness callback is explicitly a fixture. Neither case alone
-claims a fresh supervisor process, remote hosts, a live model
-provider, canonical permission, portable equivalence or destination ceilings.
+claims a fresh supervisor process, remote hosts, a live model provider,
+canonical permission or joined ZPM installation qualification.
+
+Full-contract component tests use fixture image/runtime observations, real
+SQLite journals and actual dispatcher/child-supervisor paths. They cover
+restricted encoding, policy projection, approval loss/reapproval, atomic ceiling
+reservation, durable never-admitted replay, admitted-but-unsent uncertainty,
+HTTP shapes and closure before/after local root and child admission. They do
+not replace the real Docker gate or downstream compatible-version acceptance.
 
 The tests cover concurrent ensure, lost launch/stop replies, recovery after
 crash before dispatch, scope isolation, operation conflicts, uncertain launch,
