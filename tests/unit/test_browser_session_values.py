@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from src.browser_session.control import SessionControl
-from src.browser_session.types import SessionDenied, SessionSpec, SessionUnavailable, integer, origin
+from src.browser_session.types import Limits, SessionDenied, SessionSpec, SessionUnavailable, integer, origin
 from tests.unit.test_browser_session_control import Clock, FakeAdapter
 
 
@@ -25,6 +25,11 @@ class SessionValueTests(unittest.TestCase):
         with self.assertRaises(SessionDenied):
             integer(-(2**53), -(2**53 + 100), 0)
         self.assertEqual(integer(2**53 - 1, 0, 2**53 + 100), 2**53 - 1)
+
+    def test_operation_cap_reserves_both_owner_and_host_stop_slots(self):
+        with self.assertRaises(SessionDenied):
+            Limits(operations=1).validate()
+        self.assertEqual(Limits(operations=2).validate().operations, 2)
 
     def test_fixture_origins_have_one_browser_origin_spelling_and_no_ambiguous_hosts(self):
         for value in ("https://example.test:", "https://example.test:0", "https://example.test.",

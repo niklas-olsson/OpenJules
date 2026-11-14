@@ -113,6 +113,10 @@ document identity, increasing sequence and capture time. A document change
 increments its generation. The core retains only the latest frame and no
 per-observer frame queue. Old, oversized, too frequent, foreign or unrecognized
 observations are refused. Queued input also rechecks freshness before dispatch.
+Known-applied navigation invalidates the old observation immediately. Its
+outcome remains `applied`, while further input waits for a new authoritative
+observation captured at or after completion. A higher sequence alone cannot
+make a pre-navigation capture current.
 
 | Default bound | Value |
 | --- | --- |
@@ -123,7 +127,8 @@ observations are refused. Queued input also rechecks freshness before dispatch.
 | Semantic actions | 20 |
 | Raw inputs / one-second rate | 200 / 20 |
 | Queued intents / in-flight action | 8 / 1 |
-| Operations / events / current grants | 256 / 1,024 / 16 |
+| Total operation records, including reserved Stop slots | 256 |
+| Events / current grants | 1,024 / 16 |
 | JPEG bytes / frame age / frame interval | 524,288 bytes / 2 seconds / 100 milliseconds |
 | Each action, fence or Stop wait | 3 seconds |
 | Total retained local bytes | 16 MiB, including metadata and replacement headroom |
@@ -177,7 +182,23 @@ audit failure, so a different Stop key cannot send another native Stop to the
 already confirmed adapter. A later process still reports LOST when that
 confirmation was not durably retained.
 Host supervisor operation IDs use a reserved `host.` prefix that clients cannot
-claim.
+claim. Ordinary intents stop two records below the total operation ceiling;
+owner Stop requests stop one below it. The final slot is reserved for the fixed
+host lifetime Stop. The smallest supported operation ceiling is two, permitting
+one owner Stop plus one host Stop and no ordinary actions. These reservations
+remain inside the declared total cap.
+
+Confirmed Stop converts still-dispatched actions to `unknown`; teardown alone
+does not say whether their earlier effects occurred. An exact late action
+outcome can improve its original record without restoring ownership or
+rewriting the already sealed event bytes.
+
+`stop_operation(token, operation_id)` is a read-only owner Stop status path. It
+requires the still-valid Stop right and an existing original Stop by that owner;
+an absent ID or an ordinary action refuses. Polling neither creates nor repeats
+an effect, and does not grant observation of other actions or results. Late
+teardown evidence is read from the same original record, including when the
+owner's observation right expired or durable audit storage failed.
 
 ## Retention and restart
 

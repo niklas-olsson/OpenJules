@@ -199,6 +199,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         for number in range(20):
             self.submit("navigate-" + str(number), action="navigate", parameters={"url": "https://two.example/item"})
             await self.core.execute_next()
+            self.clock.advance(2)
+            self.core.publish_observation(self.adapter.observation())
         self.assertEqual(self.core._state["semantic_count"], 20)
         with self.assertRaisesRegex(SessionDenied, "action_budget_exhausted"):
             self.submit("semantic-overflow", action="navigate", parameters={"url": "https://one.example/item"})

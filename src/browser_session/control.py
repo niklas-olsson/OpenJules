@@ -96,6 +96,7 @@ class SessionControl:
         self._served = {}
         self._last_sequence = -1
         self._last_frame_mono = float("-inf")
+        self._observation_floor_ms = state["created_at_ms"]
         self._raw_times = []
         self._wall_floor = integer(clock.wall_ms())
         self._mono_floor = clock.monotonic()
@@ -437,7 +438,7 @@ class SessionControl:
             raise SessionDenied("stale_observation")
         identifier(observation.document_id)
         integer(observation.sequence, self._last_sequence + 1)
-        integer(observation.captured_at_ms, max(0, now - self.spec.limits.frame_age_ms), now)
+        integer(observation.captured_at_ms, max(self._observation_floor_ms, now - self.spec.limits.frame_age_ms), now)
         integer(observation.width, 1, 4096)
         integer(observation.height, 1, 4096)
         if (type(observation.jpeg) is not bytes or not 4 <= len(observation.jpeg) <= self.spec.limits.frame_bytes
@@ -472,6 +473,7 @@ class SessionControl:
     def _install_frame(self, observation, metadata, mono):
         self._last_sequence = observation.sequence
         self._last_frame_mono = mono
+        self._observation_floor_ms = observation.captured_at_ms
         self._frame = (metadata, observation.jpeg)
         self._served.clear()
 
@@ -689,7 +691,7 @@ class SessionControl:
 
     def _finish_action(self, ticket, outcome):
         with self._lock:
-            if self._closed or self._state["mode"] in _TERMINAL:
+            if self._closed or self._state["mode"] == "lost":
                 return
             state = deepcopy(self._state)
             record = state["operations"][ticket.operation_id]
@@ -699,6 +701,12 @@ class SessionControl:
             if record["state"] == result:
                 return
             record["state"] = result
+            if (result == "applied" and ticket.action == "navigate"
+                    and state["control_generation"] == ticket.control_generation):
+                # Applied navigation is known, while its current document/frame
+                # is unavailable until a subsequent authoritative observation.
+                self._frame, self._served = None, {}
+                self._observation_floor_ms = max(self._observation_floor_ms, self.clock.wall_ms())
             if result != "unknown" and state["inflight"] == ticket.operation_id:
                 state["inflight"] = None
             expired = self.clock.monotonic() >= ticket.deadline_monotonic
@@ -721,6 +729,19 @@ class SessionControl:
                 raise SessionDenied("operation_absent")
             result = deepcopy(record)
             # Adapter deadlines and grant references are private interlock data.
+            result.pop("ticket")
+            return result
+
+    def stop_operation(self, token, operation_id):
+        """Read one original owner Stop without observation or another effect."""
+        with self._lock:
+            auth = self.authorize(token, "stop")
+            identifier(operation_id)
+            record = self._state["operations"].get(operation_id)
+            if (record is None or record["request"]["kind"] != "stop"
+                    or record["request"]["actor_id"] != auth.actor_id):
+                raise SessionDenied("operation_absent")
+            result = deepcopy(record)
             result.pop("ticket")
             return result
 
@@ -766,6 +787,7 @@ class SessionControl:
             self._event(state, "quiescing", operation_id, auth.actor_id)
             self._save(state)
             self._frame, self._served = None, {}
+            self._observation_floor_ms = max(self._observation_floor_ms, self.clock.wall_ms())
             task = self._scheduled(self._invoke_fence(ticket))
             if task is None:
                 return self._complete_transfer(ticket, kind, None)
@@ -883,7 +905,8 @@ class SessionControl:
             if (self._closed or self.adapter is None or self._teardown_confirmed or self._state["mode"] in _TERMINAL
                     or (self._stop_task is not None and not self._stop_task.done())):
                 raise SessionDenied("stop_unavailable")
-            if len(self._state["operations"]) >= self.spec.limits.operations:
+            maximum = self.spec.limits.operations - (0 if key.startswith("host.") else 1)
+            if len(self._state["operations"]) >= maximum:
                 raise SessionDenied("operation_budget_exhausted")
             _, mono = self._clock(stop=True)
             state = deepcopy(self._state)
@@ -955,6 +978,10 @@ class SessionControl:
             result = receipt.state if valid else "unknown"
             if result == "confirmed":
                 self._teardown_confirmed = True
+                for original_key, original in state["operations"].items():
+                    if original["request"]["kind"] == "action" and original["state"] == "dispatched":
+                        original["state"] = "unknown"
+                        self._event(state, "unknown", original_key, original["request"]["actor_id"], emergency=True)
             record["state"] = result
             if result == "confirmed" or state["control_generation"] == ticket.control_generation:
                 state["mode"], state["actor_id"] = ("stopped" if result == "confirmed" else "fenced"), None

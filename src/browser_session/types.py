@@ -137,7 +137,7 @@ class Limits:
                 "action_timeout_ms": 10000, "fence_timeout_ms": 10000,
                 "stop_timeout_ms": 10000, "result_bytes": 16777216}
         for key, maximum in caps.items():
-            integer(getattr(self, key), 1, maximum)
+            integer(getattr(self, key), 2 if key == "operations" else 1, maximum)
         if self.events < self.operations + 8:
             raise SessionDenied("event_budget_too_small")
         return self

@@ -295,3 +295,131 @@ async def test_temporary_cleanup_error_fences_mutation_and_preserves_emergency_s
     assert result["state"] == "confirmed" and result["audit_persisted"] is False
     assert len(adapter.stops) == 1
     assert core._state["mode"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_applied_navigation_requires_new_authoritative_observation_before_more_input(session):
+    core, adapter, clock, driver, human = session
+    original = request(core, driver, "navigate")
+    original.update(action="navigate", parameters={"url": "https://two.example/item"})
+    core.submit(driver, **original)
+    core.submit(driver, **request(core, driver, "old-click"))
+    assert (await core.execute_next())["state"] == "applied"
+    assert core.operation(human, "navigate")["state"] == "applied"
+    assert core.observe(driver)["frame"] is None
+    assert (await core.execute_next())["state"] == "not_applied"
+    assert [ticket.operation_id for ticket in adapter.executions] == ["navigate"]
+    clock.advance(2)
+    core.publish_observation(adapter.observation(document="post-navigation-document"))
+    core.submit(driver, **request(core, driver, "fresh-click"))
+    assert (await core.execute_next())["state"] == "applied"
+    assert [ticket.operation_id for ticket in adapter.executions] == ["navigate", "fresh-click"]
+    assert adapter.executions[-1].document_id == "post-navigation-document"
+    assert adapter.executions[-1].document_generation == 1
+
+
+@pytest.mark.asyncio
+async def test_navigation_cannot_reuse_a_new_sequence_captured_before_navigation_completion(session):
+    core, adapter, clock, driver, _ = session
+    stale = adapter.observation()
+    original = request(core, driver)
+    original.update(action="navigate", parameters={"url": "https://two.example/item"})
+    core.submit(driver, **original)
+    clock.advance(1)
+    assert (await core.execute_next())["state"] == "applied"
+    with pytest.raises(SessionDenied):
+        core.publish_observation(stale)
+    assert core.observe(driver)["frame"] is None
+
+
+@pytest.mark.asyncio
+async def test_original_stop_polling_uses_only_owner_stop_right_and_never_creates_an_operation(session):
+    core, adapter, clock, driver, _ = session
+    owner = core.issue_grant("human", {"observe": clock.wall + 1, "stop": clock.wall + 1000})
+    observer = core.issue_grant("observer", {"observe": clock.wall + 1000})
+    core.submit(driver, **request(core, driver, "ordinary-action"))
+    adapter.stop_gate = asyncio.Event()
+    assert (await core.stop(owner, "original-stop"))["state"] == "unknown"
+    clock.advance(2)
+    with pytest.raises(SessionDenied):
+        core.observe(owner)
+    for key in ("ordinary-action", "absent-stop"):
+        with pytest.raises(SessionDenied, match="operation_absent"):
+            core.stop_operation(owner, key)
+    with pytest.raises(SessionDenied):
+        core.stop_operation(observer, "original-stop")
+    original_bytes = core.store.journal.read_bytes()
+    for _ in range(3):
+        result = core.stop_operation(owner, "original-stop")
+        assert result["state"] == "unknown" and "ticket" not in result
+    assert core.store.journal.read_bytes() == original_bytes
+    assert len(adapter.stops) == 1 and not adapter.executions
+    adapter.stop_gate.set()
+    await core._stop_task
+    await asyncio.sleep(0)
+    assert core.stop_operation(owner, "original-stop")["state"] == "confirmed"
+    assert len(adapter.stops) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_only_polling_preserves_known_confirmation_when_audit_storage_failed(session):
+    core, adapter, _, _, human = session
+    with patch.object(core.store, "save", side_effect=SessionUnavailable()):
+        result = await core.stop(human, "original-stop")
+        assert result["state"] == "confirmed" and result["audit_persisted"] is False
+        polled = core.stop_operation(human, "original-stop")
+        assert polled["state"] == "confirmed" and polled["audit_persisted"] is False
+        assert "ticket" not in polled
+    assert len(adapter.stops) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_preserves_unknown_then_accepts_exact_late_action_knowledge_without_resuming(session):
+    core, adapter, _, driver, human = session
+    adapter.execute_gate = asyncio.Event()
+    core.submit(driver, **request(core, driver))
+    waiting = asyncio.create_task(core.execute_next())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(adapter.executions) == 1
+    assert (await core.stop(human, "original-stop"))["state"] == "confirmed"
+    assert core.operation(human, "original")["state"] == "unknown"
+    sealed = core.read_result(human, "events.json")
+    adapter.execute_gate.set()
+    assert (await waiting)["state"] == "applied"
+    assert core.operation(human, "original")["state"] == "applied"
+    assert core.observe(human)["mode"] == "stopped"
+    assert core.read_result(human, "events.json") == sealed
+    assert len(adapter.executions) == 1 and len(adapter.stops) == 1
+
+
+@pytest.mark.asyncio
+async def test_owner_stop_keys_cannot_exhaust_the_single_reserved_host_lifetime_record(tmp_path):
+    tmp_path.chmod(0o700)
+    clock = Clock()
+    adapter = FakeAdapter(clock)
+    spec = SessionSpec("session", "context", "target", "document", "driver", "human",
+        ("https://one.example", "https://two.example"), (), clock.wall + 300_000, clock.wall + 600_000,
+        Limits(operations=2))
+    core = SessionControl.create(tmp_path / "small", spec, adapter, clock)
+    adapter.core = core
+    try:
+        human = core.issue_grant("human", {"stop": clock.wall + 500_000})
+        adapter.stop_state = "unknown"
+        assert (await core.stop(human, "first-stop"))["state"] == "unknown"
+        with pytest.raises(SessionDenied, match="operation_budget_exhausted"):
+            await core.stop(human, "second-owner-stop")
+        clock.advance(300_000)
+        adapter.stop_state = "confirmed"
+        await core.supervise()
+        assert len(adapter.stops) == 2
+        assert adapter.stops[-1].operation_id == "host.browser-lifetime-expired"
+        assert len(core._state["operations"]) == 2
+        assert core.stop_operation(human, "host.browser-lifetime-expired")["state"] == "confirmed"
+        await core.supervise()
+        assert len(adapter.stops) == 2
+        core.close()
+        core = SessionControl.reopen(tmp_path / "small", clock)
+        assert core._state["mode"] == "lost"
+    finally:
+        core.close()
