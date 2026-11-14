@@ -162,6 +162,82 @@ def test_original_process_exit_during_io_is_an_explicit_exclusion(tmp_path, monk
     assert resource_summary([result])["complete_observations"] is True
 
 
+@pytest.mark.parametrize("terminal", ["zombie", "absent"])
+def test_failed_io_can_confirm_original_exit_after_first_live_recheck(tmp_path, monkeypatch, terminal):
+    import tools.managed_costs as costs
+    proc, work = tmp_path / "proc", tmp_path / "work"
+    proc.mkdir(); work.mkdir()
+    fake_proc(proc, 10, 1, 101, 2)
+    fake_proc(proc, 11, 10, 102, 3)
+    original_stat, original_read = costs.proc_stat, Path.read_text
+    child_reads, now, delays = 0, [0], []
+
+    def transition(pid, root):
+        nonlocal child_reads
+        value = original_stat(pid, root)
+        if pid == 11:
+            child_reads += 1
+            if child_reads == 3:
+                if terminal == "absent":
+                    for path in (proc / "11").iterdir():
+                        path.unlink()
+                    (proc / "11").rmdir()
+                    raise FileNotFoundError
+                value["state"] = "Z"
+        return value
+
+    def read(path, *args, **kwargs):
+        if path == proc / "11/io":
+            raise PermissionError(13, "PRIVATE_DETAIL_MUST_NOT_BE_EXPORTED")
+        return original_read(path, *args, **kwargs)
+
+    def advance(seconds):
+        delays.append(seconds)
+        now[0] += round(seconds * 1_000_000_000)
+
+    monkeypatch.setattr(costs, "proc_stat", transition)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(costs.time, "monotonic_ns", lambda: now[0])
+    monkeypatch.setattr(costs.time, "sleep", advance)
+    result = sample_owned(10, 101, work, proc=proc)
+    assert result["missing"] == [] and result["processes_departed_during_observation"] == 1
+    assert delays == [0.005] and {row["pid"] for row in result["processes"]} == {10}
+    diagnostic = result["process_read_diagnostics"][0]
+    assert diagnostic["pid"] == 11 and diagnostic["start_ticks"] == 102
+    assert diagnostic["error_code"] == "permission_denied" and diagnostic["errno"] == 13
+    assert diagnostic["first_identity"] == "same" and diagnostic["first_state"] == "S"
+    assert diagnostic["checks"] == 2 and diagnostic["confirmed_departed"] is True
+    assert diagnostic["last_identity"] == ("same" if terminal == "zombie" else "absent")
+    summary = resource_summary([result])
+    assert summary["process_read_diagnostics"][0]["observation_timestamp_ns"] == 5_000_000
+    assert "PRIVATE_DETAIL" not in json.dumps(summary)
+
+
+def test_live_unreadable_processes_share_one_finite_confirmation_budget(tmp_path, monkeypatch):
+    import tools.managed_costs as costs
+    proc, work = tmp_path / "proc", tmp_path / "work"
+    proc.mkdir(); work.mkdir()
+    fake_proc(proc, 10, 1, 101, 2)
+    fake_proc(proc, 11, 10, 102, 3, io=False)
+    fake_proc(proc, 12, 10, 103, 3, io=False)
+    now, delays = [0], []
+
+    def advance(seconds):
+        delays.append(seconds)
+        now[0] += round(seconds * 1_000_000_000)
+
+    monkeypatch.setattr(costs.time, "monotonic_ns", lambda: now[0])
+    monkeypatch.setattr(costs.time, "sleep", advance)
+    result = sample_owned(10, 101, work, proc=proc)
+    assert now[0] == 50_000_000 and delays == [0.005] * 10
+    assert result["missing"] == ["owned_process_observation_unavailable"]
+    assert result["processes_departed_during_observation"] == 0
+    assert [row["checks"] for row in result["process_read_diagnostics"]] == [11, 1]
+    assert all(row["last_identity"] == "same" and not row["confirmed_departed"]
+               for row in result["process_read_diagnostics"])
+    assert resource_summary([result])["complete_observations"] is False
+
+
 @pytest.mark.parametrize("replacement", ["reused_zombie", "unreadable"])
 def test_failed_io_cannot_be_excused_by_reused_or_unreadable_process(tmp_path, monkeypatch, replacement):
     import tools.managed_costs as costs
@@ -188,6 +264,12 @@ def test_failed_io_cannot_be_excused_by_reused_or_unreadable_process(tmp_path, m
     assert result["processes_departed_during_observation"] == 0
     assert result["missing"] == ["owned_process_observation_unavailable"]
     assert resource_summary([result])["complete_observations"] is False
+    diagnostic = result["process_read_diagnostics"][0]
+    assert diagnostic["confirmed_departed"] is False
+    if replacement == "reused_zombie":
+        assert diagnostic["checks"] == 1 and diagnostic["last_identity"] == "reused"
+    else:
+        assert diagnostic["last_identity"] == "unreadable"
 
 
 def test_reused_root_pid_is_not_observed_as_the_owned_process(tmp_path):

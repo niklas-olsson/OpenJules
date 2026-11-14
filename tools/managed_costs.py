@@ -35,6 +35,11 @@ if __name__ == "__main__":
 
 MIB = 1024 * 1024
 MAX_REPORT = 16 * MIB
+EXIT_CONFIRMATION_NS = 50_000_000
+EXIT_CONFIRMATION_INTERVAL_NS = 5_000_000
+EXIT_CONFIRMATION_CHECKS = 11
+MAX_PROCESS_DIAGNOSTICS = 16
+MAX_SUMMARY_PROCESS_DIAGNOSTICS = 256
 STOP = threading.Event()
 _OWNERSHIP_LOCK = threading.Lock()
 
@@ -63,16 +68,51 @@ def proc_stat(pid, proc=Path("/proc")):
             "system_ticks": int(fields[12]), "rss_bytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE")}
 
 
-def _confirmed_process_departure(original, proc):
-    """A failed live read is an exclusion only after an original-exit witness."""
-    try:
-        current = proc_stat(original["pid"], proc)
-    except FileNotFoundError:
-        return not (proc / str(original["pid"])).exists()
-    except (OSError, ValueError):
-        return False
-    return (current["start_ticks"] == original["start_ticks"]
-            and current["state"] in {"Z", "X", "x"})
+def _confirmed_process_departure(original, proc, deadline_ns):
+    """Bounded confirmation after an original read fails, never a live omission.
+
+    Linux can deny /proc/io after exit begins but before the same task is a
+    zombie. Rechecking identity can establish that departure without treating
+    an unreadable live process as zero. The caller shares one observation budget.
+    """
+    started = time.monotonic_ns()
+    result = {"checks": 0, "first_identity": None, "first_state": None,
+              "last_identity": None, "last_state": None, "confirmed_departed": False}
+    while True:
+        identity, state = "unreadable", None
+        try:
+            current = proc_stat(original["pid"], proc)
+        except FileNotFoundError:
+            try:
+                if not (proc / str(original["pid"])).exists():
+                    identity = "absent"
+            except OSError:
+                pass
+        except (OSError, ValueError):
+            pass
+        else:
+            identity = "same" if current["start_ticks"] == original["start_ticks"] else "reused"
+            state = current["state"] if current["state"] in {"R", "S", "D", "Z", "T", "t", "X", "x", "K", "W", "P", "I"} else "other"
+        result["checks"] += 1
+        if result["checks"] == 1:
+            result.update(first_identity=identity, first_state=state)
+        result.update(last_identity=identity, last_state=state)
+        result["confirmed_departed"] = identity == "absent" or identity == "same" and state in {"Z", "X", "x"}
+        now = time.monotonic_ns()
+        if (result["confirmed_departed"] or identity == "reused"
+                or result["checks"] >= EXIT_CONFIRMATION_CHECKS or now >= deadline_ns):
+            result["elapsed_ns"] = now - started
+            return result
+        time.sleep(min(EXIT_CONFIRMATION_INTERVAL_NS, deadline_ns - now) / 1_000_000_000)
+
+
+def _process_read_diagnostic(original, stage, error, confirmation):
+    code = ("permission_denied" if isinstance(error, PermissionError) else
+            "not_found" if isinstance(error, FileNotFoundError) else
+            "os_error" if isinstance(error, OSError) else "invalid_data")
+    return {"pid": original["pid"], "start_ticks": original["start_ticks"],
+            "read_stage": stage, "error_code": code,
+            "errno": error.errno if isinstance(error, OSError) else None, **confirmation}
 
 
 def _cgroup(pid):
@@ -259,6 +299,8 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
     """
     missing = []
     departed = 0
+    process_diagnostics, process_diagnostics_omitted = [], 0
+    confirmation_deadline_ns = None
     rows = {}
     for entry in proc.iterdir():
         if not entry.name.isdecimal():
@@ -289,15 +331,18 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
         first = rows[pid]
         if first["state"] in {"Z", "X", "x"}:
             continue
+        stage = "cgroup"
         try:
             cg = _cgroup(pid) if proc == Path("/proc") else None
             if cg in container_groups:
                 continue
+            stage = "io"
             io = {}
             for line in (proc / str(pid) / "io").read_text().splitlines():
                 key, value = line.split(":", 1)
                 if key in {"rchar", "wchar", "read_bytes", "write_bytes"}:
                     io[key] = int(value.strip())
+            stage = "stat_after_io"
             last = proc_stat(pid, proc)
             if first["start_ticks"] != last["start_ticks"]:
                 raise ValueError("pid_reused")
@@ -305,11 +350,18 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
                 departed += 1
             else:
                 processes.append({key: last[key] for key in ("pid", "start_ticks", "rss_bytes", "user_ticks", "system_ticks")} | {"io": io})
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
             # A process can become a zombie while /proc/io is being read.
             # Only a confirmed original exit excludes it; a live, reused or
             # unreadable identity remains missing, never a zero measurement.
-            if _confirmed_process_departure(first, proc):
+            if confirmation_deadline_ns is None:
+                confirmation_deadline_ns = time.monotonic_ns() + EXIT_CONFIRMATION_NS
+            confirmation = _confirmed_process_departure(first, proc, confirmation_deadline_ns)
+            if len(process_diagnostics) < MAX_PROCESS_DIAGNOSTICS:
+                process_diagnostics.append(_process_read_diagnostic(first, stage, error, confirmation))
+            else:
+                process_diagnostics_omitted += 1
+            if confirmation["confirmed_departed"]:
                 departed += 1
             else:
                 missing.append("owned_process_observation_unavailable")
@@ -368,6 +420,8 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
             "container_charge_bytes": sum(row["memory_current_bytes"] for row in container_samples),
             "pending_container_memory_reservation_bytes": pending_charge,
             "processes_departed_during_observation": departed,
+            "process_read_diagnostics": process_diagnostics,
+            "process_read_diagnostics_omitted": process_diagnostics_omitted,
             "containers_terminal_during_observation": container_departures,
             "missing": sorted(set(missing))}
 
@@ -377,6 +431,8 @@ def resource_summary(samples):
     sums = [row["host_rss_bytes"] + row["container_charge_bytes"] for row in good]
     complete = bool(good) and not any(row["missing"] for row in good)
     gaps = [last["timestamp_ns"] - first["timestamp_ns"] for first, last in zip(good, good[1:])]
+    diagnostics = [diagnostic | {"observation_timestamp_ns": row["timestamp_ns"]}
+                   for row in good for diagnostic in row.get("process_read_diagnostics", [])]
     return {"sample_count": len(good), "target_sampling_interval_seconds": 0.1,
             "actual_observation_gap_ns": {"minimum": min(gaps, default=None),
                                            "median": statistics.median(gaps) if gaps else None,
@@ -388,6 +444,12 @@ def resource_summary(samples):
             "complete_observations": complete,
             "observations_with_missing_reads": sum(bool(row["missing"]) for row in good),
             "observed_process_departures": sum(row.get("processes_departed_during_observation", 0) for row in good),
+            "process_read_diagnostics": diagnostics[:MAX_SUMMARY_PROCESS_DIAGNOSTICS],
+            "process_read_diagnostics_omitted": sum(row.get("process_read_diagnostics_omitted", 0) for row in good)
+                + max(0, len(diagnostics) - MAX_SUMMARY_PROCESS_DIAGNOSTICS),
+            "process_exit_confirmation": {"shared_budget_ns_per_observation": EXIT_CONFIRMATION_NS,
+                                           "interval_ns": EXIT_CONFIRMATION_INTERVAL_NS,
+                                           "maximum_checks_per_failed_read": EXIT_CONFIRMATION_CHECKS},
             "observed_container_departures": sum(row.get("containers_terminal_during_observation", 0) for row in good),
             "scopes": ["simultaneous approximate descendant RSS, not summed individual peaks",
                        "separate owned cgroup-v2 memory.current; excludes container PIDs from host RSS",

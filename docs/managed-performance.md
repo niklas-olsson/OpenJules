@@ -97,7 +97,13 @@ Unreadable live owned observations are explicit missing data, not zero memory;
 persistent inability to observe owned resources closes further admission.
 When a process exits during a read, an absent original PID or the same PID/start
 identity in a terminal state is an explicit departure exclusion. A reused PID
-or an unreadable identity remains missing.
+or an unreadable live identity remains missing. Only after an original process
+read fails, confirmation may recheck that identity at 5 ms spacing, up to eleven
+checks, within one 50 ms budget shared by the entire observation. The actual
+sampling gap includes this cost. No terminal observation means the read remains
+missing. Bounded diagnostics retain PID/start identity, read stage, closed error
+code/errno, first and last confirmation states, check count and elapsed time;
+they contain no paths or exception text. Diagnostic truncation is explicit.
 Before an installed acquisition returns an exact container identity, its
 512 MiB configured ceiling is reserved for cap enforcement. That reservation
 is reported separately and is not a measured cgroup peak.
@@ -187,7 +193,69 @@ censored and unrun samples
 are preserved. The report's `complete` field is the execution inventory result,
 not approval of an optimization or release.
 
-No native measurement result or implementation-language decision is claimed by
-this source delivery. After the declared run, record dominant observed costs,
-limitations and an evidenced change/no-change decision. A proposed production
-optimization requires its own correctness/recovery review and qualification.
+### Incomplete qualification checkpoints
+
+The failed trials remain separate, with compact durable projections and original
+ZIP/member digests. Neither trial completes the investigation or supports an
+implementation-language or optimization decision.
+
+| Trial | Measured revision | Native result | Retained evidence |
+| --- | --- | --- | --- |
+| [A, run 43647286746](https://github.com/niklas-olsson/OpenJules/actions/runs/43647286746) | `4652b02a27991666ee609c9089ce7084d953f1c6` | 16 PASS, 1 FAIL, 49 NOT_RUN; 213.939 seconds | [Trial A projection](managed-cost-evidence/trial-a.json) |
+| [B, run 43649036330](https://github.com/niklas-olsson/OpenJules/actions/runs/43649036330) | `274d897e65e2615ea1628513f0a5e3fc649fd0c1` | 64 PASS, 2 FAIL; all 66 ran in 372.633 seconds | [Trial B projection](managed-cost-evidence/trial-b.json) |
+
+Trial A reached six installed idle-window spans, but its helper incorrectly
+required physical cleanup of a never-dispatched worker. Its failed result did
+not retain the detailed window payloads or the cleanup command's response, so
+the exact native refusal was not observed in that artifact. The runtime's source
+and documented contract deliberately retain such idle resources. The corrected
+helper records the actual retained receipt and complete windows before reporting
+the final known custody disposition.
+
+Trial B completed that corrected installed lane: all six windows, zero enrolled
+tasks, zero inference, zero reserved capacity and the original stopped resources
+retained. `two-workers` sample 1 and `publication-delay20` sample 3 each had one
+unreadable process observation in the final resource row. Their function-level
+correctness and custody checks passed, but resource measurements were incomplete
+and both samples remain failed. Those reports did not retain enough diagnostic
+detail to establish the exact read-failure cause.
+
+A separate bounded local reproduction with sixteen 64 MiB Python processes
+observed `PermissionError`/errno 13 from `/proc/io` while the same PID/start still
+reported a running state during exit. Fourteen reported the same-identity zombie
+state after 5 ms; two still reported running at that point. This supports the
+bounded confirmation correction described above. It does not retrospectively
+prove either failed trial's cause or relabel their observations. A fresh complete
+trial is still required. Any production optimization needs its own
+correctness/recovery review and qualification.
+
+### Durable evidence projection
+
+`tools/managed_cost_evidence.py` preserves one original trial as compact JSON
+before the workflow artifact expires. It reads only the three named JSON members
+without extracting the archive, verifies the expected ZIP digest, and binds the
+report's revision, production tree, manifest, recipes, image IDs and component
+pins to the local Git objects and prerequisite evidence. The original public
+Actions link and exact ZIP/member byte digests remain in the output.
+
+```sh
+python -m tools.managed_cost_evidence \
+  --archive original-artifact.zip --archive-sha256 VERIFIED_ZIP_SHA256 \
+  --source-checkout . --trial trial-a \
+  --artifact-url https://github.com/niklas-olsson/OpenJules/actions/runs/RUN_ID \
+  --output new-trial-a-evidence.json
+```
+
+All 66 sample identities, original ordering and statuses remain. Raw sample wall
+and CPU values, counters, correctness/custody facts, capture hashes, environment,
+resource maxima, observation gaps and missing evidence remain available for
+independent comparison. Individual process timelines are omitted. Phase intervals
+become per-phase count/outcome and wall/thread-CPU aggregates; these remain
+inclusive and cannot be added into a phase partition. Unknown timing values stay
+missing. Trials are never pooled and a failed trial is never relabeled complete.
+
+The command refuses changed structural schemas and common private path or token
+markers. Optional `--forbid-literal` checks add review-specific private terms
+without retaining them in the output. This screening supplements independent
+publication review; it does not establish that arbitrary input is safe. The
+projector adds no performance conclusion or acceptance decision.
