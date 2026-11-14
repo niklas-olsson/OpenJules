@@ -227,7 +227,9 @@ class PairingTests(unittest.TestCase):
             self.clock.mono = value
             with self.assertRaises(PairingDenied):
                 self.broker.issue_code(self.token, self.clock.wall + 10_000)
-        for origin in ("http://control.example", "https://control.example/", "https://user@control.example", "https://CONTROL.example", "https://control.example:443"):
+        for origin in ("http://control.example", "https://control.example/", "https://user@control.example",
+                       "https://CONTROL.example", "https://control.example:443", "https://control.example:",
+                       "https://[::1]:", "https://control\\.example", "https://control.example\\foreign"):
             with self.subTest(origin=origin), self.assertRaises(PairingDenied):
                 PairingBroker(self.authority, origin, clock=Clock())
         for limits in ({"cookie_ttl_ms": float("inf")}, {"pending_codes": True}, {"issued_codes": 129}):
@@ -248,18 +250,52 @@ class PairingTests(unittest.TestCase):
         with patch.object(self.authority, "authorize", side_effect=late), self.assertRaises(PairingDenied):
             self.authorize(alias, reply.csrf_token)
 
-    def test_host_revocation_delegates_to_core_and_a_failure_keeps_cookie_unavailable(self):
+    def test_host_revocation_delegates_to_core_and_fences_original_grant(self):
         _, reply, alias = self.pair()
         self.broker.revoke(alias)
         self.assertEqual(self.authority.revocations, [self.token])
         with self.assertRaises(PairingDenied):
             self.authorize(alias, reply.csrf_token)
         self.authority.revoked = False
-        _, reply, alias = self.pair()
+        with self.assertRaisesRegex(PairingDenied, "grant_revocation_pending"):
+            self.pair()
+
+    def test_unknown_revocation_fences_all_original_aliases_pending_codes_and_repairing(self):
+        _, first, first_alias = self.pair()
+        _, second, second_alias = self.pair(binding_right="stop")
+        code = self.broker.issue_code(self.token, self.clock.wall + 10_000)
         with patch.object(self.authority, "revoke", side_effect=RuntimeError(self.token)), self.assertRaisesRegex(PairingDenied, "revocation_unconfirmed"):
-            self.broker.revoke(alias)
+            self.broker.revoke(first_alias)
+        for reply, alias in ((first, first_alias), (second, second_alias)):
+            with self.assertRaises(PairingDenied):
+                self.authorize(alias, reply.csrf_token)
+            with self.assertRaises(PairingDenied):
+                self.broker.session(self.request("GET", "/session", alias=alias))
         with self.assertRaises(PairingDenied):
-            self.authorize(alias, reply.csrf_token)
+            self.broker.redeem(self.request(), json.dumps({"code": code}).encode())
+        before = len(self.authority.calls)
+        with self.assertRaisesRegex(PairingDenied, "grant_revocation_pending"):
+            self.broker.issue_code(self.token, self.clock.wall + 10_000, binding_right="stop")
+        self.assertEqual(len(self.authority.calls), before)
+        self.assertFalse(self.authority.revoked)
+        # An explicit different host-issued grant is independent of the intent.
+        self.token = "different_private_core_grant_" + "y" * 32
+        self.authority.token = self.token
+        _, reply, alias = self.pair()
+        self.assertEqual(self.authorize(alias, reply.csrf_token).grant_token, self.token)
+
+    def test_redemption_rechecks_a_shortened_authorization_after_a_slow_authority(self):
+        code = self.broker.issue_code(self.token, self.clock.wall + 10_000)
+        original = self.authority.authorize
+        def late(token, right):
+            authorization = original(token, right)
+            shortened = Authorization(authorization.actor_id, authorization.session_id,
+                authorization.context_id, authorization.target_id, right, self.clock.wall + 10)
+            self.clock.advance(11)
+            return shortened
+        with patch.object(self.authority, "authorize", side_effect=late), self.assertRaisesRegex(PairingDenied, "session_unavailable"):
+            self.broker.redeem(self.request(), json.dumps({"code": code}).encode())
+        self.assertEqual(self.broker._sessions, {})
 
     def test_finite_pending_session_issuance_and_redemption_limits_are_enforced(self):
         self.broker = PairingBroker(self.authority, "https://control.example:8443", clock=self.clock,

@@ -151,7 +151,8 @@ def _origin(value):
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
                 or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
                 or parsed.port in {0, 443} or parsed.netloc != parsed.netloc.lower()
-                or value != "https://" + parsed.netloc or "%" in parsed.netloc):
+                or value != "https://" + parsed.netloc or "%" in parsed.netloc
+                or "\\" in parsed.netloc or parsed.netloc.endswith(":")):
             raise PairingDenied("invalid_origin_configuration")
         return value, parsed.netloc
     except ValueError:
@@ -232,6 +233,10 @@ class PairingBroker:
         self._codes: dict[str, _Pending] = {}
         self._sessions: dict[str, _Session] = {}
         self._secret_hashes: set[str] = set()
+        # Only a grant that already consumed an issued code can enter this set,
+        # so its size is bounded by issued_codes. An unconfirmed core revocation
+        # never permits another alias or pairing code for the original grant.
+        self._revoked_grants: set[str] = set()
         self._issued = self._attempts = 0
         self._last_monotonic = -1.0
 
@@ -252,6 +257,8 @@ class PairingBroker:
     def _authorize(self, token, right, identity=None):
         if type(right) is not str or right not in RIGHTS:
             raise PairingDenied("invalid_purpose")
+        if _digest(token) in self._revoked_grants:
+            raise PairingDenied("grant_revocation_pending")
         try:
             authorized = self._authority.authorize(token, right)
         except Exception:
@@ -325,6 +332,7 @@ class PairingBroker:
                     or wall >= pending.cookie_expires_at_ms or mono >= pending.cookie_deadline):
                 del self._codes[_digest(code)]
                 raise PairingDenied("pairing_unavailable")
+            self._confirmed(pending, authorized)
             alias, csrf = self._secret(pending.grant_token), self._secret(pending.grant_token)
             record = _Session(pending.grant_token, csrf, pending.identity, pending.binding_right,
                               pending.cookie_expires_at_ms, pending.cookie_deadline)
@@ -374,13 +382,23 @@ class PairingBroker:
             return AuthenticatedRequest(record.grant_token, authorized)
 
     def revoke(self, cookie_alias: str) -> None:
-        """Host-only revocation; it never arises implicitly from a read."""
+        """Host-only revocation, locally fencing every alias of the same grant.
+
+        The local intent survives an unknown core outcome for this process's
+        lifetime. Only a genuinely different host-issued grant may pair again.
+        """
         if type(cookie_alias) is not str or not SECRET.fullmatch(cookie_alias):
             raise PairingDenied("session_unavailable")
         with self._lock:
-            record = self._sessions.pop(_digest(cookie_alias), None)
+            record = self._sessions.get(_digest(cookie_alias))
             if record is None:
                 raise PairingDenied("session_unavailable")
+            grant_digest = _digest(record.grant_token)
+            self._revoked_grants.add(grant_digest)
+            for values in (self._sessions, self._codes):
+                for key, bound in list(values.items()):
+                    if _digest(bound.grant_token) == grant_digest:
+                        del values[key]
             try:
                 self._authority.revoke(record.grant_token)
             except Exception:
