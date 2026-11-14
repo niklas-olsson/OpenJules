@@ -250,3 +250,54 @@ def test_invalid_managed_command_still_latches_legacy_refusal(tmp_path, monkeypa
     with pytest.raises(context.LegacyExecutionRefused):
         context.require_legacy_execution()
     assert "managed service configuration is invalid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", [
+    "unknown_flag", "unknown_flag_value", "extra_positional", "missing_required",
+    "missing_value", "empty",
+])
+def test_actual_cli_usage_errors_are_fixed_bounded_and_do_not_echo(tmp_path, case):
+    arguments = [
+        "--config", "/private/CONFIG_PATH_CANARY",
+        "--expected-contract", validation.CONTRACT,
+        "--expected-contract-digest", CONTRACT_DIGEST,
+    ]
+    if case == "unknown_flag":
+        arguments += ["--PRIVATE_FLAG_CANARY"]
+    elif case == "unknown_flag_value":
+        arguments += ["--PRIVATE_FLAG_CANARY", "PRIVATE_VALUE_CANARY" * 1024]
+    elif case == "extra_positional":
+        arguments += ["PRIVATE_POSITIONAL_CANARY"]
+    elif case == "missing_required":
+        arguments = arguments[:2]
+    elif case == "missing_value":
+        arguments += ["--scope-declarations"]
+    else:
+        arguments = []
+    # Run the actual CLI under the existing cold-import no-effects guards.
+    # Argument refusal must precede even the attempted read of the private path.
+    result = subprocess.run(
+        [sys.executable, "-B", str(ROOT / "tests/fixtures/installation_validation_probe.py"),
+         str(ROOT), *arguments], cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True, timeout=15,
+    )
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert result.stderr == b"installation_arguments_invalid\n"
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("argument", ["--help", "-h"])
+def test_actual_cli_help_remains_available_without_inputs(tmp_path, argument):
+    result = subprocess.run(
+        [sys.executable, "-B", str(ROOT / "tests/fixtures/installation_validation_probe.py"),
+         str(ROOT), argument], cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0 and result.stderr == b""
+    assert b"usage:" in result.stdout
+    for option in (b"--config", b"--expected-contract", b"--expected-contract-digest", b"--scope-declarations"):
+        assert option in result.stdout
+    assert list(tmp_path.iterdir()) == []

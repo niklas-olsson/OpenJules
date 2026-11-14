@@ -186,8 +186,14 @@ def _read_input(path, limit):
         return source.read(limit + 1)
 
 
+class _ValidationArgumentParser(argparse.ArgumentParser):
+    def error(self, _message):
+        # argparse's default diagnostics echo unknown arguments and their values.
+        self.exit(2, "installation_arguments_invalid\n")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _ValidationArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--expected-contract", required=True)
     parser.add_argument("--expected-contract-digest", required=True)
