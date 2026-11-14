@@ -1,7 +1,7 @@
 # Browser engine investigation
 
 This is the bounded standalone investigation from [#56](https://github.com/niklas-olsson/OpenJules/issues/56).
-Its result applies to one declared host and confinement route. It adds no browser
+Each result applies to its named host and confinement route. It adds no browser
 service, managed execution permission, browser-local claim or engine fallback.
 The distinct live-view and exclusive-input journey remains
 [#58](https://github.com/niklas-olsson/OpenJules/issues/58).
@@ -148,4 +148,114 @@ browser acquisition and enabled-sandbox probe before any download or page
 launch. The current receipt must remain unchanged. Missing installation alone
 does not establish an outside blocker when approved acquisition is feasible.
 No engine fork is justified, and production managed networking remains unchanged.
-The browser investigation and #58 stay open while that next step is assessed.
+At this preliminary checkpoint, the browser investigation and #58 remained open
+while that next step was assessed. The final hosted prerequisite decision is
+recorded below; it does not change this earlier receipt or its input-specific
+limitation.
+
+## Finite hosted prerequisite
+
+The [hosted manifest](browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json)
+selects one ordinary public GitHub `ubuntu-24.04` runner at image
+`20261111.370.1`, Ubuntu 24.04.5, kernel `7.0.0-1017-azure`, x86_64 and installed
+`/usr/bin/python3` 3.12.3. The source baseline is
+`7135d0988dff050df63acb89f75562dafccacf79`. Image, kernel or interpreter drift
+refuses before the experimental child as changed input. This check uses no
+downloaded candidate, package, browser, system browser or fixture service.
+
+The [reviewed helper](../tools/browser_host_preflight.py) starts at most one
+fixed `unshare --user --map-current-user --net` child, with original nonzero
+UID/GID and an environment containing only PATH and C locale. It observes
+separate user/network namespace identities, exact single-user/group mappings,
+only the loopback interface and no usable external routes. Inside that boundary
+it exercises three filesystem Unix socket objects with one fixed 16-byte
+payload. The parent samples the live owned child's PID, parent, start time and
+RSS before allowing its ordinary exit. It then records exit, reaping and socket
+cleanup. This IPC probe is a harness feasibility observation, not an established
+Chromium requirement; its refusal alone cannot reject Chromium.
+
+The host must provide at least 4 GiB available memory and 4 GiB free storage.
+The child has a five-second envelope, 128 MiB address-space limit, two CPU
+seconds, 32 file descriptors, no core dumps and a 1 MiB file-size limit. The
+probe/effects/cleanup envelope is 15 seconds including a three-second cleanup reserve;
+TERM and KILL each have one bounded one-second reap wait. Owned storage is at
+most 1 MiB, the report at most 64 KiB, two stdout messages at most 4 KiB each,
+and retained stderr at most 1 KiB. An interrupted spawn or uncertain reaping or
+path cleanup remains unknown. There is no automatic retry or alternate route.
+
+An installed `/usr/bin/timeout` supervisor, recorded with its executable digest,
+separately guards the whole helper CLI and final report writing: TERM at 14
+seconds and KILL one second later. The helper's `elapsed_ms` measures input
+checks, effects and child cleanup, excluding final serialization, writing and
+fsync. It fsyncs an initial incomplete/unknown marker before experimental effects
+and replaces it atomically only after writing and fsyncing the final receipt.
+The supervisor is distinct from the one namespace child. That child owns a
+separate session, so the supervisor's exit alone cannot prove child termination
+or reaping. Report classification requires both a complete matching receipt and
+an agreeing supervisor exit. Exit 124/137, missing/incomplete evidence, or a
+complete-looking observation contradicted by the supervisor remains UNKNOWN.
+The final text classification is ordinary evidence processing under the
+five-minute job limit, not another experimental child or a browser trial.
+
+The [workflow](../.github/workflows/browser-host-prerequisite.yml) is armed only
+by creating the previously unused branch
+`qualification/browser-host/run/<manifest-sha256>-<source-commit>`. Its new-branch
+event and first-attempt guards prevent ordinary review pushes and CI reruns from
+performing the probe. Before branch creation, independent review must bind the
+exact source commit, helper bytes, workflow bytes and complete manifest digest.
+The manifest hashes the helper and workflow; the activation branch binds the
+manifest and source commit without a self-referential hash. The workflow uses
+read-only repository permissions, pinned checkout without persisted credentials,
+no secrets, no package installation, a five-minute job timeout and one serial
+concurrency group. Pinned source checkout and action setup are ordinary CI
+network traffic outside the zero candidate-acquisition budget; their bytes are
+not measured by the helper. Reports are small text in run logs, with no binary
+artifact, cache, public endpoint or distribution change.
+
+### Recorded hosted outcome
+
+The [exact run record and retained evidence](browser-engine-evidence/2026-11-14-hosted-prerequisite-1/run.json)
+bind source `4cf1a2046006014f4865cbf1668bc660c1a941b4`, the unchanged manifest,
+helper and workflow to [run 43612769003, attempt 1](https://github.com/niklas-olsson/OpenJules/actions/runs/43612769003),
+job `132501202327`. Independent source review and the finite declaration were
+[recorded before activation](https://github.com/niklas-olsson/OpenJules/issues/56#issuecomment-6880159039).
+Both independent reviewers passed all 24 mocked checks. The native receipt and
+wrapper classification are retained as exact JSON bytes with original trailing
+newlines, alongside the complete job log. The receipt SHA-256 is
+`2f0d8cc5f236e84e75e1ab9e27cdf37638b90f6abdc3543b2e907e857f3bebfa`;
+the wrapper's recorded digest matches the retained bytes.
+
+| Observation | Actual result |
+| --- | --- |
+| Declared image/kernel/interpreter and nonroot identity | Matched; real/effective UID and GID 1001 |
+| Available host memory and storage | 15,750,107,136 and 91,533,541,376 bytes respectively |
+| Parent process RSS sample | 19,812,352 bytes; no child/browser memory sample |
+| Invoked `unshare` process | One; natural exit 1; 2.059 ms; reaped |
+| Exact native refusal | `unshare: write failed /proc/self/uid_map: Operation not permitted` |
+| Namespace handshake, Unix exchange, live child RSS | NOT_REACHED / NOT_OBSERVED |
+| Probe/effects/cleanup elapsed | 14.947 ms; excludes final receipt writing/fsync |
+| Wrapper and receipt | Complete REFUSED receipt; supervisor exit 3; no forced termination; socket path absent |
+| Acquisition, browser sessions, page actions, model calls, probe Internet connections | Zero |
+
+**Decision: no-go for this selected hosted nonroot mapping and confinement
+route.** The host denied the required UID-map write before the Python namespace
+child could report readiness. The receipt's `namespace_children: 1` counts the
+invoked owned process; it does not prove successful namespace creation. The
+failed workflow conclusion records this intentional prerequisite refusal. It is
+separate from ordinary source CI and supplies no browser qualification.
+
+This is the reproducible prerequisite no-go allowed by #56's investigation
+acceptance. Keep the current production networking restriction and the ordinary
+Chromium adapter recommendation from source comparison; this evidence supplies
+no measured engine advantage or reason to fork. No retry, alternative mapping,
+host-security change or new activation was performed. The frozen source and
+historical receipts remain unchanged.
+
+Browser acquisition, enabled Chromium sandbox verification, fixture execution,
+real client attachment, exclusive input, recovery and retained browser results
+remain NOT_RUN. #58's implementation acceptance remains outstanding. Its native
+journey requires an explicitly named host and confinement route meeting its
+nonroot isolation and enforced-egress requirements, followed by a separately reviewed finite
+matching-artifact acquisition and actual sandbox check. This host-specific denial
+does not reject Chromium or Kitesurf on other environments, and does not qualify
+any session implementation source by itself.

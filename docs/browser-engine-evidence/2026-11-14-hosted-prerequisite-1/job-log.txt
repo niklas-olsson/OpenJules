@@ -1,0 +1,155 @@
+﻿2026-11-14T15:55:32.1450277Z Current runner version: '2.338.2'
+2026-11-14T15:55:32.1476100Z ##[group]Runner Image Provisioner
+2026-11-14T15:55:32.1477035Z Hosted Compute Agent
+2026-11-14T15:55:32.1477705Z Version: 20261103.629
+2026-11-14T15:55:32.1478867Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-14T15:55:32.1479623Z Build Date: 2026-11-03T17:26:59Z
+2026-11-14T15:55:32.1480413Z Worker ID: {402d0166-e269-40e8-a26e-0b9ed76f5ac1}
+2026-11-14T15:55:32.1481125Z Region: centralus
+2026-11-14T15:55:32.1481713Z Cloud: Azure
+2026-11-14T15:55:32.1482378Z ##[endgroup]
+2026-11-14T15:55:32.1483898Z ##[group]Operating System
+2026-11-14T15:55:32.1484647Z Ubuntu
+2026-11-14T15:55:32.1485173Z 24.04.5
+2026-11-14T15:55:32.1485709Z LTS
+2026-11-14T15:55:32.1486281Z ##[endgroup]
+2026-11-14T15:55:32.1486839Z ##[group]Runner Image
+2026-11-14T15:55:32.1487473Z Image: ubuntu-24.04
+2026-11-14T15:55:32.1488039Z Version: 20261111.370.1
+2026-11-14T15:55:32.1489719Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261111.370/images/ubuntu/Ubuntu2404-Readme.md
+2026-11-14T15:55:32.1491384Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261111.370
+2026-11-14T15:55:32.1492418Z ##[endgroup]
+2026-11-14T15:55:32.1493529Z ##[group]GITHUB_TOKEN Permissions
+2026-11-14T15:55:32.1495607Z Contents: read
+2026-11-14T15:55:32.1496228Z Metadata: read
+2026-11-14T15:55:32.1496891Z ##[endgroup]
+2026-11-14T15:55:32.1499268Z Secret source: Actions
+2026-11-14T15:55:32.1500648Z Cache mode: write
+2026-11-14T15:55:32.1501443Z Prepare workflow directory
+2026-11-14T15:55:32.1850032Z Prepare all required actions
+2026-11-14T15:55:32.1899189Z Getting action download info
+2026-11-14T15:55:32.4377274Z Download action repository 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-14T15:55:32.6757168Z Complete job name: host-prerequisite
+2026-11-14T15:55:32.7770007Z ##[group]Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+2026-11-14T15:55:32.7771091Z with:
+2026-11-14T15:55:32.7771649Z   persist-credentials: false
+2026-11-14T15:55:32.7772217Z   repository: niklas-olsson/OpenJules
+2026-11-14T15:55:32.7776109Z   token: ***
+2026-11-14T15:55:32.7776564Z   ssh-strict: true
+2026-11-14T15:55:32.7777022Z   ssh-user: git
+2026-11-14T15:55:32.7777451Z   clean: true
+2026-11-14T15:55:32.7777973Z   sparse-checkout-cone-mode: true
+2026-11-14T15:55:32.7778702Z   fetch-depth: 1
+2026-11-14T15:55:32.7779149Z   fetch-tags: false
+2026-11-14T15:55:32.7779601Z   show-progress: true
+2026-11-14T15:55:32.7780054Z   lfs: false
+2026-11-14T15:55:32.7780504Z   submodules: false
+2026-11-14T15:55:32.7780958Z   set-safe-directory: true
+2026-11-14T15:55:32.7781465Z   allow-unsafe-pr-checkout: false
+2026-11-14T15:55:32.7782296Z ##[endgroup]
+2026-11-14T15:55:33.0704418Z Syncing repository: niklas-olsson/OpenJules
+2026-11-14T15:55:33.0707648Z ##[group]Getting Git version info
+2026-11-14T15:55:33.0709213Z Working directory is '/home/runner/work/OpenJules/OpenJules'
+2026-11-14T15:55:33.0710419Z [command]/usr/bin/git version
+2026-11-14T15:55:33.0811920Z git version 2.56.1
+2026-11-14T15:55:33.0838947Z ##[endgroup]
+2026-11-14T15:55:33.0854893Z Temporarily overriding HOME='/home/runner/work/_temp/888fc41b-5bf7-4f9d-a925-9373582c6b0a' before making global git config changes
+2026-11-14T15:55:33.0857312Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-14T15:55:33.0861695Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/OpenJules/OpenJules
+2026-11-14T15:55:33.0922476Z Deleting the contents of '/home/runner/work/OpenJules/OpenJules'
+2026-11-14T15:55:33.0928742Z ##[group]Initializing the repository
+2026-11-14T15:55:33.0933703Z [command]/usr/bin/git init /home/runner/work/OpenJules/OpenJules
+2026-11-14T15:55:33.1089491Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-14T15:55:33.1090923Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-14T15:55:33.1091973Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-14T15:55:33.1093621Z hint: call:
+2026-11-14T15:55:33.1094148Z hint:
+2026-11-14T15:55:33.1094753Z hint: 	git config --global init.defaultBranch <name>
+2026-11-14T15:55:33.1095419Z hint:
+2026-11-14T15:55:33.1096051Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-14T15:55:33.1097552Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-14T15:55:33.1099286Z hint:
+2026-11-14T15:55:33.1100071Z hint: 	git branch -m <name>
+2026-11-14T15:55:33.1101063Z hint:
+2026-11-14T15:55:33.1102314Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-14T15:55:33.1112505Z Initialized empty Git repository in /home/runner/work/OpenJules/OpenJules/.git/
+2026-11-14T15:55:33.1118427Z [command]/usr/bin/git remote add origin https://github.com/niklas-olsson/OpenJules
+2026-11-14T15:55:33.1202613Z ##[endgroup]
+2026-11-14T15:55:33.1204601Z ##[group]Disabling automatic garbage collection
+2026-11-14T15:55:33.1205943Z [command]/usr/bin/git config --local gc.auto 0
+2026-11-14T15:55:33.1243548Z ##[endgroup]
+2026-11-14T15:55:33.1245125Z ##[group]Setting up auth
+2026-11-14T15:55:33.1251766Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-14T15:55:33.1312389Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-14T15:55:33.1801255Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-14T15:55:33.1848837Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-14T15:55:33.2123413Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-14T15:55:33.2171535Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-14T15:55:33.2440978Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-14T15:55:33.2492263Z ##[endgroup]
+2026-11-14T15:55:33.2505080Z ##[group]Fetching the repository
+2026-11-14T15:55:33.2507703Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +4cf1a2046006014f4865cbf1668bc660c1a941b4:refs/remotes/origin/qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4
+2026-11-14T15:55:33.8441753Z From https://github.com/niklas-olsson/OpenJules
+2026-11-14T15:55:33.8445520Z  * [new ref]         4cf1a2046006014f4865cbf1668bc660c1a941b4 -> origin/qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4
+2026-11-14T15:55:33.8450748Z ##[endgroup]
+2026-11-14T15:55:33.8452149Z ##[group]Determining the checkout info
+2026-11-14T15:55:33.8453884Z ##[endgroup]
+2026-11-14T15:55:33.8455060Z [command]/usr/bin/git sparse-checkout disable
+2026-11-14T15:55:33.8523580Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-14T15:55:33.8565657Z ##[group]Checking out the ref
+2026-11-14T15:55:33.8577599Z [command]/usr/bin/git checkout --progress --force -B qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4 refs/remotes/origin/qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4
+2026-11-14T15:55:33.8854363Z Switched to a new branch 'qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4'
+2026-11-14T15:55:33.8868719Z branch 'qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4' set up to track 'origin/qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4'.
+2026-11-14T15:55:33.8882190Z ##[endgroup]
+2026-11-14T15:55:33.8921114Z [command]/usr/bin/git log -1 --format=%H
+2026-11-14T15:55:33.8954599Z 4cf1a2046006014f4865cbf1668bc660c1a941b4
+2026-11-14T15:55:33.8966411Z ##[group]Removing auth
+2026-11-14T15:55:33.8971445Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-14T15:55:33.9013465Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-14T15:55:33.9252410Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-14T15:55:33.9289955Z http.https://github.com/.extraheader
+2026-11-14T15:55:33.9299781Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-11-14T15:55:33.9346477Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-14T15:55:33.9586512Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-14T15:55:33.9629525Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-14T15:55:33.9874845Z ##[endgroup]
+2026-11-14T15:55:34.0153110Z ##[group]Run probe_directory=$(mktemp -d "$RUNNER_TEMP/oj-browser-host.XXXXXXXX")
+2026-11-14T15:55:34.0155775Z [36;1mprobe_directory=$(mktemp -d "$RUNNER_TEMP/oj-browser-host.XXXXXXXX")[0m
+2026-11-14T15:55:34.0157732Z [36;1mchmod 700 "$probe_directory"[0m
+2026-11-14T15:55:34.0159389Z [36;1mset +e[0m
+2026-11-14T15:55:34.0160771Z [36;1m/usr/bin/timeout --signal=TERM --kill-after=1s 14s \[0m
+2026-11-14T15:55:34.0162771Z [36;1m  /usr/bin/python3 -I -S tools/browser_host_preflight.py \[0m
+2026-11-14T15:55:34.0165448Z [36;1m  --manifest docs/browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json \[0m
+2026-11-14T15:55:34.0167895Z [36;1m  --output "$probe_directory/report.json"[0m
+2026-11-14T15:55:34.0169557Z [36;1mprobe_status=$?[0m
+2026-11-14T15:55:34.0171073Z [36;1m/usr/bin/python3 -I -S tools/browser_host_preflight.py \[0m
+2026-11-14T15:55:34.0172889Z [36;1m  --classify-wrapper "$probe_status" \[0m
+2026-11-14T15:55:34.0175285Z [36;1m  --manifest docs/browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json \[0m
+2026-11-14T15:55:34.0177689Z [36;1m  --output "$probe_directory/report.json"[0m
+2026-11-14T15:55:34.0179287Z [36;1mclassification_status=$?[0m
+2026-11-14T15:55:34.0180489Z [36;1mset -e[0m
+2026-11-14T15:55:34.0181687Z [36;1mif test -f "$probe_directory/report.json"; then[0m
+2026-11-14T15:55:34.0183317Z [36;1m  cat "$probe_directory/report.json"[0m
+2026-11-14T15:55:34.0184637Z [36;1mfi[0m
+2026-11-14T15:55:34.0185618Z [36;1mexit "$classification_status"[0m
+2026-11-14T15:55:34.0213415Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-14T15:55:34.0215003Z env:
+2026-11-14T15:55:34.0215932Z   BROWSER_HOST_EVENT_CREATED: true
+2026-11-14T15:55:34.0217146Z ##[endgroup]
+2026-11-14T15:55:34.1400575Z {"owned_child_cleanup":"observed","reason":"complete_refusal_receipt","receipt_sha256":"2f0d8cc5f236e84e75e1ab9e27cdf37638b90f6abdc3543b2e907e857f3bebfa","receipt_status":"refused","schema_version":1,"scope":"native-host-prerequisite-cli-completion","status":"refused","supervisor":{"bytes":39880,"kill_after_seconds":1,"ownership":"The namespace child has a separate session; supervisor termination does not establish its reaping.","path":"/usr/bin/timeout","sha256":"12690a043dfd555a6c14ccc1564f5649c18f1762c0d6ff66729948130898ec52","term_seconds":14},"supervisor_exit_code":3}
+2026-11-14T15:55:34.1528437Z {"browser_journey":"NOT_RUN","browser_sandbox":"NOT_RUN","child_elapsed_ms":2.059,"ci_setup":"Pinned source checkout is ordinary CI traffic, outside candidate acquisition; bytes are not measured here.","cleanup":{"child_reaped":true,"exit_code":1,"socket_path_absent":true,"stderr":"unshare: write failed /proc/self/uid_map: Operation not permitted\n","stderr_truncated":false,"termination":"none"},"effects":{"browser_sessions":0,"candidate_acquisition_bytes":0,"inet_connections":0,"model_calls":0,"namespace_child_attempts":1,"namespace_children":1,"page_actions":0},"elapsed_ms":14.947,"elapsed_scope":"Probe input checks, effects and owned-child cleanup; excludes final report serialization, write and fsync.","host":{"available_memory_bytes":15750107136,"egid":1001,"euid":1001,"executables":[{"bytes":8020928,"path":"/usr/bin/python3","sha256":"e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"},{"bytes":43624,"path":"/usr/bin/unshare","sha256":"a23c8863860669003dc4660039fe642f5795c8c2195898ebc5d01afa1ac3d11c"},{"bytes":39880,"path":"/usr/bin/timeout","sha256":"12690a043dfd555a6c14ccc1564f5649c18f1762c0d6ff66729948130898ec52"}],"free_storage_bytes":91533541376,"gid":1001,"image_os":"ubuntu24","image_version":"20261111.370.1","kernel":"7.0.0-1017-azure","machine":"x86_64","network_namespace":4026531833,"observer":{"parent_pid":2405,"pid":2406,"rss_bytes":19812352,"start_ticks":1893,"uids":[1001,1001,1001,1001]},"os_id":"ubuntu","os_release":"24.04.5","os_version_id":"24.04","python_executable":"/usr/bin/python3","python_version":"3.12.3","runner_arch":"X64","runner_environment":"github-hosted","runner_os":"Linux","uid":1001,"user_namespace":4026531837},"limits":{"browser_sessions":0,"candidate_acquisition_bytes":0,"child_address_space_bytes":134217728,"child_cpu_seconds":2,"child_file_descriptors":32,"child_seconds":5,"cleanup_seconds":3,"inet_connections":0,"model_calls":0,"namespace_children":1,"overall_seconds":15,"owned_storage_bytes":1048576,"page_actions":0,"pipe_bytes":8192,"report_bytes":65536,"stderr_bytes":1024,"supervisor_kill_seconds":1,"supervisor_term_seconds":14,"unix_payload_bytes":16,"unix_socket_objects":3},"manifest_sha256":"1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3","reason":"child_pipe_incomplete","receipt_complete":true,"run_id":"oj-browser-host-20261114-1","schema_version":1,"scope":"native-host-prerequisites-only","source_base_commit":"7135d0988dff050df63acb89f75562dafccacf79","source_commit":"4cf1a2046006014f4865cbf1668bc660c1a941b4","status":"refused","workflow_run_attempt":1,"workflow_run_id":"43612769003"}
+2026-11-14T15:55:34.1610951Z ##[error]Process completed with exit code 3.
+2026-11-14T15:55:34.1906693Z Post job cleanup.
+2026-11-14T15:55:34.2795899Z [command]/usr/bin/git version
+2026-11-14T15:55:34.2840988Z git version 2.56.1
+2026-11-14T15:55:34.2884136Z Temporarily overriding HOME='/home/runner/work/_temp/5c26b05d-4aba-4a28-9f47-01e5f49c2e8a' before making global git config changes
+2026-11-14T15:55:34.2889299Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-14T15:55:34.2893349Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/OpenJules/OpenJules
+2026-11-14T15:55:34.2936881Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-14T15:55:34.2985210Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-14T15:55:34.3263417Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-14T15:55:34.3311097Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-14T15:55:34.3589634Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-14T15:55:34.3666833Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-14T15:55:34.4172626Z Cleaning up orphan processes
+2026-11-14T15:55:34.4760881Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@11d5960a326750d5838078e36cf38b85af677262. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "repository": "niklas-olsson/OpenJules",
+  "decision": "no_go_selected_host_confinement_route",
+  "cause": "unshare_uid_map_write_denied",
+  "source": {
+    "commit": "4cf1a2046006014f4865cbf1668bc660c1a941b4",
+    "tree": "297f713d998d38553811ec9d01727f4099fd1853",
+    "parent": "7135d0988dff050df63acb89f75562dafccacf79",
+    "helper_sha256": "622d0d04b2aa10c628028b2058f0c3680fc01474fa075b8968d13eeec75d9905",
+    "manifest_sha256": "1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3",
+    "workflow_sha256": "9c728ed394be47aafc7e818068cf760e260bb1ff25cb5cae46b582a1f76fa5bb"
+  },
+  "activation": {
+    "branch": "qualification/browser-host/run/1255f038ecfee97fab8f165386f32840a4bb3e481a9c45f4831d01578db83aa3-4cf1a2046006014f4865cbf1668bc660c1a941b4",
+    "event": "push",
+    "run_id": 43612769003,
+    "run_attempt": 1,
+    "url": "https://github.com/niklas-olsson/OpenJules/actions/runs/43612769003",
+    "workflow_path": ".github/workflows/browser-host-prerequisite.yml",
+    "created_at": "2026-11-14T15:55:27Z",
+    "run_started_at": "2026-11-14T15:55:27Z",
+    "updated_at": "2026-11-14T15:55:37Z",
+    "status": "completed",
+    "conclusion": "failure",
+    "job_id": 132501202327,
+    "job_name": "host-prerequisite",
+    "job_url": "https://github.com/niklas-olsson/OpenJules/actions/runs/43612769003/job/132501202327"
+  },
+  "pretrial_records": [
+    "https://github.com/niklas-olsson/OpenJules/issues/56#issuecomment-6880159039",
+    "https://github.com/niklas-olsson/OpenJules/pull/65#issuecomment-6880161121"
+  ],
+  "files": {
+    "receipt.json": {
+      "bytes": 2612,
+      "sha256": "2f0d8cc5f236e84e75e1ab9e27cdf37638b90f6abdc3543b2e907e857f3bebfa"
+    },
+    "classification.json": {
+      "bytes": 580,
+      "sha256": "40d066d219fbd60548957bb1e14182a25e95948cb532e7979528b2be95a11f9b"
+    },
+    "job-log.txt": {
+      "bytes": 16977,
+      "sha256": "469802235e2411f9fbcbcebae5b71411046c03b06e6edf8627394f904e1d55e8"
+    }
+  },
+  "retention": {
+    "receipt_and_classification": "Exact JSON lines from job logs, timestamp prefixes removed and original trailing newlines retained.",
+    "job_log": "Exact UTF-8 decoded job log returned by GitHub, including its initial BOM and final newline. Checkout authorization is already masked by GitHub."
+  },
+  "observations": {
+    "classification": "refused",
+    "supervisor_exit_code": 3,
+    "invoked_unshare_processes": 1,
+    "unshare_exit_code": 1,
+    "termination": "none",
+    "child_reaped": true,
+    "socket_path_absent": true,
+    "stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted\n",
+    "successful_namespace_handshake": "NOT_REACHED",
+    "unix_exchange": "NOT_REACHED",
+    "child_rss": "NOT_OBSERVED",
+    "parent_rss_bytes": 19812352,
+    "child_process_elapsed_ms": 2.059,
+    "probe_elapsed_ms": 14.947
+  },
+  "limits_of_evidence": [
+    "namespace_children:1 records the invoked owned process; it does not prove successful namespace creation or the Python child handshake.",
+    "The mapped nonroot confinement route was refused before the Unix probe or browser work.",
+    "Parent RSS and available host resources are observations, not child/browser peak memory or capacity qualification.",
+    "Candidate acquisition, browser sessions, page actions, model calls and probe Internet connections were zero.",
+    "No retry, alternative mapping, host security change or new activation was performed.",
+    "No Chromium sandbox, engine compatibility, live client attachment, exclusive takeover or retained browser result was qualified."
+  ]
+}
