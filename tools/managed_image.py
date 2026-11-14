@@ -809,12 +809,16 @@ def inspect_archive(path, *, expected=None, diagnostic=None):
         verify_file(path, expected["archive"])
     record = file_record(path)
     with tarfile.open(path, "r:") as archive:
-        members = {}
+        members, declared_bytes = {}, 0
         for member in archive:
             name = member.name.rstrip("/")
             safe_relative(name)
+            require(not member.issparse() and member.sparse is None, "sparse outer archive member")
             require(name not in members and (member.isfile() or member.isdir()), "duplicate or nonregular archive member")
             require(len(members) < 4096, "too many archive members")
+            declared_bytes += member.size
+            require(0 <= member.size <= record["size"] and declared_bytes <= record["size"],
+                    "outer archive logical bytes exceed physical archive size")
             members[name] = member
         if diagnostic is not None:
             inventory = []

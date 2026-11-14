@@ -285,3 +285,26 @@ def test_moby_oci_and_compatibility_metadata_share_one_image(tmp_path):
 def test_oci_graph_cannot_disagree_with_docker_save(tmp_path, mutation):
     with pytest.raises(Refused, match="identities disagree"):
         inspect_archive(oci_archive(tmp_path, mutation))
+
+
+def test_sparse_outer_layer_refuses_before_expanded_hash_read(tmp_path, monkeypatch):
+    target = tmp_path / "sparse.tar"
+    config = json_bytes({"os": "linux", "architecture": "amd64",
+                         "rootfs": {"type": "layers", "diff_ids": [digest(b"x")]}})
+    with tarfile.open(target, "w", format=tarfile.PAX_FORMAT) as output:
+        tar_add_bytes(output, "config.json", config)
+        tar_add_bytes(output, "manifest.json", json_bytes([
+            {"Config": "config.json", "RepoTags": [], "Layers": ["layer/layer.tar"]}]))
+        entry = tarfile.TarInfo("layer/layer.tar")
+        entry.size = 1
+        entry.pax_headers = {"GNU.sparse.map": "0,1", "GNU.sparse.size": str(1 << 40)}
+        output.addfile(entry, io.BytesIO(b"x"))
+    original = hashlib.file_digest
+
+    def guard(stream, *args, **kwargs):
+        assert not isinstance(stream, tarfile.ExFileObject), "expanded layer hash was reached"
+        return original(stream, *args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "file_digest", guard)
+    with pytest.raises(Refused, match="sparse"):
+        inspect_archive(target)
