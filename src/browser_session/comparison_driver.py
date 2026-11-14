@@ -100,9 +100,10 @@ class DriverSpec:
     owner_actor_id: str
     started_at_ms: int
     expires_at_ms: int
+    deadline_monotonic: float
     limits: DriverLimits = DriverLimits()
 
-    def validate(self, now_ms):
+    def validate(self, now_ms, now_mono):
         for name in ("session_id", "context_id", "target_id", "backend_epoch", "driver_actor_id", "owner_actor_id"):
             identifier(getattr(self, name))
         if self.driver_actor_id == self.owner_actor_id or type(self.limits) is not DriverLimits:
@@ -110,6 +111,9 @@ class DriverSpec:
         integer(self.started_at_ms)
         integer(self.expires_at_ms, self.started_at_ms + 1, self.started_at_ms + 300000)
         integer(now_ms, self.started_at_ms, self.expires_at_ms - 1)
+        if (type(self.deadline_monotonic) not in {int, float} or not math.isfinite(self.deadline_monotonic)
+                or not 0 < self.deadline_monotonic - now_mono <= 300):
+            raise DriverDenied("invalid_original_deadline")
         self.limits.validate()
 
     def operation_ids(self):
@@ -280,10 +284,10 @@ class ComparisonDriver:
             raise DriverDenied("invalid_configuration")
         wall, mono = _clock(clock)
         try:
-            spec.validate(wall)
+            spec.validate(wall, mono)
         except Exception:
             raise DriverDenied("invalid_spec") from None
-        cutoff = mono + (spec.expires_at_ms - wall) / 1000
+        cutoff = spec.deadline_monotonic
         if not math.isfinite(cutoff) or cutoff <= mono:
             raise DriverDenied("invalid_clock")
         with _CLAIM_LOCK:
@@ -292,6 +296,7 @@ class ComparisonDriver:
             self._claim = _process_claim = object()
         self._spec, self._port, self._clock = spec, port, clock
         self._deadline, self._last_wall, self._last_mono = cutoff, wall, mono
+        self._call_started = (wall, mono)
         self._next_step = mono
         self._lock = threading.Lock()
         self._state, self._phase, self._reason = "waiting", "preflight", None
@@ -346,7 +351,7 @@ class ComparisonDriver:
         with _CLAIM_LOCK:
             if _process_claim is not self._claim:
                 raise DriverDenied("claim_lost")
-        self._now()
+        self._call_started = self._now()
         if self._step_calls >= 2 or self._calls >= self.spec.limits.port_calls:
             raise DriverDenied("port_budget")
         self._step_calls += 1
@@ -360,6 +365,17 @@ class ComparisonDriver:
             except DriverDenied as error:
                 self._deny(error.code)
             return _MISSING
+        except BaseException:
+            # Honor host interruption, but retain any possibly admitted original
+            # before it escapes. Catching it outside cannot restore continuation.
+            self._deny("port_interrupted")
+            try:
+                self._now()
+            except DriverDenied as error:
+                self._deny(error.code)
+            except BaseException:
+                self._deny("invalid_clock")
+            raise
         try:
             self._now()
         except DriverDenied as error:
@@ -376,6 +392,7 @@ class ComparisonDriver:
         if value is _MISSING or not self._live_return():
             return None
         view = _observation(value, self.spec, self._last_wall)
+        view["_read_started_monotonic"] = self._call_started[1]
         if not view["audit_available"]:
             raise DriverDenied("producer_audit_unavailable")
         if view["mode"] in {"fenced", "stopping", "stopped", "lost"}:
@@ -383,8 +400,12 @@ class ComparisonDriver:
         return view
 
     def _fresh_frame(self, view):
+        wall, mono = self._now()
         frame = view["frame"]
-        if frame is None or self._last_wall - frame["captured_at_ms"] > view["frame_max_age_ms"]:
+        age = None if frame is None else max(wall - frame["captured_at_ms"],
+            view["server_time_ms"] - frame["captured_at_ms"]
+            + (mono - view["_read_started_monotonic"]) * 1000)
+        if frame is None or age > view["frame_max_age_ms"]:
             self._reason = "fresh_observation_required"
             return None
         return frame
@@ -439,18 +460,20 @@ class ComparisonDriver:
                 raise DriverDenied("handback_generation_required")
         if self._clicks >= self.spec.limits.clicks:
             raise DriverDenied("click_budget")
-        self._now()  # Decoding and arithmetic cannot extend a callback snapshot.
         fields = frame["projection"]["fields"]
         request = {name: view[name] for name in ("session_id", "context_id", "target_id", "control_generation",
                                                "document_id", "document_generation")}
         request.update(operation_id=key, observation_id=frame["observation_id"], action="click",
                        parameters={"x": fields["next_x"], "y": fields["next_y"], "button": "left"})
+        quote = self._quote(view)
+        if self._fresh_frame(view) is None:
+            return  # Include parsing/use time, even when the wall clock freezes.
         self._pending = {"request": request, "index": index, "destination": destination,
                          "sequence": frame["sequence"], "captured_at_ms": frame["captured_at_ms"]}
         self._pending_state = "unconfirmed"
         self._clicks += 1
         # Retain the exact request before submit. The callback gets its own copy.
-        self._quotes[("standard_alpha", "standard_beta", "corrected_alpha")[index]] = self._quote(view)
+        self._quotes[("standard_alpha", "standard_beta", "corrected_alpha")[index]] = quote
         self._state, self._reason = "waiting", "original_submitted"
         value = self._call(self._port.submit, request | {"parameters": dict(request["parameters"])})
         if value is not _MISSING:
@@ -502,19 +525,23 @@ class ComparisonDriver:
         fixture = self._pending["destination"]
         self._driver_frame(view, fixture, 8 if fixture == "beta" else 5)
         index = self._pending["index"]
-        self._history.append({"phase": PHASES[index], "operation_id": request["operation_id"], "state": "applied"})
-        self._pending, self._pending_state, self._prepared_key = None, None, None
-        self._reason = None
-        if index == 0:
-            self._quotes["standard_beta"] = self._quote(view)
-            self._phase = "return_to_alpha"
-        elif index == 1:
-            self._quotes["human_checkpoint"] = self._quote(view)
-            self._phase, self._reason = "await_human", "explicit_human_turn_required"
-        else:
+        quote = self._quote(view)
+        if self._fresh_frame(view) is None:
+            return
+        original = {"phase": PHASES[index], "operation_id": request["operation_id"], "state": "applied"}
+        if index == 2:
             self._check_correction(view)
-            self._quotes["corrected_beta"] = self._quote(view)
-            self._finish()
+            self._quotes["corrected_beta"] = quote
+            if not self._finish(view, self._history + [original]):
+                return  # Keep this applied original; only a new observation is needed.
+        self._history.append(original)
+        self._pending, self._pending_state, self._prepared_key = None, None, None
+        if index == 0:
+            self._quotes["standard_beta"] = quote
+            self._phase, self._reason = "return_to_alpha", None
+        elif index == 1:
+            self._quotes["human_checkpoint"] = quote
+            self._phase, self._reason = "await_human", "explicit_human_turn_required"
 
     def _check_correction(self, view):
         latest = _latest_correction(view, self._human_generation)
@@ -554,7 +581,7 @@ class ComparisonDriver:
             raise DriverDenied("post_handback_observation_required")
         self._phase, self._reason = "corrected_link", "fresh_handback_observed"
 
-    def _finish(self):
+    def _finish(self, view, originals):
         standard = {name: self._quotes["standard_" + name] for name in ("alpha", "beta")}
         corrected = {name: self._quotes["corrected_" + name] for name in ("alpha", "beta")}
         if (corrected["alpha"]["control_generation"] != self._human_generation + 1
@@ -572,11 +599,14 @@ class ComparisonDriver:
         result = {"schema_version": 1, "task": "alpha-beta-express-comparison",
             **{name: getattr(self.spec, name) for name in ("session_id", "context_id", "target_id", "backend_epoch", "driver_actor_id")},
             "historical_standard": standard, "after_explicit_handback": corrected,
-            "owner_correction": dict(self._correction), "original_operations": list(self._history)}
+            "owner_correction": dict(self._correction), "original_operations": originals}
         raw = (canonical(result) + "\n").encode("ascii")
         if len(raw) > self.spec.limits.result_bytes:
             raise DriverDenied("result_budget")
+        if self._fresh_frame(view) is None:
+            return False
         self._result, self._state, self._phase, self._reason = raw, "completed", "complete", None
+        return True
 
     def step(self):
         if not self._lock.acquire(blocking=False):
@@ -617,6 +647,16 @@ class ComparisonDriver:
                 self._deny(error.code)
             except Exception:
                 self._deny("invalid_projection")
+            except BaseException:
+                # Cover interruption after callback return and during later
+                # decoding/bookkeeping too. Original facts remain, never replay.
+                if self._pending is not None:
+                    self._uncertain = True
+                    self._result = None
+                    self._state, self._reason = "uncertain", "step_interrupted"
+                else:
+                    self._deny("step_interrupted")
+                raise
             return self._progress()
         finally:
             if eligible:
