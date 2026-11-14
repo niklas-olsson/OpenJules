@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 from src.browser_session.control import SessionControl
 from src.browser_session.http_app import HTTPBounds, SessionHTTP
 from src.browser_session.pairing import PairingBroker
-from src.browser_session.types import Limits, SessionSpec
+from src.browser_session.types import Limits, SessionDenied, SessionSpec
 from tests.unit.test_browser_session_control import Clock, FakeAdapter
 
 
@@ -410,6 +410,61 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request("POST", "/stop", raw=raw, headers=headers + [(b"x-csrf-token", self.csrf["human"].encode()),
                              (b"X-CSRF-Token", self.csrf["human"].encode())]))[0], 400)
         self.assertEqual(self.adapter.stops, [])
+
+    async def test_oversized_body_chunk_is_refused_before_application_copy(self):
+        await self.pair("human")
+        copied = []
+        class TrackedBuffer(bytearray):
+            def extend(self, chunk):
+                copied.append(len(chunk))
+                super().extend(chunk)
+        events = [{"type": "http.request", "body": b"a", "more_body": True},
+                  {"type": "http.request", "body": b"x" * 1048576, "more_body": False}]
+        with patch("src.browser_session.http_app.bytearray", TrackedBuffer, create=True):
+            status, _, raw = await self.request("POST", "/stop", actor="human", raw=b"ab", events=events)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw)["error"], "invalid_body_bounds")
+        self.assertEqual(copied, [1])  # Only the first admissible byte entered the application buffer.
+        self.assertEqual(self.adapter.stops, [])
+        self.assertEqual(self.app._stop_active, 0)
+
+    async def test_no_yield_body_or_parsing_overrun_cannot_introduce_an_action(self):
+        await self.pair("driver")
+        value = await self.action(key="expired-transport")
+        raw = json.dumps(value).encode()
+        loop = asyncio.get_running_loop()
+        for boundary in ("body", "request", "before_route", "before_mutation"):
+            with self.subTest(boundary=boundary):
+                bounds = HTTPBounds(body_seconds=0.001 if boundary == "body" else 1,
+                    request_seconds=15 if boundary == "body" else 0.002)
+                app = SessionHTTP(self.core, self.broker, ORIGIN, notify_pending=self.notice, bounds=bounds)
+                now = [loop.time()]
+                async def receive_without_yield():
+                    if boundary in {"body", "request"}:
+                        now[0] += 0.01
+                    return {"type": "http.request", "body": raw, "more_body": False}
+                original_body, original_object = app._body, app._object
+                async def late_body(*arguments):
+                    result = await original_body(*arguments)
+                    if boundary == "before_route":
+                        now[0] += 0.01
+                    return result
+                def late_parse(*arguments):
+                    result = original_object(*arguments)
+                    if boundary == "before_mutation":
+                        now[0] += 0.01
+                    return result
+                with patch.object(loop, "time", side_effect=lambda: now[0]), \
+                        patch.object(app, "_body", side_effect=late_body), \
+                        patch.object(app, "_object", side_effect=late_parse):
+                    status, _, _ = await self.request("POST", "/actions", actor="driver", raw=raw,
+                        receiver=receive_without_yield, app=app)
+                self.assertEqual(status, 503 if boundary == "body" else None)
+                with self.assertRaises(SessionDenied):
+                    self.core.operation(self.tokens["driver"], "expired-transport")
+                self.notice.assert_not_called()
+                self.assertEqual(self.adapter.executions + self.adapter.fences + self.adapter.stops, [])
+                self.assertEqual(app._active, 0)
 
     async def test_client_timeout_retains_original_transfer_and_owned_late_task(self):
         await self.pair("human")

@@ -166,16 +166,25 @@ class SessionHTTP:
 
     async def _body(self, receive, length, deadline):
         value = bytearray()
-        async with asyncio.timeout_at(min(deadline, asyncio.get_running_loop().time() + self._bounds.body_seconds)):
+        loop = asyncio.get_running_loop()
+        cutoff = min(deadline, loop.time() + self._bounds.body_seconds)
+        async with asyncio.timeout_at(cutoff):
             for _ in range(128):
+                if loop.time() >= cutoff:
+                    raise TimeoutError()
                 event = await receive()
+                # A receive coroutine may return without yielding, so an
+                # expired timer callback alone cannot enforce this boundary.
+                if loop.time() >= cutoff:
+                    raise TimeoutError()
                 if event.get("type") == "http.disconnect":
                     raise _Disconnected()
                 if event.get("type") != "http.request" or type(event.get("body", b"")) is not bytes:
                     raise _Denied(400, "invalid_body")
-                value.extend(event.get("body", b""))
-                if len(value) > length or len(value) > self._bounds.body_bytes:
+                chunk = event.get("body", b"")
+                if len(chunk) > length - len(value) or len(chunk) > self._bounds.body_bytes - len(value):
                     raise _Denied(400, "invalid_body_bounds")
+                value.extend(chunk)
                 more = event.get("more_body", False)
                 if type(more) is not bool:
                     raise _Denied(400, "invalid_body")
@@ -185,6 +194,8 @@ class SessionHTTP:
                 raise _Denied(400, "body_chunk_budget")
         if len(value) != length:
             raise _Denied(400, "incomplete_body")
+        if loop.time() >= cutoff:
+            raise TimeoutError()
         return bytes(value)
 
     @staticmethod
@@ -257,7 +268,7 @@ class SessionHTTP:
             pass
         return "ordinary"
 
-    async def _route(self, request, raw, state):
+    async def _route(self, request, raw, state, deadline):
         path, method = request.path, request.method
         if method == "GET" and path in self._assets:
             content, content_type = self._assets[path]
@@ -297,6 +308,8 @@ class SessionHTTP:
             fields = fields | {"observation_id"}
         value = self._object(raw, fields)
         state["operation_id"] = identifier(value["operation_id"])
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError()
         state["effect_requested"] = True
         if path == "/actions":
             record = self._core.submit(auth.grant_token, **value)
@@ -390,7 +403,9 @@ class SessionHTTP:
                     acquired = True
                 async with asyncio.timeout_at(deadline):
                     raw = await self._body(receive, length, deadline)
-                    status, body, content_type, extra = await self._route(request, raw, state)
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise TimeoutError()
+                    status, body, content_type, extra = await self._route(request, raw, state, deadline)
                     if asyncio.get_running_loop().time() >= deadline:
                         raise TimeoutError()
             except _Disconnected:
