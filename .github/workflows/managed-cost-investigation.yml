@@ -1,0 +1,73 @@
+name: Finite managed cost investigation
+
+on:
+  push:
+    branches: ['qualification/costs/run/*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openjules-managed-cost-investigation
+  cancel-in-progress: false
+
+jobs:
+  native-costs:
+    if: github.repository == 'niklas-olsson/OpenJules' && github.event.repository.private == false && github.event.created == true && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: openjules
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: niklas-olsson/zero-point-modulator
+          ref: e8cb65ea7c1717cc5b49c1a6199960a51ac99b9f
+          path: zpm
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: niklas-olsson/keystone-polyphony
+          ref: 6480e36355bf0d5de4e25a560d40e665fd76038c
+          path: polyphony
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Acquire the finite prerequisite set and build the existing CI images
+        timeout-minutes: 15
+        working-directory: openjules
+        run: |
+          python -m tools.managed_cost_setup \
+            --zpm-checkout "$GITHUB_WORKSPACE/zpm" \
+            --polyphony-checkout "$GITHUB_WORKSPACE/polyphony" \
+            --work-dir "$RUNNER_TEMP/managed-cost-prerequisites"
+      - name: Run only the reviewed finite native case manifest
+        working-directory: openjules
+        run: |
+          manifest_sha256=$(sha256sum tests/fixtures/managed-cost-manifest.json | cut -d ' ' -f 1)
+          python -m tools.managed_costs run \
+            --manifest tests/fixtures/managed-cost-manifest.json \
+            --manifest-sha256 "$manifest_sha256" \
+            --runtime-image "$(cat "$RUNNER_TEMP/managed-cost-prerequisites/runtime-image.id")" \
+            --agent-image "$(cat "$RUNNER_TEMP/managed-cost-prerequisites/agent-image.id")" \
+            --zpm-checkout "$GITHUB_WORKSPACE/zpm" \
+            --polyphony-checkout "$GITHUB_WORKSPACE/polyphony" \
+            --dependency-plan "$RUNNER_TEMP/managed-cost-prerequisites/python-inputs/reference.json" \
+            --work-dir "$RUNNER_TEMP/managed-cost-investigation"
+      - name: Retain only declared safe aggregate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: managed-cost-investigation-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/managed-cost-investigation/report.json
+            ${{ runner.temp }}/managed-cost-prerequisites/report.json
+            ${{ runner.temp }}/managed-cost-prerequisites/python-inputs/acquisition-report.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -4,7 +4,8 @@ The default `src.api.webhook:app`, ordinary `openjules serve` and default Compos
 service remain health/static only. An explicitly selected, enrolled host policy
 enables a limited GitHub issue-task API and scoped dispatch-receipt reads. This
 is the task-only positive slice of [#53](https://github.com/niklas-olsson/OpenJules/issues/53),
-not completion of that issue's broader review, Radicle, cohort or private-UI work.
+not completion of that issue's broader review, Radicle, cohort or scoped private
+HTTP work.
 
 This API invokes the existing **trusted host legacy executor**. The API service
 host owns orchestration, temporary source paths and the private local admission
