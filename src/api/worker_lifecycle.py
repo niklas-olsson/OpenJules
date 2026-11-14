@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Re
 from src.worker.destination import (
     BINDING_FIELDS, DestinationConflict, DestinationUnavailable, parse_binding,
 )
+from src.worker.execution_contract import QUALIFICATION_FIELDS, qualification
 
 from src.worker.lifecycle import (
     LifecycleConflict,
@@ -143,23 +144,35 @@ def create_worker_router(
             invoke(lifecycle.validate_binding, scope, binding, values["profile"])
             result = invoke(lifecycle.capabilities, scope, values["profile"])
             return projection(result | {
-                "identity_binding": 1, "portable_manifest": False, "local_admission": False,
+                "identity_binding": 1, "portable_manifest": 1 if lifecycle.full_mode else False,
+                "local_admission": 1 if lifecycle.full_mode else False,
             }, binding)
+
+        @router.get("/execution-contract")
+        def execution_contract(request: Request, deployment_id: str, repository: str,
+                               authorization: str | None = Header(None)):
+            scope = authorize(deployment_id, repository, authorization)
+            values, binding = query(request, {"profile", "contract_version"})
+            if values["contract_version"] != "1":
+                raise HTTPException(422, detail="Unsupported execution contract version")
+            return invoke(lifecycle.execution_contract, scope, values["profile"], binding)
 
         @router.post("/ensure")
         def bound_ensure(payload: dict = Depends(strict_payload), authorization: str | None = Header(None)):
+            full = bool(set(payload) & QUALIFICATION_FIELDS)
             validate_body(payload, {
                 "schema_version", "deployment_id", "repository", "slot_id",
                 "generation", "launch_key", "profile", "destination_binding",
-            })
+            } | (QUALIFICATION_FIELDS if full else set()))
             scope = authorize(payload["deployment_id"], payload["repository"], authorization)
             binding = invoke(parse_binding, payload["destination_binding"])
             invoke(lifecycle.validate_binding, scope, binding, payload["profile"])
             spec = invoke(lambda: WorkerSpec(**{
-                **{key: value for key, value in payload.items() if key != "destination_binding"},
+                **{key: value for key, value in payload.items() if key != "destination_binding" and key not in QUALIFICATION_FIELDS},
                 "schema_version": 1,
             }))
-            return projection(invoke(lifecycle.ensure_worker, spec, binding), binding)
+            original = invoke(qualification, {key: payload[key] for key in QUALIFICATION_FIELDS}) if full else None
+            return projection(invoke(lifecycle.ensure_worker, spec, binding, original), binding)
 
         @router.get("")
         def bound_discover(
@@ -167,12 +180,34 @@ def create_worker_router(
             authorization: str | None = Header(None),
         ):
             scope = authorize(deployment_id, repository, authorization)
-            values, binding = query(request, {"profile"}, optional={"launch_key"})
-            invoke(lifecycle.validate_binding, scope, binding, values["profile"])
+            values, binding = query(request, {"profile"}, optional={"launch_key"} | QUALIFICATION_FIELDS)
+            selected = set(values) & QUALIFICATION_FIELDS
+            full_inventory, original = False, None
+            if selected:
+                if values.get("contract_version") != "1":
+                    raise HTTPException(422, detail="Unsupported execution contract version")
+                if selected == {"contract_version"} and "launch_key" not in values:
+                    full_inventory = True
+                elif selected == QUALIFICATION_FIELDS and "launch_key" in values:
+                    revision = values["admission_revision"]
+                    if not 1 <= len(revision) <= 16 or not revision.isascii() or not revision.isdecimal() or revision.startswith("0"):
+                        raise HTTPException(422, detail="Admission revision requires canonical decimal encoding")
+                    original = invoke(qualification, {"contract_version": 1,
+                        "execution_manifest_sha256": values["execution_manifest_sha256"],
+                        "admission_revision": int(revision)})
+                else:
+                    raise HTTPException(422, detail="Incomplete or unsupported discovery contract")
             workers = invoke(
-                lifecycle.discover_workers, scope, values.get("launch_key"), profile=values["profile"],
+                lifecycle.discover_bound_workers, scope, values["profile"], binding,
+                launch_key=values.get("launch_key"), full_inventory=full_inventory,
+                execution_qualification=original,
             )
-            return projection({"workers": [projection(worker, binding) for worker in workers]}, binding)
+            envelope = {"workers": [projection(worker, binding) for worker in workers]}
+            if full_inventory:
+                envelope["contract_version"] = 1
+            if original is not None:
+                envelope.update(original)
+            return projection(envelope, binding)
 
         @router.get("/{worker_id}")
         def bound_observe(

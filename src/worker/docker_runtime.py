@@ -464,6 +464,14 @@ class ManagedDockerRuntime:
             diagnostic=authority.diagnostic,
         )
 
+    def execution_image(self, scope: WorkerScope, profile: str):
+        """Actual installed source/image inspection for full-mode new effects."""
+        from .execution_inspection import installed_image
+        approved = self.profiles.get((scope.deployment_id, scope.repository, profile))
+        if approved is None or approved.scope != scope:
+            raise RuntimeUnavailable("profile is not approved for this scope")
+        return installed_image(approved, self.client)
+
     def _row(self, worker_id: str, spec: WorkerSpec, *, create: bool = False):
         profile = self._profile(spec)
         payload = _json(asdict(spec))

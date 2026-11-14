@@ -127,6 +127,15 @@ The trusted dispatcher must obtain canonical permission and lifecycle
 artifact acknowledgements must be retained, before the dispatcher clears local
 execution occupancy.
 
+With the optional [full execution contract](managed-service.md#full-execution-contract-and-local-admission),
+new worker/root/child effects also require the originally approved semantic
+manifest and lifecycle-owned local admission. Installed source and image are
+reinspected for new effects. Original admitted execution, observation and capture
+retain their original identities and recovery paths after host closure. The
+private closure epoch is recorded before canonical root claims or child grants;
+close/reopen cannot revive an old unadmitted intent or erase a charged grant.
+This host gate neither cancels canonical tasks nor changes model/capture access.
+
 ## Crash and late-request handling
 
 The driver journals immutable specifications and per-incarnation effects on

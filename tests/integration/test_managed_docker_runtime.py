@@ -153,12 +153,14 @@ def test_real_git_change_capture_and_stopped_incarnation(provisioned):
     )
 
 
-def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(provisioned, tmp_path):
+@pytest.mark.parametrize("full_contract", [False, True])
+def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(provisioned, tmp_path, full_contract):
     """Actual Docker/Git/capture and HTTP, with explicit fixture readiness.
 
-    This does not qualify portable policy, local ceilings, remote transport,
-    canonical authority or multiple hosts. Existing combined tests cover those
-    canonical root/child paths independently of destination wire identity.
+    The full variant additionally inspects actual source/image metadata,
+    approves the exact portable requirements, recovers while admission is
+    closed, and executes an already locally admitted root after host closure.
+    It does not qualify remote transport, canonical authority or multiple hosts.
     """
     _, profile, spec, worker_id, client = provisioned
     state_root = tmp_path / "bound-state"
@@ -168,6 +170,14 @@ def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(pr
         "execution_destination": {"destination_id": "native-docker-fixture"},
         "profiles": [asdict(profile)],
     }
+    if full_contract:
+        config.update(schema_version=2, credentials_file=str(tmp_path / "unused-credentials"),
+                      authority={"endpoint": "https://authority.example.invalid", "token_ref": "env:UNUSED_AUTHORITY"})
+        config["profiles"][0]["root_timeout_ms"] = config["profiles"][0].pop("max_seconds") * 1000
+        config["execution_contract"] = {
+            "version": 1, "mode": "full", "initial_worker_ceiling": 1,
+            "public_profiles": [asdict(spec.scope) | {"profile": spec.profile, "model_service_policy_id": None}],
+        }
     initialize_destination(config)
     state = DestinationState.load(config)
     binding = state.binding(spec.scope, spec.profile)
@@ -175,12 +185,20 @@ def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(pr
         state_root / "runtime", [profile], ready, client,
         journal_binding=state.member("runtime"),
     )
+    qualification = {}
+    if full_contract:
+        candidate = state.preview_contract(spec.scope, spec.profile, runtime.execution_image(spec.scope, spec.profile))
+        state.approve_contract(json.dumps(candidate).encode())
+        qualification = {"contract_version": 1, "execution_manifest_sha256": candidate["execution_manifest_sha256"], "admission_revision": 2}
     lifecycle = WorkerLifecycle(config["lifecycle_database"], runtime, destination=state)
     DispatchJournal(state_root / "dispatcher", journal_binding=state.member("dispatcher"))
     state.activate()
+    if full_contract:
+        assert lifecycle.admission_status()["new_effects_open"] is False
+        lifecycle.admission_status("open")
     token = "native-destination-credential-" * 2
     query = asdict(spec.scope) | binding | {"schema_version": "2"}
-    body = asdict(spec) | {"schema_version": 2, "destination_binding": binding}
+    body = asdict(spec) | {"schema_version": 2, "destination_binding": binding} | qualification
     original_ensure = runtime.ensure
     calls = []
 
@@ -205,6 +223,8 @@ def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(pr
             assert first.status_code == 200, first.text
             assert owned == first.json()["worker_id"]
             assert first.json()["state"] == "unknown" and calls == [owned]
+        if full_contract:
+            lifecycle.admission_status("close")
         reopened_state = DestinationState.load(config)
         runtime = ManagedDockerRuntime(
             state_root / "runtime", [profile], ready, client,
@@ -226,7 +246,15 @@ def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(pr
             assert recovered.json()["worker_id"] == owned
             assert recovered.json()["destination_binding"] == binding
             assert recovered.json()["state"] == "ready" and calls == [owned]
-            reopened.begin_execution(spec.scope, owned, "destination-native-root")
+            if full_contract:
+                assert recovered.json()["admission_revision"] == 2
+                assert reopened.admission_status()["new_effects_open"] is False
+                reopened.admission_status("open")
+                reopened.reserve_execution_intent(spec.scope, owned, "native-root-intent")
+            reopened.begin_execution(spec.scope, owned, "destination-native-root",
+                                     **({"intent_key": "native-root-intent"} if full_contract else {}))
+            if full_contract:
+                reopened.admission_status("close")
             receipt = runtime.execute_attempt(owned, spec, "destination-native-root", "approved fixture change", 20)
             assert receipt.exit_code == 0, receipt.log
             assert receipt.termination_confirmed and receipt.artifacts_captured and receipt.launch_fenced
@@ -240,7 +268,7 @@ def test_bound_destination_http_recovery_retains_one_real_runtime_and_capture(pr
             assert observed.json()["termination_confirmed"] and observed.json()["artifacts_captured"]
             listed = http.get("/api/v2/workers", params=query | {
                 "profile": spec.profile, "launch_key": spec.launch_key,
-            })
+            } | qualification)
             assert listed.json()["workers"] == [observed.json()]
             for action in ("drain", "stop"):
                 controlled = http.post("/api/v2/workers/" + owned + "/" + action, json=asdict(spec.scope) | {

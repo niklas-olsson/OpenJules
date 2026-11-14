@@ -107,7 +107,7 @@ def parse_configuration_bytes(raw):
     if not isinstance(data, dict):
         raise ConfigurationInvalid("configuration_object")
     children = data.get("children")
-    if duplicate and ("execution_destination" in data or (
+    if duplicate and (data.get("schema_version") == 2 or "execution_destination" in data or (
         isinstance(children, list) and any(
             isinstance(item, dict) and isinstance(item.get("policy"), dict)
             and "public_discussion" in item["policy"] for item in children
@@ -135,6 +135,9 @@ class PreparedProfiles:
 
 def prepare_profiles(config):
     """Validate selected runtime/model/child/public semantics without host checks."""
+    if type(config.get("schema_version")) is int and config["schema_version"] == 2:
+        from .execution_contract import normalize_configuration
+        config = checked("execution_contract_invalid", "/execution_contract", lambda: normalize_configuration(config))
     from .docker_profile import DockerProfile
     from .model_broker import ModelPolicy
     from .child_types import ChildPolicy
@@ -207,6 +210,11 @@ def prepare_profiles(config):
 def prepare_configuration(config):
     """Complete pure startup phase, including authority and dispatcher bounds."""
     from .destination import destination_configuration
+
+    if isinstance(config, dict) and type(config.get("schema_version")) is int and config["schema_version"] == 2:
+        from .execution_contract import normalize_configuration
+        native = checked("execution_contract_invalid", "/execution_contract", lambda: normalize_configuration(config))
+        return prepare_configuration(native)
 
     if not isinstance(config, dict) or not REQUIRED <= set(config) <= ALLOWED:
         raise ConfigurationInvalid("configuration_fields")

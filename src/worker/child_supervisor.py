@@ -76,6 +76,9 @@ class ChildSupervisor:
         self.root_permission, self.root_active = root_permission, root_active
         self.boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         self.journal = ChildJournal(directory, journal_binding=journal_binding)
+        self.full_mode = getattr(lifecycle, "full_mode", False) is True
+        if self.full_mode:
+            self.journal.admission_intent = lambda worker_id, scope, key: lifecycle.reserve_execution_intent(scope, worker_id, key)
         self.sessions = ColdSessionStore(self.journal)
         self.driver = ChildRuntime(runtime, self)
         self.guard = threading.RLock()
@@ -286,6 +289,10 @@ class ChildSupervisor:
         ):
             return False
         if child is not None:
+            if admission and self.full_mode and not self.lifecycle.execution_intent_allowed(
+                root.spec.scope, root.worker_id, self._child_intent_key(root, child)
+            ):
+                return False
             fresh = self.journal.child(root.worker_id, child["child_id"])
             if (
                 fresh["revoked"]
@@ -431,6 +438,8 @@ class ChildSupervisor:
     def _resolve(self, root, intent):
         if intent["status"] == "rejected":
             return None
+        if self.full_mode:
+            self.lifecycle.require_execution_intent(root.spec.scope, root.worker_id, intent["delivery_key"])
         policy = self.policy(root.spec)
         if policy.session_protocol is not None:
             self.sessions.check_intent(root, policy, intent)
@@ -477,6 +486,13 @@ class ChildSupervisor:
             self.journal.update(root.worker_id, child["child_id"], revoked=1)
         return self.journal.child(root.worker_id, child["child_id"])
 
+    def _child_intent_key(self, root, child):
+        matched = [intent["delivery_key"] for intent in self.journal.intents(root.worker_id)
+                   if intent["child_id"] == child["child_id"]]
+        if len(matched) != 1:
+            raise LifecycleConflict("original child intent is unavailable")
+        return matched[0]
+
     def _admit_and_launch(self, root, child):
         if child["phase"] in {"running", "exec_returned", "captured", "completed"}:
             return
@@ -499,6 +515,7 @@ class ChildSupervisor:
                         root.worker_id,
                         child["child_id"],
                         parent_id=root.attempt_id,
+                        **({"intent_key": self._child_intent_key(root, child)} if self.full_mode else {}),
                     )
                 except LifecycleConflict:
                     if self.local_allowed(root, child, admission=True):

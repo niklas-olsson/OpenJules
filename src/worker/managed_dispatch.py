@@ -99,7 +99,7 @@ class DispatchJournal:
             ).fetchone()
         return dict(row) if row else None
 
-    def reserve(self, worker: dict, task_id: str):
+    def reserve(self, worker: dict, task_id: str, *, request_key=None):
         spec = WorkerSpec(
             **{key: worker[key] for key in WorkerSpec.__dataclass_fields__}
         )
@@ -107,7 +107,7 @@ class DispatchJournal:
             db.execute(
                 "INSERT OR IGNORE INTO deliveries (worker_id,spec,task_id,request_key,phase) "
                 "VALUES (?,?,?,?, 'claiming')",
-                (worker["worker_id"], _json(asdict(spec)), task_id, uuid4().hex),
+                (worker["worker_id"], _json(asdict(spec)), task_id, request_key or uuid4().hex),
             )
         return self.get(worker["worker_id"])
 
@@ -341,9 +341,19 @@ class ManagedDispatcher:
                 task = self._choose_task(self.authority.snapshot(spec.scope), profile)
                 if task is None:
                     return  # No inference or model polling while idle.
-                row = self.journal.reserve(worker, task["id"])
+                if self.lifecycle.full_mode:
+                    # Stable even if the process dies after retaining its local
+                    # epoch but before the delivery row is committed. No claim
+                    # can precede the delivery row. A different task is a new
+                    # intent, never recovery of an uncertain recorded claim.
+                    key = "openjules-root:" + hashlib.sha256(_json([worker_id, task["id"]]).encode()).hexdigest()
+                    self.lifecycle.reserve_execution_intent(spec.scope, worker_id, key)
+                    row = self.journal.reserve(worker, task["id"], request_key=key)
+                else:
+                    row = self.journal.reserve(worker, task["id"])
             if row["spec"] != _json(asdict(spec)):
                 raise LifecycleConflict("Dispatcher incarnation binding changed")
+            self.lifecycle.require_execution_intent(spec.scope, worker_id, row["request_key"])
             if row["phase"] == "claiming":
                 try:
                     response = self.authority.call(
@@ -399,11 +409,12 @@ class ManagedDispatcher:
                 if attempt_id not in active:
                     try:
                         self.lifecycle.begin_execution(
-                            spec.scope, worker_id, attempt_id
+                            spec.scope, worker_id, attempt_id,
+                            **({"intent_key": row["request_key"]} if self.lifecycle.full_mode else {}),
                         )
                     except LifecycleConflict:
                         current = self.lifecycle.observe_worker(spec.scope, worker_id)
-                        if current["admission_open"]:
+                        if current["admission_open"] and self.lifecycle.execution_intent_allowed(spec.scope, worker_id, row["request_key"]):
                             return  # An observer may briefly own the runtime lock.
                         allowed = False
                 if allowed:

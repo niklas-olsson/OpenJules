@@ -17,12 +17,14 @@ configured HTTPS reverse proxy and the existing scoped bearer authentication.
 
 ## Optional execution destination identity
 
-The first identity slice of [OpenJules #47](https://github.com/niklas-olsson/OpenJules/issues/47)
-adds an operator-enrolled execution destination. Existing configurations remain
-on the v1 lifecycle contract. This opt-in is an identity and recovery boundary;
-it does not qualify distributed placement, publish a portable execution manifest,
-or implement a host admission closure or capacity ceiling. ZPM owns placement
-and installed qualification. Polyphony still owns canonical task authority.
+The identity mode of [OpenJules #47](https://github.com/niklas-olsson/OpenJules/issues/47)
+adds an operator-enrolled execution destination to configuration schema 1.
+Configurations without that opt-in retain the v1 lifecycle contract. Identity
+mode does not publish a portable manifest or a host admission ceiling. Fresh
+schema-2 destinations can select the separately approved
+[full execution contract](#full-execution-contract-and-local-admission) below.
+ZPM owns placement and installed qualification. Polyphony still owns canonical
+task authority.
 
 For a fresh service, add this exact optional configuration object:
 
@@ -104,7 +106,8 @@ no policy-rebinding, active-state migration or replacement-journal adoption
 command. Missing original material remains unavailable or unknown, not an empty
 destination from which a reservation may be released.
 
-All state maintenance requires a stopped service. Concurrent clones, rollback,
+Initialization and explicit resource cleanup require a stopped service. The
+full-mode admission operations below may run alongside the service. Concurrent clones, rollback,
 shared/network-filesystem journals, and running a pre-identity OpenJules binary
 against bound files are unsupported. The checks do not establish tamper-proof
 row history or an atomic fence against a privileged administrator replacing
@@ -134,6 +137,140 @@ private and effectful operations are unavailable. The managed installation
 context below refuses all these commands in the dedicated installed interpreter.
 Use canonical managed entrypoints for protected work and an explicitly configured
 separate standalone interpreter for trusted local legacy operation.
+
+## Full execution contract and local admission
+
+Configuration schema 2 adds an approved public execution manifest and a
+destination-wide local admission boundary. It is supported only for a **fresh**
+destination, initialized before first service readiness. It cannot upgrade an
+identity-only destination, migrate legacy workers or reinterpret existing
+bindings. The original journals carry required-feature floors so an older
+identity-only implementation refuses the full state. Preserve the original
+supported source and complete journal set.
+
+Start from the managed configuration below, set `schema_version` to `2`, retain
+`execution_destination`, and add this exact object with one public declaration
+for every configured deployment/repository/profile tuple:
+
+```json
+"execution_contract": {
+  "version": 1,
+  "mode": "full",
+  "initial_worker_ceiling": 2,
+  "public_profiles": [{
+    "deployment_id": "installation-a",
+    "repository": "github:github.com/example/project",
+    "profile": "bounded",
+    "model_service_policy_id": null
+  }]
+}
+```
+
+The ceiling is an integer from 0 through 9007199254740991. A model-enabled
+profile requires an explicit public `model_service_policy_id`; a profile
+without a model requires null. That public identifier names approved model
+service semantics, not a URL, credential reference, principal or grant.
+Repositories must already use canonical lowercase
+`github:github.com/owner/repo` spelling. Aliases, uppercase forms and Radicle
+are unsupported in this manifest version. Deployment/profile and model service
+identifiers use `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`, subject to the existing
+native profile restrictions.
+
+Schema 2 uses primary integer milliseconds, with no old seconds field alongside:
+
+| Policy | Required duration | Bound |
+| --- | --- | --- |
+| `profiles[]` | `root_timeout_ms` instead of `max_seconds` | 1000 through 86400000, divisible by 1000. |
+| `models[].policy` | `request_timeout_ms` instead of `request_timeout_seconds` | 1 through 120000. |
+| `children[].policy` | `max_child_ms` instead of `max_child_seconds` | 1 through 86400000, no greater than the root duration. |
+
+Booleans, floats, seconds/milliseconds mixtures, nonempty guest
+`environment_refs` and non-null managed public discussion policies are refused.
+The primary integers are retained privately before conversion to native units;
+the public manifest never reconstructs them from floating-point seconds.
+
+With the service stopped, initialize the destination, then preview each profile.
+The source repository, approved base commit and exact selected Docker image must
+already be installed. Preview reads the source object and inspects that image;
+it never pulls an image or calls a model or canonical authority.
+
+```sh
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --initialize-destination
+umask 077
+python -m src.worker.managed_service --config /private/installation/config/openjules.json \
+  --preview-execution-contract --deployment-id installation-a \
+  --repository github:github.com/example/project --profile bounded \
+  > /private/installation/execution-approval.json
+```
+
+Preview freezes the original candidate in the private lifecycle journal. Its
+bounded JSON envelope contains `approval_version: 1`, the three scope fields,
+the original `destination_binding`, `manifest` and
+`execution_manifest_sha256`. The manifest describes the inspected image config
+digest and platform, canonical source/base, actual root arguments, resources,
+confinement, optional model/child requirements and required protocol versions.
+Host paths, credential references and private policy hashes are absent. Those
+private policies remain independently bound by the destination registry.
+
+Review that candidate, then explicitly import the unchanged document:
+
+```sh
+python -m src.worker.managed_service --config /private/installation/config/openjules.json \
+  --approve-execution-contract /private/installation/execution-approval.json
+```
+
+Approval requires an owned, nonsymlink regular file with mode `0600`, bounded to
+131072 bytes. The importer rejects duplicate fields, unsupported values and an
+incorrect digest, and requires exact equality with the retained candidate and
+current private binding. Import performs no source, Docker, model, credential
+or authority calls. It cannot replace the candidate. Exact repeated approval
+is read-only and cannot reset admission or replay state. Every configured
+profile must be approved before the whole destination can become ready.
+Missing approval state fails closed; there is no partially ready profile subset.
+
+The manifest digest is SHA-256 of the restricted canonical UTF-8 JSON encoding:
+fixed ASCII keys, Unicode scalar strings without normalization, bounded
+nonnegative integers, booleans/null, and contract-defined array order. Encoding
+has no whitespace, BOM or trailing newline and is bounded to 65536 bytes.
+The installed OpenJules revision is separate qualification evidence, outside
+the semantic manifest. Approval is not installation testing, task authority,
+source redistribution permission or ZPM enrollment.
+
+Admission starts **closed**, at revision 1 and the configured initial ceiling.
+Host-only operations below need the private configuration and journal access,
+but no credentials, Docker, model or authority. They can run before readiness
+or alongside the running service:
+
+```sh
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --inspect-admission
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --open-admission
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --set-worker-ceiling 1
+python -m src.worker.managed_service --config /private/installation/config/openjules.json --close-admission
+```
+
+Each real change increments the public revision. Opening or closing also
+increments a private closure epoch. Repeating the current setting changes
+nothing; counter exhaustion refuses mutation. The ceiling counts all
+unreleased logical workers, including unknown outcomes. Lowering it never
+evicts existing work. Admission observations are not grants.
+
+Worker reservations, closure changes and local root/child admissions serialize
+through the lifecycle journal. An original root/child intent records its epoch
+before a canonical claim or grant. Close/reopen cannot revive an old unadmitted
+intent; a previously admitted original execution retains its original deadline
+and recovery path. Closing the host does not cancel tasks or close canonical
+child cohorts. Unknown or stale grants remain charged until ordinary canonical
+finalization. Capture, model access, original observation/control and recovery
+do not acquire a generic new-effects gate.
+
+The [full v2 HTTP contract](worker-lifecycle.md#full-execution-contract-v1)
+retains the immutable binding, manifest digest and admission revision on each
+original operation. New effects reinspect installed source/image and policy;
+known original keys resolve their retained result before current qualification.
+The schema-1 installation validator below remains schema-1-only. Schema 2
+therefore requires its own producer tests and explicit downstream installation
+qualification; this implementation does not itself activate ZPM placement or
+demonstrate a remote host, browser runtime or live model provider.
 
 ## Standalone ingress boundary
 
@@ -428,7 +565,8 @@ for confinement, source staging, capture and unresolved launch behavior.
 
 The producer-owned `openjules-installation-v1` contract validates existing
 configuration **schema 1** before credentials, destination state or runtime
-construction. Schema 2 remains unsupported. The installed
+construction. This validator does not support the service's full-contract
+schema 2. The installed
 [static artifact](../src/worker/contracts/openjules-installation-v1.json) describes
 the closed input/result vocabulary, defaults, bounds and feature requirements;
 the accompanying [conformance vectors](../src/worker/contracts/openjules-installation-v1-vectors.json)

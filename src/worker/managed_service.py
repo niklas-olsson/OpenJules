@@ -28,7 +28,7 @@ from src.worker.execution_context import (
     enter_managed_context, select_managed_context, validate_managed_installation,
 )
 from src.worker.destination import (
-    DestinationState, initialize_destination,
+    DestinationState, initialize_destination, stopped_service_lock,
 )
 from src.worker.managed_configuration import (
     MAX_CONFIGURATION_BYTES, parse_configuration_bytes, prepare_configuration,
@@ -48,12 +48,14 @@ def _read_object(path: Path, *, private: bool = False) -> dict:
     return parse_configuration_bytes(raw)
 
 
-def load_configuration(path: str | Path, *, managed_context=False):
+def load_configuration(path: str | Path, *, managed_context=False, credentials_required=True):
     config = _read_object(Path(path))
     # Every selected policy and scheduler/authority bound precedes secret reads.
     prepare_configuration(config)
     if managed_context:
         enter_managed_context()
+    if not credentials_required:
+        return config, None
     credentials = _read_object(Path(config["credentials_file"]), private=True)
     scopes = {}
     for token, grants in credentials.items():
@@ -97,6 +99,8 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
         raise ValueError("every profile requires an explicit ZPM credential scope")
 
     destination = DestinationState.load(config)
+    if destination is not None and destination.full_mode:
+        destination.require_approvals()
 
     def journal_context(member):
         return {"journal_binding": destination.member(member)} if destination else {}
@@ -347,33 +351,73 @@ def main():
         "--inspect-destination", action="store_true",
         help="read original destination identifiers without repair or runtime calls",
     )
-    parser.add_argument(
+    identity.add_argument(
         "--cleanup-worker",
         help="explicitly clean one fully captured executed worker while service is stopped",
     )
     parser.add_argument("--deployment-id")
     parser.add_argument("--repository")
+    parser.add_argument("--profile")
+    identity.add_argument("--preview-execution-contract", action="store_true")
+    identity.add_argument("--approve-execution-contract")
+    identity.add_argument("--inspect-admission", action="store_true")
+    identity.add_argument("--open-admission", action="store_true")
+    identity.add_argument("--close-admission", action="store_true")
+    identity.add_argument("--set-worker-ceiling", type=int)
     args = parser.parse_args()
-    if (args.initialize_destination or args.inspect_destination) and args.cleanup_worker:
-        parser.error("destination maintenance and worker cleanup are separate stopped-service operations")
-    if bool(args.cleanup_worker) != bool(args.deployment_id and args.repository) or (
-        not args.cleanup_worker and (args.deployment_id or args.repository)
-    ):
-        parser.error("cleanup requires worker, deployment and repository together")
+    selectors = (bool(args.deployment_id), bool(args.repository), bool(args.profile))
+    expected_selectors = (True, True, True) if args.preview_execution_contract else (
+        (True, True, False) if args.cleanup_worker else (False, False, False))
+    if selectors != expected_selectors:
+        parser.error("scope selectors must match the selected host operation")
+    maintenance = any((args.initialize_destination, args.inspect_destination,
+        args.preview_execution_contract, args.approve_execution_contract,
+        args.inspect_admission, args.open_admission, args.close_admission,
+        args.set_worker_ceiling is not None))
     try:
         # Preserve blanket legacy refusal even if static configuration fails.
         # Actual selector/config host reads occur only after the pure phase.
         select_managed_context()
-        config, credentials = load_configuration(args.config, managed_context=True)
-        if args.initialize_destination or args.inspect_destination:
+        config, credentials = load_configuration(args.config, managed_context=True,
+                                                  credentials_required=not maintenance)
+        if maintenance:
             if args.initialize_destination:
                 result = initialize_destination(config)
             else:
                 destination = DestinationState.load(config)
                 if destination is None:
                     raise ValueError("no initialized execution destination is configured")
-                result = destination.inspection()
-            print(json.dumps(result, sort_keys=True))
+                if args.inspect_destination:
+                    result = destination.inspection()
+                elif args.preview_execution_contract:
+                    from .execution_inspection import installed_image
+                    import docker
+                    scope = WorkerScope(args.deployment_id, args.repository)
+                    prepared = prepare_configuration(config)
+                    key = (scope.deployment_id, scope.repository, args.profile)
+                    profile = prepared.profile_by_scope[key]
+                    with stopped_service_lock(destination):
+                        client = docker.from_env(timeout=10)
+                        try:
+                            image = installed_image(profile, client)
+                        finally:
+                            client.close()
+                        result = destination.preview_contract(scope, args.profile, image)
+                elif args.approve_execution_contract:
+                    from .execution_contract import MAX_APPROVAL_BYTES
+                    descriptor = os.open(args.approve_execution_contract, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+                    with os.fdopen(descriptor, "rb") as source:
+                        info = os.fstat(source.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                            raise ValueError("execution approval requires an owned private regular file")
+                        raw = source.read(MAX_APPROVAL_BYTES + 1)
+                    with stopped_service_lock(destination):
+                        result = destination.approve_contract(raw)
+                else:
+                    operation = ("open" if args.open_admission else "close" if args.close_admission
+                                 else "ceiling" if args.set_worker_ceiling is not None else "inspect")
+                    result = destination._full_lifecycle().admission_status(operation, args.set_worker_ceiling)
+            print(json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
             return
         app = build_app(config, credentials, cleanup_only=bool(args.cleanup_worker))
     except (ValueError, TypeError, KeyError, OSError):
