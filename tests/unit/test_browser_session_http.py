@@ -521,14 +521,30 @@ class ClientSourceTests(unittest.TestCase):
     def test_rendered_same_observation_recovers_from_hidden_and_age_updates_without_polling(self):
         path = Path(__file__).resolve().parents[2] / "src/browser_session/client/app.js"
         script = r'''
-const assert=require("node:assert/strict"),crypto=require("node:crypto").webcrypto;
+const assert=require("node:assert/strict"),nativeCrypto=require("node:crypto").webcrypto;
+// Keep real hashing, but delay it past the former two-turn readiness guess.
+const crypto={randomUUID:()=>nativeCrypto.randomUUID(),subtle:{digest:async(...args)=>{
+  await new Promise(resolve=>setImmediate(()=>setImmediate(()=>setImmediate(resolve))));
+  return nativeCrypto.subtle.digest(...args);
+}}};
 const {mountSessionClient}=require(process.argv[1]);
 const elements=new Map();
 const element=()=>({textContent:"",hidden:false,disabled:false,value:"",src:"",children:[],listeners:{},
   classList:{toggle(){}},addEventListener(name,callback){this.listeners[name]=callback},
   replaceChildren(){this.children=[]},append(value){this.children.push(value)},
   getBoundingClientRect(){return {left:0,top:0,width:800,height:600}}});
-const document={hidden:false,getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id)},createElement:element};
+let frameSource="",resolveFirstFrame;
+const firstFrame=new Promise(resolve=>{resolveFirstFrame=resolve});
+const document={hidden:false,getElementById(id){
+  if(!elements.has(id)){
+    const item=element();
+    if(id==="frame")Object.defineProperty(item,"src",{get:()=>frameSource,set:value=>{
+      frameSource=value;if(value)resolveFirstFrame();
+    }});
+    elements.set(id,item);
+  }
+  return elements.get(id);
+},createElement:element};
 const bytes=Buffer.from([255,216,255,217]),hash=require("node:crypto").createHash("sha256").update(bytes).digest("hex");
 const session={actor_id:"human",session_id:"s",context_id:"c",target_id:"t",csrf_token:"x".repeat(43),
   rights:{observe:{available:true,expires_at_ms:999999},control:{available:true,expires_at_ms:999999},stop:{available:true,expires_at_ms:999999}}};
@@ -543,8 +559,7 @@ const fetcher=async(path)=>{requests++;if(path==="/observation"&&fail)throw new 
 global.setTimeout=()=>1;global.clearTimeout=()=>{};global.setInterval=callback=>{ageTick=callback;return 1};
 (async()=>{
   const client=mountSessionClient(document,fetcher,crypto,()=>now);
-  await client.refresh();await new Promise(resolve=>setImmediate(resolve));await client.poll();
-  await new Promise(resolve=>setImmediate(resolve));
+  await firstFrame; // Observe this owned render, without another refresh or poll.
   assert.equal(elements.get("frame").hidden,false);const original=elements.get("frame").src;
   fail=true;await client.poll();assert.equal(elements.get("frame").hidden,true);
   fail=false;await client.poll();assert.equal(elements.get("frame").hidden,false);assert.equal(elements.get("frame").src,original);
