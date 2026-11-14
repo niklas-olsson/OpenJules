@@ -1,10 +1,13 @@
 # Standalone browser session components
 
-`src/browser_session` implements a bounded session interlock and request-auth
-components for the first standalone [#58 slice](https://github.com/niklas-olsson/OpenJules/issues/58).
-It does not launch a browser, run an HTTP listener, provide a browser client, or
-enable the existing standalone task routes. Its tests inject a deterministic
-adapter; they make no browser, website, model or TLS effects.
+`src/browser_session` implements a bounded session interlock, request
+authentication, an injected HTTP application and a static same-origin client
+for the first standalone [#58 slice](https://github.com/niklas-olsson/OpenJules/issues/58).
+It does not launch a browser or HTTP listener, or enable existing standalone
+task routes. Component tests use a deterministic adapter and in-process ASGI
+requests. The client model also has an optional deterministic Node fixture.
+These tests make no browser, website, model or TLS effects and do not qualify
+the client's real rendering or browser interaction.
 
 The accepted slice permits source work independently of native qualification.
 The selected hosted prerequisite route remains **NO_GO**. The
@@ -23,14 +26,24 @@ through `execute_next()`. These components are separate from managed execution,
 Polyphony authority, ZPM placement and canonical capture. A human correction is
 an attributed session note, never task authorization or acceptance.
 
+The core, pairing broker and ASGI application run in the trusted host's Python
+process. Journals and retained result bytes live on that host's owned private
+filesystem. The operator browser holds the opaque HttpOnly cookie; JavaScript
+receives only the CSRF nonce and authorized projections. There is no inference
+in this composition. The source
+gates cover Linux Python 3.11 and 3.12. Storage uses POSIX locks, no-follow file
+opens and private modes; Windows and browser-local Python are not qualified.
+
 | Surface | Responsibility |
 | --- | --- |
 | `types.py` | Closed identifiers, finite limits, exact original adapter tickets and outcomes. |
 | `store.py` | Private local interlock records, exclusive ownership lock, original identity binding and bounded retained bytes. |
 | `control.py` | Independent rights, current input ownership, generation fences, action intent, uncertainty, Stop and retained reads. |
 | `pairing.py` | Single-use host-prebound pairing codes, opaque browser-cookie aliases and pure HTTPS/Host/Origin/CSRF request validation. |
+| `http_app.py` | Fixed routes, raw-header validation, closed public projections, bounded responses and separate owner Stop capacity. |
+| `client/` | Same-origin pairing, latest-frame presentation, explicit input/takeover/handback/Stop and original-result reads. |
 | Future native adapter | Owned engine connection, real sandbox and egress enforcement, native action implementation, exact quiescence and teardown evidence. |
-| Future HTTP/client adapter | Actual verified HTTPS connection and raw headers, server-fixed routes, safe response serialization, latest-frame presentation and operator controls. |
+| Future qualified host composition | Actual verified HTTPS listener, native custody and confinement, independent supervision, and the real client journey. |
 
 The native adapter protocol has three asynchronous effects. `execute()` receives
 an `ActionTicket`; its `OperationOutcome` must name the original operation,
@@ -76,8 +89,10 @@ does not permit replay or reissuance.
 
 The browser receives a separate cookie alias with `Secure`, `HttpOnly`,
 `SameSite=Strict`, `Path=/` and the `__Host-` prefix, plus a CSRF value. The core
-token stays private. A future server supplies the actual connection's TLS flag
-and uncombined raw headers. Exact Host and Origin, duplicate security headers,
+token stays private. The host's future qualified ASGI server must supply the
+actual connection's HTTPS scheme and uncombined raw headers, with proxy and
+forwarded-header inference disabled. The application never reads forwarded
+headers as TLS evidence. Exact Host and Origin, duplicate security headers,
 same-origin reads and the CSRF value are checked before a protected operation.
 The server chooses the route, method and required right. The returned
 `AuthenticatedRequest` is a private input to a core call, not a serializable
@@ -86,14 +101,99 @@ payload generations at the action itself.
 
 Bind an owner's alias through `stop` when Stop expires later than observation
 or control. `GET /session` can then return the same CSRF value and original
-expiry after reload, without supplying an expired observation right. The pure
-broker supports that route shape; it does not install a live route.
+expiry after reload, without supplying an expired observation right. The
+application provides that route but does not install a live listener.
 
 Pairing codes, cookies and local revocation intent are bounded and process-local.
 Revoking one alias locally fences all aliases and pending codes for its original
 grant before requesting core revocation. An unconfirmed core result keeps that
 original grant fenced in the broker. Restart loses every alias and code; it
 does not renew a grant or recover a browser connection.
+
+## HTTP application and client composition
+
+`SessionHTTP(core, pairing, origin, notify_pending=...)` receives an already
+owned interlock and pairing broker. It creates no grant, adapter or background
+worker. The host starts and owns one dispatcher and `core.supervise()` separately
+before accepting clients. The fixed no-argument `notify_pending()` callback must
+only signal that dispatcher synchronously and return promptly. If signaling fails, the
+original durable queued intent remains available by operation ID; the HTTP
+application does not execute it, declare it unapplied or substitute another ID.
+
+ASGI startup/shutdown, viewer disconnect and reload do not acquire, reconnect,
+resume or stop the browser. Explicit owner Stop uses the original core action.
+The host retains native custody until teardown is observed or recorded as
+uncertain. Closing the application or interlock alone proves no native cleanup.
+There is no launcher in this source unit and no `ready` flag that admits a host.
+
+Use a dedicated HTTPS origin with the broker's exact authority. The broker
+accepts only its sole named cookie; unrelated application cookies are outside
+this topology. The static client and API share that origin. No CORS, WebSocket,
+DevTools, grant issuance, general file server or engine-creation route is exposed.
+Query strings, alternate path encodings, ambiguous body framing and duplicate
+security headers refuse. Request bodies cannot supply a TLS indicator or choose
+the route's required right. Serving this ASGI object in a test scope marked
+`https` does not qualify a certificate, browser trust or an actual connection.
+
+| Route | Required right | Result |
+| --- | --- | --- |
+| `GET /`, `/client/app.js`, `/client/style.css` | Public fixed assets on the declared origin | Bounded reviewed client bytes; no authority or session state. |
+| `POST /pair` | Host-prebound single-use code | Opaque Secure/HttpOnly/Strict cookie and CSRF nonce; no core token. |
+| `GET /session` | The alias's original binding right | Original nonce/expiry and separately rechecked right availability. |
+| `GET /observation` | `observe` | One latest frame, its exact identity/checksum, owner/mode, corrections and result metadata. |
+| `POST /actions` | `control`, plus core ownership/freshness | Original queued acknowledgement and host-notification outcome. |
+| `POST /takeover`, `/handback` | `control`, plus the core's owner/generation checks | Exact transfer acknowledgement, including unknown outcomes. |
+| `POST /stop` | `stop` | Original confirmed, pending, failed or unknown Stop acknowledgement. |
+| `GET /operations/<id>` | `observe` | Closed public status of the original operation. |
+| `GET /stop-operations/<id>` | `stop` | Only an existing original Stop by that owner; never creates Stop or reads another operation kind. |
+| `GET /results/<name>` | `observe` | Only `result.json`, `screenshot.jpg` or `events.json`: original bytes and SHA-256 header. |
+
+Acknowledgements use an explicit field set: original operation/actor, kind,
+state, generation and audit-persistence status. Internal tickets, grant digests,
+adapter deadlines, request bodies and core bearer tokens are excluded. Errors
+use fixed public codes, with no exception messages, private paths or logs.
+All responses carry no-store, no-referrer and a restrictive content policy.
+
+The client retains its CSRF nonce only in memory and never writes credentials to
+URLs or JavaScript storage. It clears the pairing field before redemption. Each
+mutation gets one original ID; a failed reply becomes unknown and is not
+automatically repeated. Status reads retain that ID and stop after twenty polls.
+A later ordinary reply cannot replace a newer owner Stop identity. No timeout,
+reload, frame arrival or reconnect automatically hands back or resumes input.
+
+The UI displays the original session/target, input owner, generations and frame
+age. The age conservatively includes request, body-read and hashing time, and a
+backwards monotonic clock cannot refresh it. Acknowledgements and observations
+advance a control-generation floor; older views or lower same-generation frame
+sequences cannot overwrite it. One observation fetch may be outstanding; a
+separate display timer marks an old frame stale even while that fetch waits.
+Input controls require the current fresh observation and human ownership, while
+the server independently
+checks both. Stop stays separate from ordinary input waits. Page content,
+corrections and retained JSON are rendered as text, never injected HTML. Result
+bytes must match both observed metadata and the response checksum before display.
+Manual control does not hide input from page scripts or observation; credential
+entry and private input remain excluded.
+
+| Application bound | Ceiling |
+| --- | --- |
+| Raw headers | 64 pairs, 16 KiB total, 128-byte names and 4 KiB values. |
+| Request body | 16 KiB, 128 ASGI chunks and one second; pairing further limits its body to 512 bytes. |
+| Complete request / final send | 15 seconds total; final send also has a three-second bound within that deadline. |
+| Ordinary admitted requests / response bodies | 4,096 requests, four simultaneous responses, 128 MiB total body bytes. |
+| Authorized owner Stop mutations | Four requests, one independent slot, 64 KiB response-body allowance. |
+| Authorized owner original-Stop reads and Stop-bound session reload | 28 requests, a separate slot, 192 KiB response-body allowance. These cannot consume the mutation reserve. |
+| Individual response | 2 MiB for ordinary JSON/assets; up to the core's 16 MiB limit for an explicit retained-result read. |
+| Frame retention | The core's one latest frame and one response per admitted reader; no observer queue. |
+
+These are application ceilings, not a network denial-of-service or whole-host
+memory qualification. Bounded headers and current purpose are checked before
+reserving owner capacity, and the actual route rechecks authority after the body
+arrives. A slow or unauthenticated session read, or exhausted ordinary/owner-read
+quota, cannot spend the reserved Stop mutation allowance. Request-count exhaustion
+does not renew a cookie, create a new allowance or restart the host. The actual listener,
+native process-memory/disk ceilings and full transfer measurements remain part
+of the unqualified host composition.
 
 ## Mediated actions and observation
 
@@ -249,10 +349,28 @@ records, retained-only reopen, single-use pairing, CSRF and the actual core/auth
 composition. The composition test uses real core grants and a deterministic
 fake adapter. It demonstrates request-auth snapshots being rechecked by the
 core, longer owner Stop, revocation and a new observe-only grant after LOST.
+The HTTP suite adds actual core/auth routing, closed public serialization,
+original queued-intent recovery after a lost reply, takeover/correction/handback,
+Stop status after observation expiry, slow-reader separation and exact retained
+bytes after reopen. The optional Node fixtures run the actual client model and
+renderer with mocked fetch replies and DOM objects. They check stale-input
+refusal, transit and clock rollback, bounded original-ID polling, late replies
+after owner Stop, old-view generation and sequence rejection, and restoration
+of a temporarily hidden frame. They open no browser or socket.
 
 These tests establish source-component behavior only. Native engine
-qualification, an actual verified HTTPS adapter and operator client, the
+qualification, an actual verified HTTPS listener and real operator client, the
 two-fixture autonomous task, live observation/takeover/handback, real Stop and
 retained reload remain separately required by #58. This unit does not establish
 browser-local execution, a local model path, managed integration, independent
-distribution or the Parallax/Terrarium demonstrator.
+distribution or a joined application demonstrator.
+
+The installed Python Playwright 1.62.0 API was inspected as source only: its
+`Screencast.start(on_frame, quality, size)` callback supplies JPEG bytes,
+presentation time and viewport dimensions, but no document/loader identity. It
+has no `fps` argument in that version. Delayed callbacks must not be labeled with
+whichever document happens to be current on arrival. A native adapter needs an
+explicit reviewed interface for the original ordered backend lifecycle, frame
+attribution, active-effect custody and actual process teardown. Constructing an
+adapter or receiving `Page.close()` alone cannot prove sandbox, egress or process
+reaping. No Playwright adapter or launch path is implemented by this HTTP unit.
