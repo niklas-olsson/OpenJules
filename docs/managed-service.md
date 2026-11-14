@@ -248,14 +248,18 @@ capability response does not permit later admission after capabilities change.
 For an approved `initial-v1` child outcome profile, a valid scoped authority
 response that omits `child_initial_outcome` reports the fixed readiness reason
 `Canonical managed authority is unsupported: child_initial_outcome=1`. A positive
-integer version other than 1 has the same diagnosis. The authority must first pass
+integer version other than 1 has the same diagnosis. Both also carry the
+[typed readiness refusal](worker-lifecycle.md#typed-readiness-refusal), allowing
+consumers to classify this case without parsing the human reason. The authority
+must first pass
 the existing schema, scope, root capability and child policy checks, including
 trustworthy policy types. A timeout, HTTP error, wrong scope or malformed response
 still reports `Canonical managed authority is unavailable`; arbitrary authority
 text is never copied into the diagnostic. Both cases keep admission closed and
 `ensure` returns 503. A later observation revalidates the authority rather than
 reusing an earlier success. Profiles without the optional outcome protocol keep
-their existing behavior.
+their existing behavior. Positive and unclassified capability responses omit the
+optional diagnostic field; they never serialize it as null.
 
 ## Legacy PR review boundary
 

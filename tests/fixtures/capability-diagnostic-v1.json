@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "diagnostic": {
+    "schema_version": 1,
+    "producer": "openjules",
+    "dimension": "canonical_authority",
+    "code": "required_capability_unsupported",
+    "requirement": {
+      "name": "child_initial_outcome",
+      "version": 1
+    }
+  },
+  "responses": {
+    "unsupported": {
+      "schema_version": 1,
+      "deployment_id": "deployment",
+      "repository": "github:github.com/owner/repo",
+      "profile": "approved-v1",
+      "operations": ["ensure", "discover", "observe", "drain", "stop"],
+      "managed_dispatch": false,
+      "profile_supported": true,
+      "repository_access": false,
+      "reason": "Canonical managed authority is unsupported: child_initial_outcome=1",
+      "children": false,
+      "diagnostic": {
+        "schema_version": 1,
+        "producer": "openjules",
+        "dimension": "canonical_authority",
+        "code": "required_capability_unsupported",
+        "requirement": {
+          "name": "child_initial_outcome",
+          "version": 1
+        }
+      }
+    },
+    "supported": {
+      "schema_version": 1,
+      "deployment_id": "deployment",
+      "repository": "github:github.com/owner/repo",
+      "profile": "approved-v1",
+      "operations": ["ensure", "discover", "observe", "drain", "stop"],
+      "managed_dispatch": true,
+      "profile_supported": true,
+      "repository_access": true,
+      "reason": "Canonical root and bounded child dispatch are available",
+      "children": true
+    },
+    "unavailable": {
+      "schema_version": 1,
+      "deployment_id": "deployment",
+      "repository": "github:github.com/owner/repo",
+      "profile": "approved-v1",
+      "operations": ["ensure", "discover", "observe", "drain", "stop"],
+      "managed_dispatch": false,
+      "profile_supported": true,
+      "repository_access": false,
+      "reason": "Canonical managed authority is unavailable",
+      "children": false
+    }
+  }
+}

@@ -22,7 +22,9 @@ from src.polyphony.managed_client import (
     ManagedAuthorityClient,
     UNSUPPORTED_CHILD_OUTCOME_REASON,
 )
-from src.worker.lifecycle import RuntimeCapabilities, WorkerLifecycle, WorkerScope
+from src.worker.lifecycle import (
+    CapabilityDiagnostic, RuntimeCapabilities, WorkerLifecycle, WorkerScope,
+)
 from src.worker.managed_dispatch import ManagedDispatcher
 from src.worker.execution_context import enter_managed_context, validate_managed_installation
 from src.worker.destination import (
@@ -299,6 +301,7 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             return RuntimeCapabilities(
                 profile_supported=True,
                 reason=UNSUPPORTED_CHILD_OUTCOME_REASON,
+                diagnostic=CapabilityDiagnostic.CHILD_INITIAL_OUTCOME_UNSUPPORTED,
             )
         except AuthorityUnavailable:
             return RuntimeCapabilities(

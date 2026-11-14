@@ -8,7 +8,8 @@ capture. This module never falls back to the legacy BackgroundTasks executor.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 import fcntl
 import json
 from pathlib import Path
@@ -90,12 +91,44 @@ class WorkerSpec:
         return WorkerScope(self.deployment_id, self.repository)
 
 
+class CapabilityDiagnostic(Enum):
+    """Locally classified refusals, never text copied from another service."""
+
+    CHILD_INITIAL_OUTCOME_UNSUPPORTED = "child_initial_outcome_unsupported"
+
+    def as_response(self) -> dict:
+        return {
+            "schema_version": 1,
+            "producer": "openjules",
+            "dimension": "canonical_authority",
+            "code": "required_capability_unsupported",
+            "requirement": {"name": "child_initial_outcome", "version": 1},
+        }
+
+
 @dataclass(frozen=True)
 class RuntimeCapabilities:
     managed_dispatch: bool = False
     profile_supported: bool = False
     repository_access: bool = False
     reason: str = "No managed runtime adapter is configured"
+    diagnostic: CapabilityDiagnostic | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.diagnostic is not None and (
+            self.diagnostic is not CapabilityDiagnostic.CHILD_INITIAL_OUTCOME_UNSUPPORTED
+            or self.profile_supported is not True
+            or self.repository_access is not False
+            or self.managed_dispatch is not False
+        ):
+            raise ValueError("invalid capability diagnostic or readiness combination")
+
+    def as_response(self) -> dict:
+        result = asdict(self)
+        diagnostic = result.pop("diagnostic")
+        if diagnostic is not None:
+            result["diagnostic"] = diagnostic.as_response()
+        return result
 
     @property
     def usable(self) -> bool:
@@ -396,7 +429,7 @@ class WorkerLifecycle:
             "repository": scope.repository,
             "profile": profile,
             "operations": list(OPERATIONS),
-            **asdict(capabilities),
+            **capabilities.as_response(),
         }
 
     def _usable(self, scope: WorkerScope, profile: str) -> bool:

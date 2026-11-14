@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from src.worker.child_types import ChildPolicy
+from src.worker.destination import initialize_destination
 from src.worker.managed_service import build_app
 from tests.unit.test_managed_docker_runtime import setup_runtime  # noqa: F401
 
@@ -27,6 +28,9 @@ MODEL_TOKEN = "diagnostic-model-fixture-token-" * 2
 WORKER_TOKEN = "diagnostic-worker-fixture-token-" * 2
 UNSUPPORTED = "Canonical managed authority is unsupported: child_initial_outcome=1"
 UNAVAILABLE = "Canonical managed authority is unavailable"
+VECTORS = json.loads(
+    (Path(__file__).parents[1] / "fixtures/capability-diagnostic-v1.json").read_text()
+)
 
 
 @contextmanager
@@ -70,7 +74,9 @@ def authority_server(supported):
 
 
 @asynccontextmanager
-async def composed_service(tmp_path, monkeypatch, runtime_fixture, outcome_protocol):
+async def composed_service(
+    tmp_path, monkeypatch, runtime_fixture, outcome_protocol, *, destination=False
+):
     _, docker_fixture, profile, spec = runtime_fixture
     # Explicit named Docker preflight fixture, not an actual daemon or UID proof.
     docker_fixture.info = lambda: {"SecurityOptions": []}
@@ -134,6 +140,9 @@ async def composed_service(tmp_path, monkeypatch, runtime_fixture, outcome_proto
             "children": [binding | {"policy": policy}],
             "poll_interval_seconds": 0.1,
         }
+        if destination:
+            config["execution_destination"] = {"destination_id": "diagnostic-host"}
+            initialize_destination(config)
         app = build_app(config, {WORKER_TOKEN: [spec.scope]})
         app.state.worker_lifecycle.runtime._client = docker_fixture
         async with app.router.lifespan_context(app):
@@ -186,29 +195,48 @@ def assert_scoped_requests(authority, spec):
         }
 
 
-async def capability(client, spec):
+async def capability(client, spec, *, destination_binding=None):
+    query = asdict(spec.scope) | {"profile": spec.profile}
+    route = "/api/workers/capabilities"
+    version = 1
+    if destination_binding is not None:
+        version = 2
+        route = "/api/v2/workers/capabilities"
+        query |= destination_binding | {"schema_version": "2"}
     response = await client.get(
-        "/api/workers/capabilities",
-        params=asdict(spec.scope) | {"profile": spec.profile},
+        route, params=query,
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == version
     assert payload["deployment_id"] == spec.deployment_id
     assert payload["repository"] == spec.repository
     assert payload["profile"] == spec.profile
+    if destination_binding is not None:
+        assert payload["destination_binding"] == destination_binding
+        assert payload["identity_binding"] == 1
+        assert payload["portable_manifest"] is payload["local_admission"] is False
     return payload
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("destination", [False, True], ids=["v1", "v2"])
 async def test_valid_unsupported_capability_is_distinct_from_untrusted_or_unavailable(
-    tmp_path, monkeypatch, setup_runtime
+    tmp_path, monkeypatch, setup_runtime, destination
 ):
     async with composed_service(
-        tmp_path, monkeypatch, setup_runtime, "initial-v1"
+        tmp_path, monkeypatch, setup_runtime, "initial-v1", destination=destination
     ) as (app, client, authority, supported, spec, docker_fixture):
-        ready = await capability(client, spec)
+        binding = (
+            app.state.worker_lifecycle.destination.binding(spec.scope, spec.profile)
+            if destination else None
+        )
+        options = {"destination_binding": binding}
+        ready = await capability(client, spec, **options)
         assert ready["managed_dispatch"] is ready["repository_access"] is True
+        assert "diagnostic" not in ready
+        if not destination:
+            assert ready == VECTORS["responses"]["supported"]
         before = retained_state(app, docker_fixture)
         missing = {
             key: value for key, value in supported.items()
@@ -249,12 +277,25 @@ async def test_valid_unsupported_capability_is_distinct_from_untrusted_or_unavai
         )
         for status, payload, reason in cases:
             authority.update(status=status, payload=payload)
-            blocked = await capability(client, spec)
+            blocked = await capability(client, spec, **options)
             assert blocked["profile_supported"] is True
             assert blocked["managed_dispatch"] is blocked["repository_access"] is False
             assert blocked["reason"] == reason
+            if reason == UNSUPPORTED:
+                assert blocked["diagnostic"] == VECTORS["diagnostic"]
+                assert len(json.dumps(blocked["diagnostic"]).encode()) <= 1024
+                if not destination:
+                    assert blocked == VECTORS["responses"]["unsupported"]
+            else:
+                assert "diagnostic" not in blocked
+                if not destination:
+                    assert blocked == VECTORS["responses"]["unavailable"]
             for _ in range(2):
-                ensured = await client.post("/api/workers/ensure", json=asdict(spec))
+                route, body = "/api/workers/ensure", asdict(spec)
+                if destination:
+                    route = "/api/v2/workers/ensure"
+                    body |= {"schema_version": 2, "destination_binding": binding}
+                ensured = await client.post(route, json=body)
                 assert ensured.status_code == 503
                 assert ensured.json() == {
                     "detail": "Managed runtime preflight is not ready"
@@ -262,12 +303,57 @@ async def test_valid_unsupported_capability_is_distinct_from_untrusted_or_unavai
             assert retained_state(app, docker_fixture) == before
 
         authority.update(status=200, payload=supported)
-        restored = await capability(client, spec)
+        restored = await capability(client, spec, **options)
         assert restored == ready
         assert retained_state(app, docker_fixture) == before
         # Each capability observation and ensure retry made its own HTTP read.
         assert len(authority["requests"]) == 2 + 3 * len(cases)
         assert_scoped_requests(authority, spec)
+
+        # Classification is carried by the typed result, independently of the
+        # legacy reason retained for old consumers during producer-first rollout.
+        authority["payload"] = missing
+        monkeypatch.setattr(
+            "src.worker.managed_service.UNSUPPORTED_CHILD_OUTCOME_REASON",
+            "A differently worded human explanation",
+        )
+        reworded = await capability(client, spec, **options)
+        assert reworded["reason"] == "A differently worded human explanation"
+        assert reworded["diagnostic"] == VECTORS["diagnostic"]
+
+        # Caller scope and expected destination are checked before any authority
+        # lookup. A diagnostic must never classify another installation/profile.
+        query = asdict(spec.scope) | {"profile": spec.profile}
+        route = "/api/workers/capabilities"
+        if destination:
+            query |= binding | {"schema_version": "2"}
+            route = "/api/v2/workers/capabilities"
+        request_count = len(authority["requests"])
+        for changed in (
+            {"deployment_id": "foreign"},
+            {"repository": "github:github.com/foreign/repo"},
+        ):
+            response = await client.get(route, params=query | changed)
+            assert response.status_code == 403
+            assert "diagnostic" not in response.json()
+        response = await client.get(
+            route, params=query, headers={"Authorization": "Bearer invalid"}
+        )
+        assert response.status_code == 401
+        assert "diagnostic" not in response.json()
+        response = await client.get(route, params=query | {"profile": "unapproved"})
+        assert response.status_code == (409 if destination else 200)
+        assert "diagnostic" not in response.json()
+        if not destination:
+            assert response.json()["managed_dispatch"] is False
+        if destination:
+            response = await client.get(
+                route, params=query | {"journal_incarnation": "0" * 32}
+            )
+            assert response.status_code == 409
+            assert "diagnostic" not in response.json()
+        assert len(authority["requests"]) == request_count
+        assert retained_state(app, docker_fixture) == before
 
 
 @pytest.mark.asyncio
