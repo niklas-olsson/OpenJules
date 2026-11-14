@@ -1,0 +1,38 @@
+{
+  "candidate": {
+    "browsers_json_sha256": "f306eed529599b1eaf2f8a85db9de2b23e1a3fe36c2b66434b7c9434fb627a99",
+    "chromium_revision": "1234",
+    "chromium_version": "151.0.7922.34",
+    "playwright_version": "1.62.0"
+  },
+  "comparison": {
+    "camoufox_selected": false,
+    "kitesurf_commit": "4a2903813a22b08d4f3cc64a4b35339d0293a5d1"
+  },
+  "fixtures": {
+    "tests/fixtures/browser-engine/alpha.html": "25c477fbaf017fc40b90e8f8dbc0ae9c7b8c90a63bb802d60f75662c9a5e253c",
+    "tests/fixtures/browser-engine/beta.html": "3b081cd51fd41673dca4ff787a5f9d8952ce104c20c0445fa7097f80dc5d9abd"
+  },
+  "host": {
+    "kernel": "6.18.57",
+    "machine": "x86_64",
+    "os_id": "debian",
+    "os_version": "13",
+    "python": "3.12.14",
+    "system": "Linux"
+  },
+  "limits": {
+    "acquisition_bytes": 0,
+    "browser_sessions": 0,
+    "child_timeout_seconds": 5,
+    "model_calls": 0,
+    "namespace_children": 1,
+    "overall_timeout_seconds": 30,
+    "page_actions": 0,
+    "report_bytes": 65536
+  },
+  "run_id": "browser-engine-2026-11-14-host-1",
+  "schema_version": 1,
+  "source_base_commit": "5ddde196a25eef7015a4e962cf10e5e60ec6aea1",
+  "tool_sha256": "d0989a7302f39431d0f2c0550e0198e8221754625de1dfe4ca3428b3c21797d6"
+}

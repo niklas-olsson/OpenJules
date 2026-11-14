@@ -6,6 +6,7 @@ The ownership regression separately uses the real ModelBroker, SQLite and HTTP.
 """
 
 from contextlib import contextmanager
+import fcntl
 import json
 import os
 import socket
@@ -131,6 +132,17 @@ def _eventually(predicate, timeout=2):
     while not predicate():
         assert time.monotonic() < deadline, "bounded transport observation timed out"
         time.sleep(0.01)
+
+
+def _service_lease_available(path):
+    # File.closed can become visible before close(2) releases its flock. Probe
+    # the kernel lease, then synchronously close the probe before returning.
+    with path.open("r+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
 
 
 def _pending(endpoint):
@@ -269,6 +281,22 @@ def test_incomplete_active_frame_has_no_effect_and_keeps_original_read_bound(tmp
             assert not context.calls
 
 
+def test_service_lease_observation_waits_for_kernel_release(tmp_path):
+    path = tmp_path / "service.lock"
+    with path.open("a") as original:
+        fcntl.flock(original, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        retained = os.dup(original.fileno())
+        try:
+            original.close()
+            # A duplicate gives a deterministic closed-object/held-kernel-lease
+            # state, without relying on the native close scheduling window.
+            assert original.closed
+            assert not _service_lease_available(path)
+        finally:
+            os.close(retained)
+    assert _service_lease_available(path)
+
+
 def test_model_service_lease_survives_close_until_active_http_handler_exits(
     tmp_path, monkeypatch
 ):
@@ -323,7 +351,9 @@ def test_model_service_lease_survives_close_until_active_http_handler_exits(
                 assert not caller.is_alive() and not endpoint.thread.is_alive()
                 assert "reply" not in result
                 assert result["error"] == "model broker refused request: not_authorized"
-                _eventually(lambda: broker._service_lock.closed)
+                _eventually(
+                    lambda: _service_lease_available(broker.root / "service.lock")
+                )
                 restored = ModelBroker(
                     broker.root,
                     broker.policies,

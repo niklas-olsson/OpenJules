@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Alpha fixture</title>
+<link rel="icon" href="data:,">
+<h1>Alpha equipment</h1><p data-price="120">Price: 120</p>
+<label>Delivery <select id="delivery"><option value="5">Standard: 5</option><option value="12">Express: 12</option></select></label>
+<p>Total: <output id="total">125</output></p>
+<a href="http://127.0.0.1:8766/beta.html">Compare Beta</a>
+<script>document.querySelector('#delivery').addEventListener('change', event => {
+  document.querySelector('#total').value = String(120 + Number(event.target.value));
+});</script></html>
