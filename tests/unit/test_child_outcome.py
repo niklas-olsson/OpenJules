@@ -166,9 +166,16 @@ def test_fallback_image_context_contains_every_actual_dockerfile_copy_source(
         ]
         assert "src/agent/child_outcome.py" in copies
         for source in copies:
-            assert (directory / source).read_bytes() == (
-                repository / source
-            ).read_bytes()
+            if (repository / source).is_dir():
+                def contents(root):
+                    return {path.relative_to(root).as_posix(): path.read_bytes()
+                            for path in root.rglob("*") if path.is_file()}
+                assert (directory / source).is_dir()
+                assert contents(directory / source) == contents(repository / source)
+            else:
+                assert (directory / source).read_bytes() == (
+                    repository / source
+                ).read_bytes()
         builds.append(copies)
         return SimpleNamespace(id="fixture-built-image"), []
 

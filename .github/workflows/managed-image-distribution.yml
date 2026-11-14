@@ -1,0 +1,94 @@
+name: Managed image distribution
+
+on:
+  push:
+    branches: [main, 'codex/managed-image-*']
+    paths:
+      - tools/managed_image*.py
+      - docker/Dockerfile.managed-agent
+      - docker/managed-image-*.json
+      - src/agent/managed_runner.py
+      - src/agent/managed_root_runner.py
+      - src/agent/child_tools.py
+      - src/agent/child_outcome.py
+      - src/agent/public_tools.py
+      - .github/workflows/managed-image-distribution.yml
+  pull_request:
+    paths:
+      - tools/managed_image*.py
+      - docker/Dockerfile.managed-agent
+      - docker/managed-image-*.json
+      - src/agent/managed_runner.py
+      - src/agent/managed_root_runner.py
+      - src/agent/child_tools.py
+      - src/agent/child_outcome.py
+      - src/agent/public_tools.py
+      - .github/workflows/managed-image-distribution.yml
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Acquire a replacement input proposal, or build the committed reviewed inputs
+        type: choice
+        options: [build, acquire]
+        default: build
+      base_manifest:
+        description: Immutable linux/amd64 Python platform manifest for acquisition
+        default: sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
+      snapshot:
+        description: Exact Debian UTC snapshot for acquisition
+        default: 20261113T000000Z
+      source_commit:
+        description: Exact helper source commit for acquisition
+        default: eca71cce8bb0883eb4bf6bf7462bb65d2fa1a3b8
+
+permissions:
+  contents: read
+
+jobs:
+  native-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Acquire a proposed finite input set without building
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'acquire'
+        env:
+          APPROVED_BASE: ${{ inputs.base_manifest }}
+          SNAPSHOT: ${{ inputs.snapshot }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          sudo env PATH="$PATH" "$(command -v python)" -B -m tools.managed_image acquire \
+            --base-manifest "$APPROVED_BASE" --snapshot "$SNAPSHOT" \
+            --source-commit "$SOURCE_COMMIT" --recipe-commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/managed-image-candidate"
+      - name: Build and qualify the reviewed input set
+        if: github.event_name != 'workflow_dispatch' || inputs.action == 'build'
+        run: |
+          sudo env PATH="$PATH" "$(command -v python)" -B -m tools.managed_image build \
+            --approved-inputs docker/managed-image-inputs.json \
+            --approved-inputs-sha256 sha256:dc588f1eaff9b6e73fd94f90690cf67f5dd9ef23e39f722a98d09e5b373ec644 \
+            --approved-qualification docker/managed-image-qualification.json \
+            --approved-qualification-sha256 sha256:def63e03d458fc0a15991a98dbce67c0ddc7e83c2898f61d5bb3f78cc33b073d \
+            --output "$RUNNER_TEMP/managed-image-candidate"
+      - name: Retain safe text metadata only
+        if: always()
+        run: |
+          mkdir -p managed-image-evidence
+          for name in inputs.json artifact.json acquisition-report.json resource-report.json apt-verification.txt context.json archive-inventory.json build.log native-tests.txt failed-command.txt; do
+            if sudo test -f "$RUNNER_TEMP/managed-image-candidate/$name"; then
+              sudo cp "$RUNNER_TEMP/managed-image-candidate/$name" "managed-image-evidence/$name"
+              sudo chmod 0644 "managed-image-evidence/$name"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-image-metadata
+          path: managed-image-evidence/
+          if-no-files-found: error
