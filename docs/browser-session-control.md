@@ -363,7 +363,7 @@ qualification, an actual verified HTTPS listener and real operator client, the
 two-fixture autonomous task, live observation/takeover/handback, real Stop and
 retained reload remain separately required by #58. This unit does not establish
 browser-local execution, a local model path, managed integration, independent
-distribution or the Parallax/Terrarium demonstrator.
+distribution or a joined application demonstrator.
 
 The installed Python Playwright 1.62.0 API was inspected as source only: its
 `Screencast.start(on_frame, quality, size)` callback supplies JPEG bytes,
