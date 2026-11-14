@@ -1,0 +1,45 @@
+name: Browser host prerequisite
+
+on:
+  push:
+    branches: ['qualification/browser-host/run/*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openjules-browser-host-prerequisite
+  cancel-in-progress: false
+
+jobs:
+  host-prerequisite:
+    if: github.repository == 'niklas-olsson/OpenJules' && github.event.repository.private == false && github.event.created == true && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Observe the one reviewed native host prerequisite
+        shell: bash
+        env:
+          BROWSER_HOST_EVENT_CREATED: ${{ github.event.created }}
+        run: |
+          probe_directory=$(mktemp -d "$RUNNER_TEMP/oj-browser-host.XXXXXXXX")
+          chmod 700 "$probe_directory"
+          set +e
+          /usr/bin/timeout --signal=TERM --kill-after=1s 14s \
+            /usr/bin/python3 -I -S tools/browser_host_preflight.py \
+            --manifest docs/browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json \
+            --output "$probe_directory/report.json"
+          probe_status=$?
+          /usr/bin/python3 -I -S tools/browser_host_preflight.py \
+            --classify-wrapper "$probe_status" \
+            --manifest docs/browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json \
+            --output "$probe_directory/report.json"
+          classification_status=$?
+          set -e
+          if test -f "$probe_directory/report.json"; then
+            cat "$probe_directory/report.json"
+          fi
+          exit "$classification_status"

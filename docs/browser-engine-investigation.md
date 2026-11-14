@@ -149,3 +149,70 @@ launch. The current receipt must remain unchanged. Missing installation alone
 does not establish an outside blocker when approved acquisition is feasible.
 No engine fork is justified, and production managed networking remains unchanged.
 The browser investigation and #58 stay open while that next step is assessed.
+
+## Next finite hosted prerequisite
+
+The [hosted manifest](browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json)
+selects one ordinary public GitHub `ubuntu-24.04` runner at image
+`20261111.370.1`, Ubuntu 24.04.5, kernel `7.0.0-1017-azure`, x86_64 and installed
+`/usr/bin/python3` 3.12.3. The source baseline is
+`7135d0988dff050df63acb89f75562dafccacf79`. Image, kernel or interpreter drift
+refuses before the experimental child as changed input. This check uses no
+downloaded candidate, package, browser, system browser or fixture service.
+
+The [reviewed helper](../tools/browser_host_preflight.py) starts at most one
+fixed `unshare --user --map-current-user --net` child, with original nonzero
+UID/GID and an environment containing only PATH and C locale. It observes
+separate user/network namespace identities, exact single-user/group mappings,
+only the loopback interface and no usable external routes. Inside that boundary
+it exercises three filesystem Unix socket objects with one fixed 16-byte
+payload. The parent samples the live owned child's PID, parent, start time and
+RSS before allowing its ordinary exit. It then records exit, reaping and socket
+cleanup. This IPC probe is a harness feasibility observation, not an established
+Chromium requirement; its refusal alone cannot reject Chromium.
+
+The host must provide at least 4 GiB available memory and 4 GiB free storage.
+The child has a five-second envelope, 128 MiB address-space limit, two CPU
+seconds, 32 file descriptors, no core dumps and a 1 MiB file-size limit. The
+probe/effects/cleanup envelope is 15 seconds including a three-second cleanup reserve;
+TERM and KILL each have one bounded one-second reap wait. Owned storage is at
+most 1 MiB, the report at most 64 KiB, two stdout messages at most 4 KiB each,
+and retained stderr at most 1 KiB. An interrupted spawn or uncertain reaping or
+path cleanup remains unknown. There is no automatic retry or alternate route.
+
+An installed `/usr/bin/timeout` supervisor, recorded with its executable digest,
+separately guards the whole helper CLI and final report writing: TERM at 14
+seconds and KILL one second later. The helper's `elapsed_ms` measures input
+checks, effects and child cleanup, excluding final serialization, writing and
+fsync. It fsyncs an initial incomplete/unknown marker before experimental effects
+and replaces it atomically only after writing and fsyncing the final receipt.
+The supervisor is distinct from the one namespace child. That child owns a
+separate session, so the supervisor's exit alone cannot prove child termination
+or reaping. Report classification requires both a complete matching receipt and
+an agreeing supervisor exit. Exit 124/137, missing/incomplete evidence, or a
+complete-looking observation contradicted by the supervisor remains UNKNOWN.
+The final text classification is ordinary evidence processing under the
+five-minute job limit, not another experimental child or a browser trial.
+
+The [workflow](../.github/workflows/browser-host-prerequisite.yml) is armed only
+by creating the previously unused branch
+`qualification/browser-host/run/<manifest-sha256>-<source-commit>`. Its new-branch
+event and first-attempt guards prevent ordinary review pushes and CI reruns from
+performing the probe. Before branch creation, independent review must bind the
+exact source commit, helper bytes, workflow bytes and complete manifest digest.
+The manifest hashes the helper and workflow; the activation branch binds the
+manifest and source commit without a self-referential hash. The workflow uses
+read-only repository permissions, pinned checkout without persisted credentials,
+no secrets, no package installation, a five-minute job timeout and one serial
+concurrency group. Pinned source checkout and action setup are ordinary CI
+network traffic outside the zero candidate-acquisition budget; their bytes are
+not measured by the helper. Reports are small text in run logs, with no binary
+artifact, cache, public endpoint or distribution change.
+
+This source has only mocked component-test evidence until a separately recorded
+native receipt is added. Even `observed` means host prerequisites only. Browser
+acquisition, sessions, pages, model calls, Chromium sandbox verification and
+#58's real attachment/control/result journey remain NOT_RUN. A proved mandatory
+namespace denial can support a selected-route no-go for #56; image drift, missing
+installation or unrelated IPC refusal requires a narrower conclusion. This
+phase does not complete #58 or alter production networking or execution rights.
