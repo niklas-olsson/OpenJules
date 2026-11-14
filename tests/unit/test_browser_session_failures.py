@@ -333,6 +333,22 @@ async def test_navigation_cannot_reuse_a_new_sequence_captured_before_navigation
 
 
 @pytest.mark.asyncio
+async def test_navigation_refuses_unpublished_pre_navigation_capture_in_the_same_millisecond(session):
+    core, adapter, clock, driver, _ = session
+    stale = adapter.observation()
+    original = request(core, driver)
+    original.update(action="navigate", parameters={"url": "https://two.example/item"})
+    core.submit(driver, **original)
+    assert (await core.execute_next())["state"] == "applied"
+    assert stale.captured_at_ms == clock.wall_ms()
+    clock.advance(2)
+    with pytest.raises(SessionDenied):
+        core.publish_observation(stale)
+    core.publish_observation(adapter.observation())
+    assert core.observe(driver)["frame"] is not None
+
+
+@pytest.mark.asyncio
 async def test_original_stop_polling_uses_only_owner_stop_right_and_never_creates_an_operation(session):
     core, adapter, clock, driver, _ = session
     owner = core.issue_grant("human", {"observe": clock.wall + 1, "stop": clock.wall + 1000})

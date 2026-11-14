@@ -115,8 +115,9 @@ per-observer frame queue. Old, oversized, too frequent, foreign or unrecognized
 observations are refused. Queued input also rechecks freshness before dispatch.
 Known-applied navigation invalidates the old observation immediately. Its
 outcome remains `applied`, while further input waits for a new authoritative
-observation captured at or after completion. A higher sequence alone cannot
-make a pre-navigation capture current.
+observation captured in a strictly later millisecond than completion. A higher
+sequence or the same coarse timestamp cannot make a pre-navigation capture
+current.
 
 | Default bound | Value |
 | --- | --- |

@@ -706,7 +706,8 @@ class SessionControl:
                 # Applied navigation is known, while its current document/frame
                 # is unavailable until a subsequent authoritative observation.
                 self._frame, self._served = None, {}
-                self._observation_floor_ms = max(self._observation_floor_ms, self.clock.wall_ms())
+                self._observation_floor_ms = max(self._observation_floor_ms,
+                                                min(2**53 - 1, self.clock.wall_ms() + 1))
             if result != "unknown" and state["inflight"] == ticket.operation_id:
                 state["inflight"] = None
             expired = self.clock.monotonic() >= ticket.deadline_monotonic
