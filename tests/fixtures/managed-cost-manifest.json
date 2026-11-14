@@ -244,6 +244,6 @@
       "params": {}
     }
   ],
-  "sample_policy": "Round-robin by repetition; reverse the declared case order on alternate repetitions. Each sample is a fresh process. No p95. Root controls disable timing hooks while preserving correctness, body counters and resource monitoring.",
+  "sample_policy": "All cases except installed-idle run round-robin by repetition; reverse the declared case order on alternate repetitions. The sole installed-idle sample runs last, after all other 65 samples, and closes further admission with explicitly qualified stopped-resource retention. Each sample is a fresh process. No p95. Root controls disable timing hooks while preserving correctness, body counters and resource monitoring.",
   "duration_policy": "Sum of per-case fail-safe maxima may exceed the whole-trial cap. Admission reserves the next case maximum plus cleanup reserve against the original trial deadline. Any unadmitted case remains NOT_RUN, and an incomplete run cannot close the investigation."
 }

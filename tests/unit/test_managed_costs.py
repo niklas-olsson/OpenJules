@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from tools.managed_costs import (
-    BudgetStop, discover_owned_containers, mark_container_terminal, ordered_cases, ownership_hooks, proc_stat, register_container, resource_summary,
+    BudgetStop, custody_report, discover_owned_containers, mark_container_terminal, ordered_cases, ownership_hooks, proc_stat, register_container, resource_summary,
     sample_owned, validate_manifest,
 )
 from tools.managed_cost_cases import expected_tree, retained_tree
@@ -77,6 +77,8 @@ def test_reviewed_manifest_reserves_actual_finite_transfer_and_storage():
     assert second == list(reversed([row["id"] for row in value["cases"] if row["samples"] >= 2]))
     assert first.index("root") < first.index("root-observer-control")
     assert second.index("root-observer-control") < second.index("root")
+    assert order[-1]["id"] == "installed-idle" and order[-1]["sample"] == 1
+    assert len(order[:-1]) == 65 and all(row["kind"] != "installed_idle" for row in order[:-1])
 
 
 @pytest.mark.parametrize("mutate", [
@@ -86,6 +88,7 @@ def test_reviewed_manifest_reserves_actual_finite_transfer_and_storage():
     lambda m: m["cases"][0].update(max_transfer_bytes=512 * 1024 * 1024),
     lambda m: m["cases"][0].update(max_storage_bytes=8 * 1024**3),
     lambda m: m["cases"][1].update(id=m["cases"][0]["id"]),
+    lambda m: next(row for row in m["cases"] if row["kind"] == "installed_idle").update(samples=2),
 ])
 def test_admission_refuses_changed_caps_and_boolean_aliases(mutate):
     value = manifest()
@@ -130,6 +133,61 @@ def test_missing_owned_io_is_a_lower_bound_not_a_zero_measurement(tmp_path):
     assert result["complete_observations"] is False
     assert result["sampled_max_owned_mixed_memory_bytes"] is None
     assert result["sampled_observed_mixed_memory_lower_bound_bytes"] == 2 * os.sysconf("SC_PAGE_SIZE")
+
+
+@pytest.mark.parametrize("io_available", [False, True])
+def test_original_process_exit_during_io_is_an_explicit_exclusion(tmp_path, monkeypatch, io_available):
+    import tools.managed_costs as costs
+    proc, work = tmp_path / "proc", tmp_path / "work"
+    proc.mkdir(); work.mkdir()
+    fake_proc(proc, 10, 1, 101, 2)
+    fake_proc(proc, 11, 10, 102, 3, io=io_available)
+    original_stat = costs.proc_stat
+    child_reads = 0
+
+    def terminated(pid, root):
+        nonlocal child_reads
+        value = original_stat(pid, root)
+        if pid == 11:
+            child_reads += 1
+            if child_reads > 1:
+                value["state"] = "Z"
+        return value
+
+    monkeypatch.setattr(costs, "proc_stat", terminated)
+    result = sample_owned(10, 101, work, proc=proc)
+    assert result["processes_departed_during_observation"] == 1
+    assert result["missing"] == []
+    assert {row["pid"] for row in result["processes"]} == {10}
+    assert resource_summary([result])["complete_observations"] is True
+
+
+@pytest.mark.parametrize("replacement", ["reused_zombie", "unreadable"])
+def test_failed_io_cannot_be_excused_by_reused_or_unreadable_process(tmp_path, monkeypatch, replacement):
+    import tools.managed_costs as costs
+    proc, work = tmp_path / "proc", tmp_path / "work"
+    proc.mkdir(); work.mkdir()
+    fake_proc(proc, 10, 1, 101, 2)
+    fake_proc(proc, 11, 10, 102, 3, io=False)
+    original_stat = costs.proc_stat
+    child_reads = 0
+
+    def changed(pid, root):
+        nonlocal child_reads
+        value = original_stat(pid, root)
+        if pid == 11:
+            child_reads += 1
+            if child_reads > 1:
+                if replacement == "unreadable":
+                    raise PermissionError("controlled original identity unreadable")
+                value.update(state="Z", start_ticks=999)
+        return value
+
+    monkeypatch.setattr(costs, "proc_stat", changed)
+    result = sample_owned(10, 101, work, proc=proc)
+    assert result["processes_departed_during_observation"] == 0
+    assert result["missing"] == ["owned_process_observation_unavailable"]
+    assert resource_summary([result])["complete_observations"] is False
 
 
 def test_reused_root_pid_is_not_observed_as_the_owned_process(tmp_path):
@@ -222,3 +280,63 @@ def test_stale_discovery_cannot_reopen_terminal_container_state(tmp_path, monkey
     register_container(tmp_path, client, "owned")
     mark_container_terminal(tmp_path, "owned", "stopped")
     assert json.loads((tmp_path / "ownership.json").read_text())["containers"] == [{"id": "owned", "state": "removed"}]
+
+
+def idle_retention_fixture(workdir):
+    case = next(row for row in manifest()["cases"] if row["kind"] == "installed_idle") | {"sample": 1}
+    proof = {"schema_version": 1, "state": "retained_stopped", "container_id": "a" * 64,
+             "volume_name": "openjules-work-" + "b" * 40, "volume_identity_sha256": "c" * 64,
+             "worker_id": "d" * 32, "reason": "executed_capture_required", "observed_stopped": True,
+             "capacity_reserved": 0, "model_fixture_calls": 0, "tasks_enrolled": 0,
+             "volume_storage_bytes": 4096,
+             "scope": {"deployment_id": "cost-idle-" + "e" * 16,
+                       "repository": "github:github.com/managed-cost-fixture/idle"}}
+    registry = {"containers": [{"id": proof["container_id"], "state": "stopped",
+                                "volume_names": [proof["volume_name"]]}]}
+    (workdir / "ownership.json").write_text(json.dumps(registry))
+    (workdir / "installed-acquisition.json").write_text(json.dumps({"scope": proof["scope"]}))
+    (workdir / "installed-retention.json").write_text(json.dumps(proof))
+    return case, proof, registry
+
+
+def test_original_stopped_idle_retention_keeps_storage_without_claiming_removal(tmp_path):
+    case, proof, _ = idle_retention_fixture(tmp_path)
+    facts = {"installed_owned_worker_id": proof["worker_id"]}
+    report = custody_report(case, tmp_path, facts, False)
+    assert report == {"custody_unresolved": False, "retained_resources": [proof],
+                      "retained_volume_storage_bytes": 4096}
+    assert json.loads((tmp_path / "ownership.json").read_text())["containers"][0]["state"] == "stopped"
+    assert custody_report(case, tmp_path, facts, True)["custody_unresolved"] is True
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong_worker", "wrong_scope", "wrong_volume",
+                                   "running", "extra_container", "boolean_capacity", "negative_storage",
+                                   "unexpected_field", "wrong_case"])
+def test_idle_retention_cannot_excuse_unknown_or_mismatched_custody(tmp_path, change):
+    case, proof, registry = idle_retention_fixture(tmp_path)
+    facts = {"installed_owned_worker_id": proof["worker_id"]}
+    if change == "wrong_worker":
+        facts["installed_owned_worker_id"] = "f" * 32
+    elif change == "wrong_scope":
+        proof["scope"]["deployment_id"] = "cost-idle-" + "f" * 16
+    elif change == "wrong_volume":
+        registry["containers"][0]["volume_names"] = ["openjules-work-" + "f" * 40]
+    elif change == "running":
+        registry["containers"][0]["state"] = "running"
+    elif change == "extra_container":
+        registry["containers"].append({"id": "f" * 64, "state": "stopped", "volume_names": []})
+    elif change == "boolean_capacity":
+        proof["capacity_reserved"] = False
+    elif change == "negative_storage":
+        proof["volume_storage_bytes"] = -1
+    elif change == "unexpected_field":
+        proof["unqualified"] = "not a closed producer proof"
+    elif change == "wrong_case":
+        case["kind"] = "root"
+    (tmp_path / "ownership.json").write_text(json.dumps(registry))
+    (tmp_path / "installed-retention.json").write_text(json.dumps(proof))
+    if change == "missing":
+        (tmp_path / "installed-retention.json").unlink()
+    report = custody_report(case, tmp_path, facts, False)
+    assert report == {"custody_unresolved": True, "retained_resources": [],
+                      "retained_volume_storage_bytes": 0}

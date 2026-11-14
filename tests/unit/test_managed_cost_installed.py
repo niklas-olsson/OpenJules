@@ -10,7 +10,7 @@ import pytest
 
 from tools.managed_cost_installed import (
     SNAPSHOT_ARRAYS, _zero_event, original_store, require_empty_snapshot, retained_worker_rows,
-    witness_zero, zero_binding,
+    retained_cleanup_receipt, retained_resource_size, witness_zero, zero_binding,
 )
 
 
@@ -306,3 +306,108 @@ def test_original_store_refuses_replacement_during_constructor_before_yield(tmp_
         with original_store(ReplacingStore, state, identity, scope):
             pytest.fail("replacement must never receive a controller mutation")
     assert calls == [("constructed", False), "entered", ("closed", AssertionError)]
+
+
+def cleanup_result():
+    _, scope = empty_snapshot()
+    receipt = {"schema_version": 1, **scope, "worker_id": "original-worker",
+               "state": "retained", "reason": "executed_capture_required",
+               "container_removed": False, "volume_removed": False,
+               "archives_retained": True}
+    return scope, receipt
+
+
+def test_idle_native_retention_is_observed_without_claiming_removal(tmp_path):
+    from tools.managed_cost_measurement import Recorder
+
+    scope, receipt = cleanup_result()
+    recorder = Recorder(tmp_path)
+    result = SimpleNamespace(returncode=1, stdout=json.dumps(receipt))
+    assert retained_cleanup_receipt(result, scope, "original-worker", recorder) == receipt
+    observed = recorder.report()["facts"]["installed_cleanup_observation"]
+    assert observed["state"] == "retained" and observed["identity_matches"] is True
+    assert observed["container_removed"] is False and observed["volume_removed"] is False
+    assert recorder.report()["complete"] is True
+
+
+@pytest.mark.parametrize("change", [
+    {"schema_version": True}, {"worker_id": "foreign-worker"}, {"state": "cleaned"},
+    {"reason": "SECRET_PRIVATE_PATH"}, {"container_removed": 0},
+    {"volume_removed": True}, {"extra": "SECRET_PRIVATE_PATH"},
+])
+def test_changed_native_cleanup_receipt_remains_unqualified_and_private(tmp_path, change):
+    from tools.managed_cost_measurement import Recorder
+
+    scope, receipt = cleanup_result()
+    recorder = Recorder(tmp_path)
+    result = SimpleNamespace(returncode=1, stdout=json.dumps(receipt | change))
+    with pytest.raises(AssertionError, match="idle_retained_cleanup_receipt_invalid"):
+        retained_cleanup_receipt(result, scope, "original-worker", recorder)
+    assert "SECRET_PRIVATE_PATH" not in json.dumps(recorder.report())
+
+
+@pytest.mark.parametrize("returncode,stdout", [(0, None), (True, None), (1, "not-json"),
+                                              (1, "x" * 4097)])
+def test_idle_retention_needs_exact_native_exit_and_bounded_receipt(tmp_path, returncode, stdout):
+    from tools.managed_cost_measurement import Recorder
+
+    scope, receipt = cleanup_result()
+    result = SimpleNamespace(returncode=returncode,
+                             stdout=json.dumps(receipt) if stdout is None else stdout)
+    with pytest.raises(AssertionError, match="idle_retained_cleanup_receipt_invalid"):
+        retained_cleanup_receipt(result, scope, "original-worker", Recorder(tmp_path))
+
+
+def retained_resources():
+    from src.worker.docker_runtime import ManagedDockerRuntime
+
+    container = SimpleNamespace(id="original-container", reload=lambda: None,
+                                attrs={"State": {"Running": False, "Status": "exited"},
+                                       "Mounts": [{"Destination": "/workspace", "Type": "volume",
+                                                   "Name": "original-volume"}]})
+    volume = SimpleNamespace(reload=lambda: None,
+                             attrs={"Name": "original-volume", "CreatedAt": "fixture-time",
+                                    "Driver": "local", "Scope": "local",
+                                    "Labels": {"openjules.worker": "original-worker"}, "Options": None})
+    sizes = {"Volumes": [{"Name": "original-volume", "UsageData": {"Size": 8192}}]}
+    calls = []
+    def get_container(identity):
+        calls.append(("container", identity))
+        assert identity == "original-container"
+        return container
+    def get_volume(identity):
+        calls.append(("volume", identity))
+        assert identity == "original-volume"
+        return volume
+    client = SimpleNamespace(containers=SimpleNamespace(get=get_container),
+                             volumes=SimpleNamespace(get=get_volume), df=lambda: sizes)
+    identity = deepcopy(ManagedDockerRuntime._volume_identity(volume))
+    return client, container, volume, sizes, identity, calls
+
+
+def test_retained_volume_is_observed_and_charged_not_removed():
+    client, container, volume, sizes, identity, calls = retained_resources()
+    assert retained_resource_size(client, "original-container", "original-volume", identity) == 8192
+    assert calls == [("container", "original-container"), ("volume", "original-volume")]
+
+
+@pytest.mark.parametrize("change", ["running", "foreign_container", "foreign_mount", "changed_volume",
+                                   "missing_size", "boolean_size", "duplicate_size"])
+def test_retention_requires_original_stopped_resources_and_actual_storage(change):
+    client, container, volume, sizes, identity, calls = retained_resources()
+    if change == "running":
+        container.attrs["State"]["Running"] = True
+    elif change == "foreign_container":
+        container.id = "foreign-container"
+    elif change == "foreign_mount":
+        container.attrs["Mounts"][0]["Name"] = "foreign-volume"
+    elif change == "changed_volume":
+        volume.attrs["CreatedAt"] = "recreated"
+    elif change == "missing_size":
+        sizes["Volumes"].clear()
+    elif change == "boolean_size":
+        sizes["Volumes"][0]["UsageData"]["Size"] = False
+    elif change == "duplicate_size":
+        sizes["Volumes"].append(deepcopy(sizes["Volumes"][0]))
+    with pytest.raises(AssertionError):
+        retained_resource_size(client, "original-container", "original-volume", identity)

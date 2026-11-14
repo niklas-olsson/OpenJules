@@ -15,8 +15,10 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import resource
 import signal
+import stat
 import statistics
 import subprocess
 import sys
@@ -59,6 +61,18 @@ def proc_stat(pid, proc=Path("/proc")):
     return {"pid": int(pid), "ppid": int(fields[1]), "state": fields[0],
             "start_ticks": int(fields[19]), "user_ticks": int(fields[11]),
             "system_ticks": int(fields[12]), "rss_bytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE")}
+
+
+def _confirmed_process_departure(original, proc):
+    """A failed live read is an exclusion only after an original-exit witness."""
+    try:
+        current = proc_stat(original["pid"], proc)
+    except FileNotFoundError:
+        return not (proc / str(original["pid"])).exists()
+    except (OSError, ValueError):
+        return False
+    return (current["start_ticks"] == original["start_ticks"]
+            and current["state"] in {"Z", "X", "x"})
 
 
 def _cgroup(pid):
@@ -156,6 +170,72 @@ def owned_volume_bytes(workdir, client):
     return sum(observed.values())
 
 
+def retained_idle_proof(case, workdir, containers, worker_id):
+    """Recognize one qualified stopped idle retention, never a deletion receipt."""
+    path = Path(workdir) / "installed-retention.json"
+    if not path.exists():
+        return None
+    if (case.get("id") != "installed-idle" or case.get("kind") != "installed_idle"
+            or type(case.get("sample")) is not int or case["sample"] != 1):
+        raise ValueError("retention_case_not_qualified")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 16384:
+            raise ValueError("retention_proof_invalid")
+        proof = json.loads(source.read(16385))
+    keys = {"schema_version", "state", "container_id", "volume_name", "volume_identity_sha256",
+            "worker_id", "reason", "observed_stopped", "capacity_reserved", "model_fixture_calls",
+            "tasks_enrolled", "volume_storage_bytes", "scope"}
+    if type(proof) is not dict or set(proof) != keys:
+        raise ValueError("retention_proof_invalid")
+    if (type(proof["schema_version"]) is not int or proof["schema_version"] != 1
+            or proof["state"] != "retained_stopped" or proof["reason"] != "executed_capture_required"
+            or proof["observed_stopped"] is not True or proof["worker_id"] != worker_id
+            or type(worker_id) is not str or re.fullmatch(r"[0-9a-f]{32}", worker_id) is None
+            or any(type(proof[name]) is not int or proof[name] != 0
+                   for name in ("capacity_reserved", "model_fixture_calls", "tasks_enrolled"))
+            or type(proof["volume_storage_bytes"]) is not int
+            or not 0 <= proof["volume_storage_bytes"] <= case["max_storage_bytes"]):
+        raise ValueError("retention_proof_invalid")
+    for name, pattern in (("container_id", r"[0-9a-f]{64}"),
+                          ("volume_name", r"openjules-work-[0-9a-f]{40}"),
+                          ("volume_identity_sha256", r"[0-9a-f]{64}")):
+        if type(proof[name]) is not str or re.fullmatch(pattern, proof[name]) is None:
+            raise ValueError("retention_identity_invalid")
+    scope = proof["scope"]
+    if (type(scope) is not dict or set(scope) != {"deployment_id", "repository"}
+            or type(scope["deployment_id"]) is not str
+            or re.fullmatch(r"cost-idle-[0-9a-f]{16}", scope["deployment_id"]) is None
+            or scope["repository"] != "github:github.com/managed-cost-fixture/idle"):
+        raise ValueError("retention_scope_invalid")
+    acquisition = json.loads((Path(workdir) / "installed-acquisition.json").read_bytes())
+    remaining = [row for row in containers if row["state"] != "removed"]
+    if (acquisition.get("scope") != scope or len(remaining) != 1
+            or remaining[0]["state"] != "stopped" or remaining[0]["id"] != proof["container_id"]
+            or remaining[0].get("volume_names") != [proof["volume_name"]]):
+        raise ValueError("retention_original_ownership_mismatch")
+    return proof
+
+
+def custody_report(case, workdir, measurement_facts, uncertain):
+    """Report known retention separately from unresolved original custody."""
+    result = {"custody_unresolved": bool(uncertain), "retained_resources": [],
+              "retained_volume_storage_bytes": 0}
+    ownership = Path(workdir) / "ownership.json"
+    try:
+        containers = json.loads(ownership.read_bytes())["containers"] if ownership.exists() else []
+        retained = retained_idle_proof(case, workdir, containers,
+                                       measurement_facts.get("installed_owned_worker_id"))
+        if retained is not None:
+            result["retained_resources"] = [retained]
+            result["retained_volume_storage_bytes"] = retained["volume_storage_bytes"]
+        elif any(row["state"] != "removed" for row in containers):
+            result["custody_unresolved"] = True
+    except (OSError, ValueError, KeyError, TypeError):
+        result["custody_unresolved"] = True
+    return result
+
+
 def tree_bytes(path):
     total = 0
     for directory, directories, files in os.walk(path, followlinks=False):
@@ -221,16 +301,18 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
             last = proc_stat(pid, proc)
             if first["start_ticks"] != last["start_ticks"]:
                 raise ValueError("pid_reused")
-            processes.append({key: last[key] for key in ("pid", "start_ticks", "rss_bytes", "user_ticks", "system_ticks")} | {"io": io})
-        except FileNotFoundError:
-            # A process known to have exited during this non-atomic sample is
-            # an explicit sampling exclusion, never a fabricated zero RSS.
-            if not (proc / str(pid)).exists():
+            if last["state"] in {"Z", "X", "x"}:
+                departed += 1
+            else:
+                processes.append({key: last[key] for key in ("pid", "start_ticks", "rss_bytes", "user_ticks", "system_ticks")} | {"io": io})
+        except (OSError, ValueError):
+            # A process can become a zombie while /proc/io is being read.
+            # Only a confirmed original exit excludes it; a live, reused or
+            # unreadable identity remains missing, never a zero measurement.
+            if _confirmed_process_departure(first, proc):
                 departed += 1
             else:
                 missing.append("owned_process_observation_unavailable")
-        except (OSError, ValueError):
-            missing.append("owned_process_observation_unavailable")
     container_samples = []
     container_departures = 0
     for row in containers:
@@ -433,17 +515,21 @@ def validate_manifest(value):
         raise ValueError("declared_transfer_exceeds_investigation_cap")
     if sum(case["samples"] * case["max_storage_bytes"] for case in cases) > cap["storage_bytes"]:
         raise ValueError("declared_storage_exceeds_investigation_cap")
+    idle = [case for case in cases if case["kind"] == "installed_idle"]
+    if len(idle) != 1 or idle[0]["id"] != "installed-idle" or idle[0]["samples"] != 1:
+        raise ValueError("final_idle_case_not_qualified")
     return value
 
 
 def ordered_cases(manifest):
-    """Alternate comparable runs by repetition; retain the declared order."""
+    """Alternate comparable runs; the sole idle retention must finish the trial."""
     result = []
     for sample in range(max(row["samples"] for row in manifest["cases"])):
         rows = manifest["cases"] if sample % 2 == 0 else list(reversed(manifest["cases"]))
         for case in rows:
-            if sample < case["samples"]:
+            if case["kind"] != "installed_idle" and sample < case["samples"]:
                 result.append(case | {"sample": sample + 1})
+    result.extend(case | {"sample": 1} for case in manifest["cases"] if case["kind"] == "installed_idle")
     return result
 
 
@@ -531,16 +617,10 @@ def run_child(args):
         if not report["measurements"].get("complete", False) and report["status"] == "PASS":
             report["status"] = "FAIL"
             report["diagnostic_code"] = "measurement_incomplete"
-        report["custody_unresolved"] = bool(case.get("_guard", {}).get("uncertain"))
-        if report["measurements"].get("facts", {}).get("failed_sample_cleanup") == "unresolved":
-            report["custody_unresolved"] = True
-        ownership = workdir / "ownership.json"
-        if ownership.exists():
-            try:
-                if any(row["state"] != "removed" for row in json.loads(ownership.read_bytes())["containers"]):
-                    report["custody_unresolved"] = True
-            except (OSError, ValueError, KeyError):
-                report["custody_unresolved"] = True
+        measurement_facts = report["measurements"].get("facts", {})
+        report.update(custody_report(case, workdir, measurement_facts,
+                      case.get("_guard", {}).get("uncertain")
+                      or measurement_facts.get("failed_sample_cleanup") == "unresolved"))
         if report["custody_unresolved"] and report["status"] == "PASS":
             report["status"] = "FAIL"
             report["diagnostic_code"] = "original_resource_custody_unresolved"
@@ -674,6 +754,26 @@ def run_suite(args):
             stopped = censored
         if row.get("custody_unresolved") or row.get("diagnostic_code") == "child_report_unavailable":
             stopped = "original_resource_custody_unresolved"
+        if row.get("retained_resources"):
+            # The final idle worker is deliberately retained by the producer.
+            # Account for that storage and close admission, without pretending
+            # a stopped container or retained volume was physically removed.
+            stopped = stopped or "qualified_idle_retention_closes_admission"
+            try:
+                expected = custody_report(case, sample_dir, row.get("measurements", {}).get("facts", {}), False)
+                if (expected["custody_unresolved"] or expected["retained_resources"] != row["retained_resources"]
+                        or expected["retained_volume_storage_bytes"] != row.get("retained_volume_storage_bytes")
+                        or case != scheduled[-1]):
+                    raise ValueError("retention_proof_not_final_or_changed")
+                row["final_owned_volume_storage_bytes"] = owned_volume_bytes(sample_dir, observation_client)
+                row["final_owned_storage_bytes"] = tree_bytes(root) + row["final_owned_volume_storage_bytes"]
+                if row["final_owned_storage_bytes"] > caps["storage_bytes"]:
+                    raise ValueError("retained_storage_cap")
+            except Exception:
+                row["custody_unresolved"] = True
+                row["status"] = "FAIL"
+                row["diagnostic_code"] = "retained_resource_qualification_incomplete"
+                stopped = "original_resource_custody_unresolved"
         # Reserve the declared bound; unmeasured fixture traffic is never
         # incorrectly treated as zero budget consumption.
         used_transfer += case["max_transfer_bytes"]
@@ -688,11 +788,15 @@ def run_suite(args):
               "samples": rows, "summary": summarize(rows),
               "complete": len(rows) == len(scheduled) and all(row["status"] == "PASS" for row in rows),
               "elapsed_seconds": time.monotonic() - started, "declared_transfer_reserved_bytes": used_transfer,
+              "admission_closed_reason": stopped,
+              "retained_resources": [resource for row in rows for resource in row.get("retained_resources", [])],
+              "retained_volume_storage_bytes": sum(row.get("retained_volume_storage_bytes", 0) for row in rows),
               "limits": ["synthetic local authority/model/forge fixtures; no live provider or forge mutation",
                          "source and Docker image reuse do not reuse an execution incarnation",
                          "nested span wall/thread CPU is inclusive and must not be added",
                          "five comparable samples support median/range, not p95 or a service objective",
-                         "only explicitly labeled installed idle uses real pinned sibling services"]}
+                         "only explicitly labeled installed idle uses real pinned sibling services",
+                         "the final never-dispatched idle worker remains stopped and retained; known custody is not physical removal"]}
     write_private(root / "report.json", report)
     observation_client.close()
     return 0 if report["complete"] else 1

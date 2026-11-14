@@ -51,6 +51,7 @@ FACTS = frozenset({
     "source", "model", "publication", "storage", "setup", "sample", "overhead",
     "owned_worker_ids", "owned_container_ids",
     "installed_owned_worker_id", "failed_sample_cleanup",
+    "installed_windows", "installed_cleanup_observation",
 })
 EXCEPTIONS = frozenset({
     "AssertionError", "ValueError", "TypeError", "OSError", "RuntimeError",

@@ -81,6 +81,70 @@ def require_empty_snapshot(value, scope):
             "idle_canonical_work_or_scope_changed")
 
 
+def retained_cleanup_receipt(result, scope, worker, recorder):
+    """Retain a closed diagnostic before requiring the producer's exact refusal.
+
+    A never-dispatched worker deliberately lacks the executed-attempt proof
+    required by native physical cleanup. Observing this refusal is not removal.
+    """
+    output = result.stdout.encode("utf-8")
+    value = None
+    if len(output) <= 4096:
+        try:
+            value = json.loads(output)
+        except (ValueError, UnicodeError):
+            pass
+    expected = {"schema_version": 1, **scope, "worker_id": worker,
+                "state": "retained", "reason": "executed_capture_required",
+                "container_removed": False, "volume_removed": False,
+                "archives_retained": True}
+    observation = {"returncode": result.returncode, "stdout_bytes": len(output),
+                   "state": "unrecognized", "reason": "unrecognized",
+                   "identity_matches": False}
+    if type(value) is dict:
+        for name, allowed in (("state", {"retained", "cleaned"}),
+                              ("reason", {"executed_capture_required", ""})):
+            observed = value.get(name)
+            if type(observed) is str and observed in allowed:
+                observation[name] = observed
+        observation["identity_matches"] = all(
+            type(value.get(name)) is type(expected[name]) and value.get(name) == expected[name]
+            for name in ("schema_version", "deployment_id", "repository", "worker_id"))
+        for name in ("container_removed", "volume_removed", "archives_retained"):
+            observation[name] = value.get(name) if type(value.get(name)) is bool else None
+    recorder.fact("installed_cleanup_observation", observation)
+    require(type(result.returncode) is int and result.returncode == 1
+            and type(value) is dict and set(value) == set(expected)
+            and all(type(value[name]) is type(expected[name]) and value[name] == expected[name]
+                    for name in expected), "idle_retained_cleanup_receipt_invalid")
+    return value
+
+
+def retained_resource_size(client, container_id, volume_name, volume_identity):
+    """Observe the same stopped native resources and their actual volume charge."""
+    from src.worker.docker_runtime import ManagedDockerRuntime
+
+    container = client.containers.get(container_id)
+    container.reload()
+    state = container.attrs.get("State", {})
+    mounts = [mount for mount in container.attrs.get("Mounts", [])
+              if mount.get("Destination") == "/workspace"]
+    require(container.id == container_id and state.get("Running") is False
+            and state.get("Restarting", False) is False and state.get("Paused", False) is False
+            and state.get("Status") in {"created", "exited", "dead"}
+            and len(mounts) == 1 and mounts[0].get("Type") == "volume"
+            and mounts[0].get("Name") == volume_name, "idle_retained_container_changed")
+    volume = client.volumes.get(volume_name)
+    volume.reload()
+    require(ManagedDockerRuntime._volume_identity(volume) == volume_identity,
+            "idle_retained_volume_changed")
+    sizes = [entry.get("UsageData", {}).get("Size") for entry in client.df().get("Volumes", [])
+             if entry.get("Name") == volume_name]
+    require(len(sizes) == 1 and type(sizes[0]) is int and sizes[0] >= 0,
+            "idle_retained_storage_unavailable")
+    return sizes[0]
+
+
 def retained_worker_rows(state, identity, scope):
     """Read the original journal after failed convergence without initialization."""
     try:
@@ -253,7 +317,7 @@ def _harness_imports(zpm):
 
 
 def run_case(case, workdir, recorder, images, monkeypatch):
-    """One installed bundle, six windows, no enrollment and observed owned cleanup."""
+    """One installed bundle, six windows and explicitly retained idle custody."""
     zpm = Path(case["zpm_checkout"]).resolve(strict=True)
     polyphony = Path(case["polyphony_checkout"]).resolve(strict=True)
     openjules = Path(__file__).resolve().parents[1]
@@ -291,8 +355,8 @@ def run_case(case, workdir, recorder, images, monkeypatch):
         profile = "cost-idle-model-v1"
         bundle = root / "installation"
         windows, worker, installation = [], None, None
-        container_id = None
-        cleanup_complete = acquisition_started = False
+        container_id = volume_name = volume_identity = None
+        retention_confirmed = acquisition_started = False
         with model_support.ModelFixture() as model:
             manager_environment = support.clean_environment({model_support.TOKEN_SOURCE: model.token})
             authority_port, runtime_port = support.port(), support.port()
@@ -358,8 +422,9 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                 return True
 
             def register_original_worker():
-                nonlocal worker, container_id
+                nonlocal worker, container_id, volume_name, volume_identity
                 from tools.managed_costs import register_container
+                from src.worker.docker_runtime import ManagedDockerRuntime
                 rows = retained_worker_rows(state, state_identity, scope)
                 require(len(rows) == 1, "idle_original_worker_unresolved")
                 original = rows[0]["snapshot"].get("worker_id")
@@ -371,13 +436,26 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                 require(len(containers) == 1 and container_id in (None, containers[0].id),
                         "idle_container_identity_ambiguous")
                 container_id = containers[0].id
+                containers[0].reload()
+                mounts = [mount for mount in containers[0].attrs.get("Mounts", [])
+                          if mount.get("Destination") == "/workspace"]
+                require(len(mounts) == 1 and mounts[0].get("Type") == "volume"
+                        and type(mounts[0].get("Name")) is str and mounts[0]["Name"]
+                        and volume_name in (None, mounts[0]["Name"]), "idle_volume_identity_ambiguous")
+                volume_name = mounts[0]["Name"]
+                volume = images["agent"][0].volumes.get(volume_name)
+                volume.reload()
+                current_identity = ManagedDockerRuntime._volume_identity(volume)
+                require(volume_identity is None or volume_identity == current_identity,
+                        "idle_original_volume_changed")
+                volume_identity = current_identity
                 register_container(workdir, images["agent"][0], container_id)
                 recorder.fact("installed_owned_worker_id", worker)
 
-            def retire_and_cleanup():
-                """Keep admission/capture proof in the producer, even on a failed sample."""
-                nonlocal cleanup_complete
-                from tools.managed_costs import mark_container_terminal
+            def retire_and_observe_retention():
+                """Respect the native no-attempt retention gate without inventing work."""
+                nonlocal retention_confirmed
+                from tools.managed_costs import mark_container_terminal, write_private
 
                 require(worker is not None and installation is not None
                         and installation.poll() is None, "idle_cleanup_owner_unavailable")
@@ -404,31 +482,30 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                                             "--repository", scope["repository"]],
                                             cwd=openjules, env=env["openjules"], capture_output=True,
                                             text=True, timeout=60)
-                require(result.returncode == 0 and len(result.stdout) <= 4096,
-                        "idle_cleanup_unresolved")
-                cleanup = json.loads(result.stdout)
-                require(cleanup == {"schema_version": 1, **scope, "worker_id": worker,
-                                    "state": "cleaned", "reason": "", "container_removed": True,
-                                    "volume_removed": True, "archives_retained": True},
-                        "idle_cleanup_receipt_invalid")
-                import docker
-                try:
-                    images["agent"][0].containers.get(container_id)
-                except docker.errors.NotFound:
-                    mark_container_terminal(workdir, container_id, state="removed")
-                else:
-                    raise AssertionError("idle_cleaned_container_still_exists")
+                cleanup = retained_cleanup_receipt(result, scope, worker, recorder)
+                retained_bytes = retained_resource_size(images["agent"][0], container_id,
+                                                        volume_name, volume_identity)
+                reserved = plan()["reserved"]
+                require(type(reserved) is int and reserved == 0, "idle_capacity_not_retired")
                 canonical_empty()
                 model_counts()
                 verify(bundle)
-                cleanup_complete = True
+                retention = {"schema_version": 1, "state": "retained_stopped", "scope": scope,
+                             "worker_id": worker, "container_id": container_id,
+                             "volume_name": volume_name,
+                             "volume_identity_sha256": hashlib.sha256(json.dumps(
+                                 volume_identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                             "reason": "executed_capture_required", "observed_stopped": True,
+                             "capacity_reserved": reserved, "model_fixture_calls": 0, "tasks_enrolled": 0,
+                             "volume_storage_bytes": retained_bytes}
+                write_private(Path(workdir) / "installed-retention.json", retention)
+                retention_confirmed = True
                 case["_guard"]["uncertain"] = False
-                from tools.managed_costs import write_private
                 write_private(Path(workdir) / "installed-acquisition.json", {
-                    "schema_version": 1, "state": "removed", "scope": scope,
+                    "schema_version": 1, "state": "retained_stopped", "scope": scope,
                     "worker_ceiling": 1, "memory_reservation_bytes": 0,
                 })
-                return cleanup
+                return cleanup, retention, worker_snapshot(retired)
 
             try:
                 # The sealed plan was acquired separately before benchmark admission.
@@ -488,13 +565,14 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                             sample["completed_reconcile_tick_proven"] = True
                         sample.update(target=target_count, window=number + 1)
                         windows.append(sample)
+                recorder.fact("installed_windows", windows)
                 canonical_empty()
-                cleanup = retire_and_cleanup()
+                cleanup, retention, retired = retire_and_observe_retention()
                 facts = {"component_revisions": revisions, "image_id": image, "windows": windows,
                          "controller_interval_seconds": 5.0, "runtime_poll_interval_seconds": 1,
                          "model_fixture_calls": 0, "tasks_enrolled": 0, "final_reserved": plan()["reserved"],
-                         "worker_id": worker, "owned_cleanup": {name: cleanup[name] for name in (
-                             "state", "container_removed", "volume_removed", "archives_retained")},
+                         "worker_id": worker, "cleanup_receipt": cleanup,
+                         "known_retained_custody": retention, "retired_worker": retired,
                          "proof": "actual installed services and Docker; passive installed-controller-cycle witnesses",
                          "counter_scope": "ZPM observer self CPU and endpoint RSS, separate from outer sampled process-tree/container memory",
                          "helper_sha256": {name: hashlib.sha256((zpm / "tests/contracts" / name).read_bytes()).hexdigest()
@@ -503,7 +581,7 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                         "installed_report_credential_leak")
                 return facts
             finally:
-                if not cleanup_complete and acquisition_started:
+                if not retention_confirmed and acquisition_started:
                     # Attempt only the original producer's recovery. A failed or
                     # interrupted cleanup stays unresolved; do not force-remove it.
                     try:
@@ -512,8 +590,8 @@ def run_case(case, workdir, recorder, images, monkeypatch):
                             # controller. Convergence failure is not no-effect.
                             target(0)
                             register_original_worker()
-                        retire_and_cleanup()
-                        recorder.fact("failed_sample_cleanup", "confirmed")
+                        retire_and_observe_retention()
+                        recorder.fact("failed_sample_cleanup", "confirmed_retained")
                     except BaseException:
                         recorder.fact("failed_sample_cleanup", "unresolved")
                 processes.close()

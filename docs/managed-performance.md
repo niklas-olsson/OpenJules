@@ -35,7 +35,9 @@ There are 18 cases and 66 fresh processes. The aggregate declared transfer
 reservation is 179,306,496 bytes and temporary-storage reservation is
 3,272,605,696 bytes. Five samples support raw values, median and range. They do
 not support a p95, a service objective or a claim about production distributions.
-Comparison order reverses on alternate repetitions.
+Comparison order reverses on alternate repetitions. The one installed idle case
+runs last, after all other 65 samples, and no sample can follow its retained
+resource disposition.
 
 The installed idle case alone uses actual sibling services, pinned to ZPM
 `e8cb65ea7c1717cc5b49c1a6199960a51ac99b9f` and Polyphony
@@ -45,6 +47,21 @@ dependency plan, enrolls no task and requires zero inference. Other cases use
 explicit deterministic authority/model/forge fixtures and do not establish
 installed canonical authority, provider quality, a live forge or a browser
 execution path.
+
+The installed worker has never dispatched a task. The existing runtime cleanup
+contract intentionally retains that idle worker's stopped container and volume,
+with reason `executed_capture_required`. The investigation requires this exact
+native retained receipt, the original stopped container and volume identities,
+observed termination/fencing/capture, zero reserved capacity, an empty canonical
+task snapshot, zero inference and verified installation state. It does not
+dispatch a task merely to make the worker eligible for deletion.
+
+This final known retention is a qualified custody disposition, not physical
+removal. Its safe proof and actual volume storage charge remain in the report;
+the parent checks the final owned storage total against the original cap. A
+missing or changed proof, another nonremoved resource or unresolved execution
+still fails the sample and closes admission. No cleanup permission or production
+gate changes.
 
 ## Time, resource and custody bounds
 
@@ -78,6 +95,9 @@ reported separately. Shared Docker-daemon and unrelated kernel costs are exclude
 Original PID/start-time bindings prevent PID reuse from changing ownership.
 Unreadable live owned observations are explicit missing data, not zero memory;
 persistent inability to observe owned resources closes further admission.
+When a process exits during a read, an absent original PID or the same PID/start
+identity in a terminal state is an explicit departure exclusion. A reused PID
+or an unreadable identity remains missing.
 Before an installed acquisition returns an exact container identity, its
 512 MiB configured ceiling is reserved for cap enforcement. That reservation
 is reported separately and is not a measured cgroup peak.
@@ -161,7 +181,9 @@ Only `report.json`, prerequisite metadata and the named safe acquisition report
 are retained as workflow artifacts. Raw sample work, private command logs,
 credentials and binary archives remain outside the published artifact list.
 `PASS` requires original case assertions, complete measurement hooks, bound
-sample identity and a successful child exit. Failed, censored and unrun samples
+sample identity, resolved original custody and a successful child exit. The
+final idle case separately reports its qualified retained resources. Failed,
+censored and unrun samples
 are preserved. The report's `complete` field is the execution inventory result,
 not approval of an optimization or release.
 
