@@ -503,8 +503,12 @@ Errors never include supplied values, private filesystem paths, native exception
 text or extracted credentials. An oversized file is never represented by a hash
 of its read prefix. A missing or unrecognized installed contract produces no
 receipt: the command exits `2` with fixed `installation_contract_unavailable` on
-stderr. Otherwise it exits `0` for valid input or `2` for refusal and emits one
-ASCII JSON line, at most 8,000,000 bytes including newline.
+stderr. Malformed command-line arguments also produce no receipt and exit `2`,
+with only `installation_arguments_invalid` on stderr. Argument names and values
+are never echoed in that diagnostic. `--help` retains its normal help text and
+exit status `0`. After successful argument parsing, the command otherwise exits
+`0` for valid input or `2` for refusal and emits one ASCII JSON line, at most
+8,000,000 bytes including newline.
 
 The descriptor contains configuration schema, selected destination identity
 version and sorted scoped profiles. Each profile exposes its name, immutable
