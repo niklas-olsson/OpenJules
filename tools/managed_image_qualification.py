@@ -29,7 +29,7 @@ def validate_plan(plan):
         "unsupported qualification manifest fields")
     require(plan["format"] == "openjules-image-qualification-v1" and plan["python"] == [3, 12]
             and plan["platform"] == "linux-amd64", "unsupported qualification environment")
-    require(plan["requirements"] == ["pytest", "pytest-asyncio", "docker", "httpx", "pydantic"],
+    require(plan["requirements"] == ["pytest", "pytest-asyncio", "docker", "httpx", "pydantic", "pyyaml", "fastapi", "cryptography"],
             "unsupported native qualification roots")
     require(isinstance(plan["wheels"], list) and 4 <= len(plan["wheels"]) <= 32, "invalid wheel inventory")
     names, filenames = set(), set()
@@ -40,7 +40,8 @@ def validate_plan(plan):
         names.add(name)
         filename = wheel["filename"]
         require((re.fullmatch(r"[A-Za-z0-9_.+-]+-py(?:2\.py)?3-none-any\.whl", filename)
-                 or re.fullmatch(r"pydantic_core-[0-9.]+-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64\.whl", filename))
+                 or re.fullmatch(r"(?:pydantic_core|pyyaml|cffi)-[0-9.]+-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64(?:\.manylinux_2_28_x86_64)?\.whl", filename)
+                 or re.fullmatch(r"cryptography-[0-9.]+-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64\.whl", filename))
                 and filename not in filenames, "qualification requires distinct supported wheels")
         filenames.add(filename)
         require(type(wheel["size"]) is int and 0 < wheel["size"] <= 32 * 1024 * 1024
@@ -54,7 +55,7 @@ def validate_plan(plan):
             "unsupported pinned pip seed")
     overhead = plan["discovery"].get("reserved_transfer_bytes")
     require(type(overhead) is int and 0 < overhead <= LIMITS["transfer_bytes"], "invalid metadata acquisition accounting")
-    require(isinstance(plan["metadata"], list) and len(plan["metadata"]) == len(names)
+    require(isinstance(plan["metadata"], list) and len(names) <= len(plan["metadata"]) <= 64
             and all(type(item.get("size")) is int and item["size"] > 0
                     and DIGEST.fullmatch(item.get("sha256", "")) for item in plan["metadata"]),
             "invalid qualification metadata provenance")

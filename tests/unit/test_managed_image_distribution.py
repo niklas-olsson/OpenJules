@@ -227,3 +227,61 @@ def test_qualification_executes_committed_source_without_checkout_mutations(tmp_
     assert (source / TESTS[0]).read_text() == "# committed\n"
     assert not (source / "tests/conftest.py").exists()
     assert record["files"] == 5
+
+
+def oci_archive(tmp_path, mutation=None):
+    payloads = [b"first-layer", b"second-layer"]
+    layer_ids = [digest(value) for value in payloads]
+    config = {"os": "linux", "architecture": "amd64", "created": "2026-01-01T00:00:00Z",
+              "container_config": {}, "config": {"User": "65532"},
+              "rootfs": {"type": "layers", "diff_ids": layer_ids}}
+    config_bytes = json_bytes(config)
+    config_name = "blobs/sha256/" + digest(config_bytes).split(":")[1]
+    descriptors = [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": identity, "size": len(data)}
+                   for identity, data in zip(layer_ids, payloads)]
+    manifest = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                           "digest": digest(config_bytes), "size": len(config_bytes)},
+                "layers": copy.deepcopy(descriptors)}
+    if mutation:
+        mutation(manifest)
+    manifest_bytes = json_bytes(manifest)
+    files = {config_name: config_bytes, "oci-layout": json_bytes({"imageLayoutVersion": "1.0.0"}),
+             "blobs/sha256/" + digest(manifest_bytes).split(":")[1]: manifest_bytes,
+             "index.json": json_bytes({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                                       "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                                      "digest": digest(manifest_bytes), "size": len(manifest_bytes)}]})}
+    paths = ["blobs/sha256/" + identity.split(":")[1] for identity in layer_ids]
+    files.update(zip(paths, payloads))
+    files["manifest.json"] = json_bytes([{"Config": config_name, "RepoTags": None, "Layers": paths,
+                                         "LayerSources": dict(zip(layer_ids, descriptors))}])
+    for value in ({"id": "a" * 64, "created": "1970-01-01T00:00:00Z", "container_config": {}, "os": "linux"},
+                  {**{key: value for key, value in config.items() if key != "rootfs"},
+                   "id": "b" * 64, "parent": "a" * 64}):
+        data = json_bytes(value)
+        files["blobs/sha256/" + digest(data).split(":")[1]] = data
+    target = tmp_path / "oci.tar"
+    with tarfile.open(target, "w") as output:
+        for name, data in files.items():
+            tar_add_bytes(output, name, data)
+    return target
+
+
+def test_moby_oci_and_compatibility_metadata_share_one_image(tmp_path):
+    diagnostic = tmp_path / "inventory.json"
+    record = inspect_archive(oci_archive(tmp_path), diagnostic=diagnostic)
+    assert record["layout"] == "moby-docker-save-oci-v1"
+    assert len(record["metadata"]) == 5
+    assert record["registry_manifest_digest"] is None
+    assert any(item["path"] == "index.json" for item in read_json(diagnostic.read_bytes()))
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda manifest: manifest["config"].update(digest="sha256:" + "f" * 64),
+    lambda manifest: manifest["layers"].reverse(),
+    lambda manifest: manifest["layers"][0].update(size=999),
+    lambda manifest: manifest["layers"][0].update(urls=["https://unexpected.invalid/layer"]),
+])
+def test_oci_graph_cannot_disagree_with_docker_save(tmp_path, mutation):
+    with pytest.raises(Refused, match="identities disagree"):
+        inspect_archive(oci_archive(tmp_path, mutation))

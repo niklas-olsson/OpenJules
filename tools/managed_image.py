@@ -710,7 +710,91 @@ def restore_inputs(args, root, budget, manifest):
     (root / "inputs.json").write_bytes(json_bytes(manifest))
 
 
-def inspect_archive(path, *, expected=None):
+def oci_archive_metadata(archive, members, image, config_name, config_bytes, layers, permitted):
+    """Validate Moby's OCI graph and bounded V1 compatibility metadata."""
+    require({"index.json", "oci-layout"} <= set(members),
+            "unreferenced archive payload: incomplete OCI layout")
+    metadata = []
+
+    def document(name):
+        require(name in members and members[name].isfile() and members[name].size <= 65536,
+                "missing or oversized OCI/compatibility metadata")
+        data = archive.extractfile(members[name]).read()
+        metadata.append({"path": name, "size": len(data), "sha256": digest(data)})
+        permitted.add(name)
+        return data, read_json(data)
+
+    _, layout = document("oci-layout")
+    require(layout == {"imageLayoutVersion": "1.0.0"}, "unsupported OCI layout version")
+    _, index = document("index.json")
+    require(isinstance(index, dict) and set(index) == {"schemaVersion", "mediaType", "manifests"}
+            and index["schemaVersion"] == 2 and index["mediaType"] == "application/vnd.oci.image.index.v1+json"
+            and isinstance(index["manifests"], list) and len(index["manifests"]) == 1,
+            "archive OCI index must identify one untagged image")
+    descriptor = index["manifests"][0]
+    require(isinstance(descriptor, dict) and set(descriptor) == {"mediaType", "digest", "size"}
+            and descriptor["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+            and DIGEST.fullmatch(descriptor["digest"]) and type(descriptor["size"]) is int,
+            "unsupported OCI manifest descriptor")
+    name = "blobs/sha256/" + descriptor["digest"].split(":")[1]
+    data, manifest = document(name)
+    require(digest(data) == descriptor["digest"] and len(data) == descriptor["size"],
+            "OCI manifest content identity mismatch")
+    require(isinstance(manifest, dict) and set(manifest) == {"schemaVersion", "mediaType", "config", "layers"}
+            and manifest["schemaVersion"] == 2
+            and manifest["mediaType"] == "application/vnd.oci.image.manifest.v1+json",
+            "unsupported OCI manifest")
+    require(config_name == "blobs/sha256/" + digest(config_bytes).split(":")[1]
+            and manifest["config"] == {"mediaType": "application/vnd.oci.image.config.v1+json",
+                                       "digest": digest(config_bytes), "size": len(config_bytes)},
+            "OCI and Docker config identities disagree")
+    descriptors = [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer["diff_id"],
+                    "size": layer["size"]} for layer in layers]
+    require(manifest["layers"] == descriptors
+            and all(layer["path"] == "blobs/sha256/" + layer["diff_id"].split(":")[1] for layer in layers),
+            "OCI and Docker ordered layer identities disagree")
+    require(image.get("LayerSources") == {layer["diff_id"]: descriptor
+                                         for layer, descriptor in zip(layers, descriptors)},
+            "Docker layer-source descriptors disagree with OCI layers")
+    # Moby also emits one V1 config per layer, although neither modern graph
+    # references it. Admit only content-addressed, bounded, complete metadata
+    # chains ending at this exact modern config, never arbitrary extra blobs.
+    compatibility = {}
+    allowed = {"id", "parent", "comment", "created", "container", "container_config",
+               "docker_version", "author", "config", "architecture", "variant", "os", "Size"}
+    for name, member in members.items():
+        if member.isdir() or name in permitted:
+            continue
+        data, value = document(name)
+        require(name == "blobs/sha256/" + digest(data).split(":")[1]
+                and isinstance(value, dict) and set(value) <= allowed
+                and re.fullmatch(r"[0-9a-f]{64}", value.get("id", ""))
+                and value["id"] not in compatibility and value.get("os") == "linux",
+                "unreferenced archive payload is not recognized V1 metadata")
+        compatibility[value["id"]] = value
+    require(len(compatibility) == len(layers), "incomplete V1 compatibility metadata")
+    parent = ""
+    config = read_json(config_bytes)
+    for number in range(len(layers)):
+        candidates = [value for value in compatibility.values() if value.get("parent", "") == parent]
+        require(len(candidates) == 1, "ambiguous V1 compatibility parent chain")
+        value = candidates[0]
+        del compatibility[value["id"]]
+        if number + 1 == len(layers):
+            require(value.get("config") == config.get("config")
+                    and all(config.get(key) == item for key, item in value.items() if key not in {"id", "parent"}),
+                    "V1 terminal metadata differs from modern image config")
+        else:
+            require(set(value) <= {"id", "parent", "created", "container_config", "os"}
+                    and value.get("created") == "1970-01-01T00:00:00Z"
+                    and isinstance(value.get("container_config"), dict)
+                    and all(item in (None, False, "", 0) for item in value["container_config"].values()),
+                    "unsupported V1 intermediate metadata")
+        parent = value["id"]
+    return metadata
+
+
+def inspect_archive(path, *, expected=None, diagnostic=None):
     """Check archive identity and every ordered uncompressed layer, without extraction."""
     path = Path(path)
     require(path.is_file() and not path.is_symlink() and path.stat().st_size <= LIMITS["archive_bytes"],
@@ -732,13 +816,27 @@ def inspect_archive(path, *, expected=None):
             require(name not in members and (member.isfile() or member.isdir()), "duplicate or nonregular archive member")
             require(len(members) < 4096, "too many archive members")
             members[name] = member
+        if diagnostic is not None:
+            inventory = []
+            for name, member in members.items():
+                entry = {"path": name, "size": member.size, "type": "directory" if member.isdir() else "file"}
+                if member.isfile() and member.size <= 65536:
+                    data = archive.extractfile(member).read()
+                    try:
+                        entry["json"] = read_json(data)
+                        entry["sha256"] = digest(data)
+                    except (ValueError, UnicodeError):
+                        pass
+                inventory.append(entry)
+            Path(diagnostic).write_bytes(json_bytes(inventory))
         require("manifest.json" in members and members["manifest.json"].size <= 65536, "missing or oversized Docker manifest")
         images = read_json(archive.extractfile(members["manifest.json"]).read())
         require(isinstance(images, list) and len(images) == 1, "archive must contain one image")
         image = images[0]
         require(isinstance(image, dict) and set(image) <= {"Config", "RepoTags", "Layers", "LayerSources"}
                 and {"Config", "RepoTags", "Layers"} <= set(image)
-                and isinstance(image["Layers"], list), "unsupported Docker archive manifest")
+                and isinstance(image["Layers"], list) and image["RepoTags"] in (None, []),
+                "unsupported Docker archive manifest")
         config_name = safe_relative(image["Config"])
         require(config_name in members and members[config_name].size <= 1024 * 1024, "invalid image config member")
         config_bytes = archive.extractfile(members[config_name]).read()
@@ -762,13 +860,18 @@ def inspect_archive(path, *, expected=None):
                 parent = str(PurePosixPath(name).parent)
                 permitted.update((parent + "/json", parent + "/VERSION"))
         require(len({item["path"] for item in layers}) == len(layers), "duplicate archive layer reference")
+        metadata = []
+        if "index.json" in members or "oci-layout" in members:
+            metadata = oci_archive_metadata(archive, members, image, config_name, config_bytes, layers, permitted)
         for name, member in members.items():
             require(member.isdir() or name in permitted, "unreferenced archive payload")
             if member.isfile() and name in permitted - {config_name, *image["Layers"]}:
                 require(member.size <= 65536, "oversized archive metadata")
         result = {"format": "docker-image-save", "archive": record, "platform": platform,
                   "image_id": digest(config_bytes), "config_sha256": digest(config_bytes),
-                  "layers": layers, "registry_manifest_digest": None}
+                  "layers": layers, "registry_manifest_digest": None,
+                  "layout": "moby-docker-save-oci-v1" if metadata else "classic-docker-save",
+                  "metadata": metadata}
     if expected is not None:
         require(result["image_id"] == expected["image_id"] and result["platform"] == expected["platform"]
                 and result["layers"] == expected["layers"], "archive does not match approved image identities")
@@ -844,7 +947,7 @@ def build(args, root, budget, manifest):
         installed_packages = inspect_packages(daemon, image_id, manifest)
         archive = root / "managed-agent.docker.tar"
         daemon.run(["image", "save", "--output", str(archive), image_id])
-        record = inspect_archive(archive)
+        record = inspect_archive(archive, diagnostic=root / "archive-inventory.json")
         require(record["image_id"] == image_id, "exported image differs from built image")
         record.update({"input_manifest_sha256": hash_file(root / "inputs.json"),
                        "context_sha256": hash_file(root / "context.json"), "build_arguments": ["--network=none", "--pull=false", "--no-cache", "--force-rm", "PYTHON_BASE=" + manifest["base_config_id"], "OPENJULES_PACKAGE_MODE=sealed"],

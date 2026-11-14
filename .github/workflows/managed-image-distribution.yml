@@ -74,13 +74,13 @@ jobs:
             --approved-inputs docker/managed-image-inputs.json \
             --approved-inputs-sha256 sha256:dc588f1eaff9b6e73fd94f90690cf67f5dd9ef23e39f722a98d09e5b373ec644 \
             --approved-qualification docker/managed-image-qualification.json \
-            --approved-qualification-sha256 sha256:49aa65991d49f9920f885b5321d13a93bb187dee69b5b74661dc83c5706e1b2f \
+            --approved-qualification-sha256 sha256:def63e03d458fc0a15991a98dbce67c0ddc7e83c2898f61d5bb3f78cc33b073d \
             --output "$RUNNER_TEMP/managed-image-candidate"
       - name: Retain safe text metadata only
         if: always()
         run: |
           mkdir -p managed-image-evidence
-          for name in inputs.json artifact.json acquisition-report.json resource-report.json apt-verification.txt context.json build.log native-tests.txt failed-command.txt; do
+          for name in inputs.json artifact.json acquisition-report.json resource-report.json apt-verification.txt context.json archive-inventory.json build.log native-tests.txt failed-command.txt; do
             if sudo test -f "$RUNNER_TEMP/managed-image-candidate/$name"; then
               sudo cp "$RUNNER_TEMP/managed-image-candidate/$name" "managed-image-evidence/$name"
               sudo chmod 0644 "managed-image-evidence/$name"
