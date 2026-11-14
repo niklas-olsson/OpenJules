@@ -148,6 +148,15 @@ At most one action is in flight. A timeout or cancelled Python waiter records
 as a substitute for quiescence. Late exact completion may improve original
 knowledge, but cannot silently restore current ownership.
 
+Dispatch rechecks the original grant, actor, document, control generation and
+fresh observation inside the scheduled wrapper immediately before adapter
+invocation. Durable intent or task scheduling does not supply permission. Each
+ticket carries the earliest original action, grant, frame or browser cutoff.
+Expiry before invocation records `not_applied`; faults after invocation may
+have effects and retain `unknown`. A late exact result can retain its known
+outcome while fencing the old input generation even if a timer callback has
+not run yet. Malformed adapter receipts are uncertainty, never authority.
+
 Takeover first increments the control generation, removes queued input and
 clears current ownership. The human receives control only after the adapter
 confirms quiescence, resolves every original in-flight outcome and supplies a
@@ -163,6 +172,10 @@ unknown, pending and failed outcomes retain that distinction. Stop is still
 available to an authenticated existing owner when a journal write fails. In
 that case the returned operation records `audit_persisted: false`; the core
 does not claim durable teardown and never reopens input because logging failed.
+Known in-memory teardown confirmation is also preserved independently of that
+audit failure, so a different Stop key cannot send another native Stop to the
+already confirmed adapter. A later process still reports LOST when that
+confirmation was not durably retained.
 Host supervisor operation IDs use a reserved `host.` prefix that clients cannot
 claim.
 

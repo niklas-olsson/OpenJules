@@ -29,6 +29,55 @@ _ACTIVE = {"driver", "human"}
 _TERMINAL = {"stopped", "lost"}
 
 
+def _sha256(value):
+    if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise SessionDenied("invalid_identity")
+    return value
+
+
+def _parameters(action, parameters, origins, *, width=4096, height=4096):
+    """One schema and server-derived charge for admission and retained records."""
+    if type(action) is not str or type(parameters) is not dict:
+        raise SessionDenied("invalid_action")
+    if action == "navigate" and set(parameters) == {"url"}:
+        if origin(parameters["url"]) not in origins:
+            raise SessionDenied("outside_fixture_origin")
+        return "semantic", 1
+    if action == "correction" and set(parameters) == {"text"}:
+        text(parameters["text"], 2048)
+        return "semantic", 1
+    if action == "click" and set(parameters) == {"x", "y", "button"}:
+        integer(parameters["x"], 0, width - 1)
+        integer(parameters["y"], 0, height - 1)
+        if type(parameters["button"]) is not str or parameters["button"] not in {"left", "middle", "right"}:
+            raise SessionDenied("invalid_action")
+        return "raw", 1
+    if action == "type" and set(parameters) == {"text"}:
+        text(parameters["text"], 1024)
+        return "raw", len(parameters["text"])
+    if (action == "key" and set(parameters) == {"key"} and type(parameters["key"]) is str
+            and parameters["key"] in KEYS):
+        return "raw", 1
+    raise SessionDenied("invalid_action")
+
+
+def _action_request(request, spec):
+    if (type(request) is not dict or set(request) != {"kind", "operation_id", "actor_id", "session_id",
+            "context_id", "target_id", "control_generation", "document_id", "document_generation",
+            "observation_id", "action", "parameters"} or request["kind"] != "action"):
+        raise SessionDenied("invalid_action")
+    for name in ("operation_id", "actor_id", "session_id", "context_id", "target_id", "document_id"):
+        identifier(request[name])
+    integer(request["control_generation"])
+    integer(request["document_generation"])
+    _sha256(request["observation_id"])
+    if (request["session_id"] != spec.session_id or request["context_id"] != spec.context_id
+            or request["target_id"] != spec.target_id
+            or request["actor_id"] not in {spec.driver_actor_id, spec.owner_actor_id}):
+        raise SessionDenied("input_fenced")
+    return _parameters(request["action"], request["parameters"], spec.fixture_origins)
+
+
 class SessionControl:
     """One locally locked session. Host methods are not browser-facing RPCs."""
 
@@ -37,6 +86,7 @@ class SessionControl:
         self.spec = SessionSpec.retained(state["spec"])
         self._lock = threading.RLock()
         self._fault = False
+        self._teardown_confirmed = False
         self._closed = False
         self._grant_deadlines = {}
         self._tasks = {}
@@ -139,14 +189,19 @@ class SessionControl:
                 if type(state[name]) is not list or len(state[name]) > maximum:
                     raise SessionUnavailable()
             for digest, grant in state["grants"].items():
-                if (len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
-                        or type(grant) is not dict or set(grant) != {"actor_id", "rights", "revoked"}
+                _sha256(digest)
+                if (type(grant) is not dict or set(grant) != {"actor_id", "rights", "revoked"}
                         or type(grant["revoked"]) is not bool or type(grant["rights"]) is not dict
                         or not grant["rights"] or not set(grant["rights"]) <= RIGHTS):
                     raise SessionUnavailable()
                 identifier(grant["actor_id"])
-                for expiry in grant["rights"].values():
-                    integer(expiry, state["created_at_ms"] + 1, spec.retention_expires_at_ms)
+                if (("stop" in grant["rights"] and grant["actor_id"] != spec.owner_actor_id)
+                        or ("control" in grant["rights"] and grant["actor_id"] not in {spec.owner_actor_id, spec.driver_actor_id})):
+                    raise SessionUnavailable()
+                for right, expiry in grant["rights"].items():
+                    integer(expiry, state["created_at_ms"] + 1,
+                            spec.browser_expires_at_ms if right == "control" else spec.retention_expires_at_ms)
+            counts = {"semantic": 0, "raw": 0}
             for key, operation in state["operations"].items():
                 identifier(key)
                 if (type(operation) is not dict
@@ -158,22 +213,78 @@ class SessionControl:
                             "unknown", "confirmed", "pending", "failed"}
                         or type(operation["audit_persisted"]) is not bool):
                     raise SessionUnavailable()
-                integer(operation["generation"])
+                integer(operation["generation"], 0, state["control_generation"])
+                request, ticket = operation["request"], operation["ticket"]
+                kind = request["kind"]
+                if kind == "action":
+                    budget, amount = _action_request(request, spec)
+                    counts[budget] += amount
+                    if (operation["generation"] != request["control_generation"]
+                            or operation["state"] not in {"queued", "dispatched", "applied", "not_applied", "unknown"}
+                            or type(ticket) is not dict or set(ticket) != set(ActionTicket.__dataclass_fields__) | {"grant_digest"}
+                            or type(ticket["deadline_monotonic"]) is not float
+                            or not math.isfinite(ticket["deadline_monotonic"]) or ticket["deadline_monotonic"] < 0
+                            or (request["action"] == "correction" and request["actor_id"] != spec.owner_actor_id)):
+                        raise SessionUnavailable()
+                    expected = {name: request[name] for name in ("session_id", "context_id", "target_id", "operation_id",
+                        "actor_id", "control_generation", "document_id", "document_generation", "action")}
+                    expected.update(backend_epoch=state["backend_epoch"], parameters_json=canonical(request["parameters"]))
+                    if any(type(ticket[name]) is not type(value) or ticket[name] != value for name, value in expected.items()):
+                        raise SessionUnavailable()
+                    integer(request["document_generation"], 0, state["document_generation"])
+                    required_right = "control"
+                elif kind in {"takeover", "handback"}:
+                    if (set(request) != {"kind", "operation_id", "actor_id", "control_generation", "observation_id"}
+                            or request["actor_id"] != spec.owner_actor_id
+                            or type(ticket) is not dict or set(ticket) != {"grant_digest"}
+                            or operation["state"] not in {"dispatched", "applied", "unknown"}):
+                        raise SessionUnavailable()
+                    integer(request["control_generation"])
+                    if operation["generation"] != request["control_generation"] + 1:
+                        raise SessionUnavailable()
+                    if kind == "handback":
+                        _sha256(request["observation_id"])
+                    elif request["observation_id"] is not None:
+                        raise SessionUnavailable()
+                    required_right = "control"
+                else:
+                    if (set(request) != {"kind", "operation_id", "actor_id"} or request["actor_id"] != spec.owner_actor_id
+                            or type(ticket) is not dict or set(ticket) != {"grant_digest"}
+                            or operation["state"] not in {"dispatched", "confirmed", "pending", "failed", "unknown"}):
+                        raise SessionUnavailable()
+                    required_right = "stop"
+                if key.startswith("host."):
+                    if kind != "stop" or key != "host.browser-lifetime-expired" or ticket["grant_digest"] is not None:
+                        raise SessionUnavailable()
+                else:
+                    digest = _sha256(ticket["grant_digest"])
+                    grant = state["grants"].get(digest)
+                    if grant is not None and (grant["actor_id"] != request["actor_id"] or required_right not in grant["rights"]):
+                        raise SessionUnavailable()
+            if counts != {"semantic": state["semantic_count"], "raw": state["raw_count"]}:
+                raise SessionUnavailable()
             if (len(set(state["queue"])) != len(state["queue"])
                     or any(key not in state["operations"] or state["operations"][key]["state"] != "queued"
                            for key in state["queue"])
-                    or (state["inflight"] is not None and state["inflight"] not in state["operations"])):
+                    or set(state["queue"]) != {key for key, value in state["operations"].items() if value["state"] == "queued"}
+                    or (state["inflight"] is not None and (state["inflight"] not in state["operations"]
+                        or state["operations"][state["inflight"]]["request"]["kind"] != "action"
+                        or state["operations"][state["inflight"]]["state"] == "queued"))):
                 raise SessionUnavailable()
             for index, event in enumerate(state["events"]):
                 if (type(event) is not dict or set(event) != {"sequence", "at_ms", "type", "operation_id", "actor_id"}
-                        or event["sequence"] != index):
+                        or type(event["sequence"]) is not int or event["sequence"] != index):
                     raise SessionUnavailable()
                 integer(event["at_ms"])
                 identifier(event["type"])
                 if event["operation_id"] is not None:
                     identifier(event["operation_id"])
+                    if event["operation_id"] not in state["operations"]:
+                        raise SessionUnavailable()
                 if event["actor_id"] is not None:
                     identifier(event["actor_id"])
+                    if event["actor_id"] not in {spec.owner_actor_id, spec.driver_actor_id}:
+                        raise SessionUnavailable()
             for correction in state["corrections"]:
                 if (type(correction) is not dict or set(correction) != {"operation_id", "actor_id", "text", "generation"}
                         or correction["actor_id"] != spec.owner_actor_id
@@ -181,6 +292,11 @@ class SessionControl:
                     raise SessionUnavailable()
                 text(correction["text"], 2048)
                 integer(correction["generation"])
+                operation = state["operations"][correction["operation_id"]]
+                if (operation["request"].get("action") != "correction" or operation["state"] != "applied"
+                        or operation["generation"] != correction["generation"]
+                        or operation["request"]["parameters"]["text"] != correction["text"]):
+                    raise SessionUnavailable()
         except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
             raise SessionUnavailable() from None
 
@@ -201,7 +317,7 @@ class SessionControl:
         except SessionUnavailable:
             self._state = state
             self._fault = True
-            self._state["mode"], self._state["actor_id"] = "fenced", None
+            self._state["mode"], self._state["actor_id"] = ("stopped" if self._teardown_confirmed else "fenced"), None
             self._state["control_generation"] += 1
             raise
         self._state = state
@@ -253,8 +369,15 @@ class SessionControl:
                 if not grant["revoked"] and any(now < expiry for expiry in grant["rights"].values())}
             if len(state["grants"]) >= self.spec.limits.grants:
                 raise SessionDenied("grant_budget_exhausted")
-            token = secrets.token_urlsafe(32)
-            digest = self._digest(token)
+            for _ in range(3):
+                token = secrets.token_urlsafe(32)
+                digest = self._digest(token)
+                if digest not in state["grants"] and not any(
+                    value["ticket"] is not None and value["ticket"].get("grant_digest") == digest
+                    for value in state["operations"].values()):
+                    break
+            else:
+                raise SessionDenied("entropy_unavailable")
             state["grants"][digest] = {"actor_id": actor_id, "rights": dict(rights), "revoked": False}
             self._save(state)
             self._grant_deadlines = {key: value for key, value in self._grant_deadlines.items() if key in state["grants"]}
@@ -262,7 +385,7 @@ class SessionControl:
             return token
 
     def _authorized(self, digest, right):
-        if right not in RIGHTS or self._closed:
+        if type(right) is not str or right not in RIGHTS or self._closed:
             raise SessionDenied("unauthorized")
         now, mono = self._clock(stop=right == "stop")
         grant = self._state["grants"].get(digest)
@@ -305,7 +428,10 @@ class SessionControl:
             raise SessionDenied("invalid_observation")
         now, mono = self._clock()
         generation = self._state["control_generation"] if generation is None else generation
-        if (observation.session_id != self.spec.session_id or observation.context_id != self.spec.context_id
+        integer(observation.control_generation)
+        if (type(observation.session_id) is not str or type(observation.context_id) is not str
+                or type(observation.target_id) is not str or type(observation.backend_epoch) is not str
+                or observation.session_id != self.spec.session_id or observation.context_id != self.spec.context_id
                 or observation.target_id != self.spec.target_id or observation.backend_epoch != self._state["backend_epoch"]
                 or observation.control_generation != generation):
             raise SessionDenied("stale_observation")
@@ -402,49 +528,20 @@ class SessionControl:
             raise SessionDenied("operation_budget_exhausted")
         return None
 
-    def _parameters(self, action, parameters):
-        if type(parameters) is not dict:
-            raise SessionDenied("invalid_action")
-        if action == "navigate" and set(parameters) == {"url"}:
-            if origin(parameters["url"]) not in self.spec.fixture_origins:
-                raise SessionDenied("outside_fixture_origin")
-            return "semantic", 1
-        if action == "correction" and set(parameters) == {"text"}:
-            text(parameters["text"], 2048)
-            return "semantic", 1
-        if action == "click" and set(parameters) == {"x", "y", "button"}:
-            integer(parameters["x"], 0, self._frame[0]["width"] - 1)
-            integer(parameters["y"], 0, self._frame[0]["height"] - 1)
-            if type(parameters["button"]) is not str or parameters["button"] not in {"left", "middle", "right"}:
-                raise SessionDenied("invalid_action")
-            return "raw", 1
-        if action == "type" and set(parameters) == {"text"}:
-            text(parameters["text"], 1024)
-            return "raw", len(parameters["text"])
-        if (action == "key" and set(parameters) == {"key"} and type(parameters["key"]) is str
-                and parameters["key"] in KEYS):
-            return "raw", 1
-        raise SessionDenied("invalid_action")
-
     def submit(self, token, *, operation_id, session_id, context_id, target_id,
                control_generation, document_id, document_generation, observation_id,
                action, parameters):
         with self._lock:
             auth = self.authorize(token, "control")
-            if type(action) is not str or action not in {"navigate", "click", "type", "key", "correction"}:
-                raise SessionDenied("invalid_action")
-            if type(parameters) is not dict or len(parameters) > 3:
-                raise SessionDenied("invalid_action")
-            for key, value in parameters.items():
-                if type(key) is not str or type(value) not in {str, int}:
-                    raise SessionDenied("invalid_action")
-                if type(value) is str:
-                    text(value, 4096)
+            # Validate exact types before comparing with an original request;
+            # Python's bool/int and float/int equality is not contract equality.
+            _parameters(action, parameters, self.spec.fixture_origins)
             request = {"kind": "action", "operation_id": operation_id, "actor_id": auth.actor_id,
                 "session_id": session_id, "context_id": context_id, "target_id": target_id,
                 "control_generation": control_generation, "document_id": document_id,
                 "document_generation": document_generation, "observation_id": observation_id,
                 "action": action, "parameters": deepcopy(parameters)}
+            _action_request(request, self.spec)
             original = self._original(operation_id, request)
             if original is not None:
                 return original
@@ -457,7 +554,8 @@ class SessionControl:
             integer(control_generation)
             integer(document_generation)
             self._fresh(auth.actor_id, observation_id)
-            budget, amount = self._parameters(action, parameters)
+            budget, amount = _parameters(action, parameters, self.spec.fixture_origins,
+                                         width=self._frame[0]["width"], height=self._frame[0]["height"])
             if action == "correction" and self._state["mode"] != "human":
                 raise SessionDenied("human_correction_only")
             if len(self._state["queue"]) >= self.spec.limits.queue:
@@ -468,11 +566,16 @@ class SessionControl:
                 raise SessionDenied("action_budget_exhausted")
             state = deepcopy(self._state)
             state[budget + "_count"] += amount
+            digest = self._digest(token)
+            deadline = min(mono + self.spec.limits.action_timeout_ms / 1000,
+                self._grant_deadlines[digest]["control"], self._browser_deadline,
+                self._last_frame_mono + self.spec.limits.frame_age_ms / 1000,
+                mono + (self._frame[0]["captured_at_ms"] + self.spec.limits.frame_age_ms - self.clock.wall_ms()) / 1000)
             ticket = asdict(ActionTicket(session_id, context_id, target_id, state["backend_epoch"],
                 operation_id, auth.actor_id, control_generation, document_id, document_generation,
-                action, canonical(parameters), mono + self.spec.limits.action_timeout_ms / 1000))
+                action, canonical(parameters), deadline))
             # The digest is an authorization reference, never the bearer secret.
-            ticket["grant_digest"] = self._digest(token)
+            ticket["grant_digest"] = digest
             state["operations"][operation_id] = {"request": request, "state": "queued",
                 "generation": control_generation, "ticket": ticket, "audit_persisted": True}
             state["queue"].append(operation_id)
@@ -488,9 +591,49 @@ class SessionControl:
 
     @staticmethod
     def _outcome_matches(ticket, outcome):
-        return (type(outcome) is OperationOutcome and outcome.operation_id == ticket.operation_id
-            and outcome.backend_epoch == ticket.backend_epoch and outcome.control_generation == ticket.control_generation
+        return (type(outcome) is OperationOutcome and type(outcome.operation_id) is str
+            and type(outcome.backend_epoch) is str and type(outcome.control_generation) is int
+            and type(outcome.document_generation) is int and type(outcome.state) is str
+            and outcome.operation_id == ticket.operation_id and outcome.backend_epoch == ticket.backend_epoch
+            and outcome.control_generation == ticket.control_generation
             and outcome.document_generation == ticket.document_generation and outcome.state in OUTCOMES)
+
+    def _action_ready(self, ticket, record):
+        _, mono = self._live()
+        auth = self._authorized(record["ticket"]["grant_digest"], "control")
+        self._fresh(auth.actor_id, record["request"]["observation_id"])
+        if (self._state["mode"] not in _ACTIVE or auth.actor_id != self._state["actor_id"]
+                or ticket.control_generation != self._state["control_generation"]
+                or ticket.document_generation != self._state["document_generation"]
+                or ticket.document_id != self._state["document_id"] or mono >= ticket.deadline_monotonic):
+            raise SessionDenied("input_fenced")
+
+    async def _invoke_action(self, ticket):
+        with self._lock:
+            record = self._state["operations"][ticket.operation_id]
+            try:
+                self._action_ready(ticket, record)
+                if record["state"] != "dispatched" or self._state["inflight"] != ticket.operation_id:
+                    raise SessionDenied("input_fenced")
+            except (SessionDenied, SessionUnavailable):
+                # This wrapper has not invoked the adapter. Original intent
+                # can be retired without claiming cancellation of native work.
+                return OperationOutcome(ticket.operation_id, ticket.backend_epoch, ticket.control_generation,
+                                        ticket.document_generation, "not_applied")
+            # No await separates the final authorization from invocation. The
+            # adapter must enforce this original deadline across its own awaits.
+            pending = self.adapter.execute(ticket)
+        return await pending
+
+    @staticmethod
+    def _scheduled(coroutine):
+        try:
+            return asyncio.create_task(coroutine)
+        except Exception:
+            # This is our own not-yet-started wrapper, not an adapter task whose
+            # cancellation could be confused with quiescence.
+            coroutine.close()
+            return None
 
     async def execute_next(self):
         with self._lock:
@@ -504,12 +647,7 @@ class SessionControl:
             record = state["operations"][key]
             ticket = self._ticket(record)
             try:
-                auth = self._authorized(record["ticket"]["grant_digest"], "control")
-                self._fresh(auth.actor_id, record["request"]["observation_id"])
-                if (auth.actor_id != state["actor_id"] or ticket.control_generation != state["control_generation"]
-                        or ticket.document_generation != state["document_generation"]
-                        or ticket.document_id != state["document_id"] or mono >= ticket.deadline_monotonic):
-                    raise SessionDenied("input_fenced")
+                self._action_ready(ticket, record)
             except SessionDenied:
                 record["state"] = "not_applied"
                 self._event(state, "not_applied", key, ticket.actor_id)
@@ -526,7 +664,10 @@ class SessionControl:
             state["inflight"] = key
             self._event(state, "dispatched", key, ticket.actor_id)
             self._save(state)
-            task = asyncio.create_task(self.adapter.execute(ticket))
+            task = self._scheduled(self._invoke_action(ticket))
+            if task is None:
+                self._finish_action(ticket, None)
+                return deepcopy(self._state["operations"][key])
             self._tasks[key] = task
             task.add_done_callback(lambda done: self._action_done(ticket, done))
         try:
@@ -560,7 +701,9 @@ class SessionControl:
             record["state"] = result
             if result != "unknown" and state["inflight"] == ticket.operation_id:
                 state["inflight"] = None
-            if result == "unknown" and state["mode"] in _ACTIVE:
+            expired = self.clock.monotonic() >= ticket.deadline_monotonic
+            if ((result == "unknown" or expired) and state["mode"] in _ACTIVE
+                    and state["control_generation"] == ticket.control_generation):
                 state["control_generation"] += 1
                 state["mode"], state["actor_id"] = "fenced", None
             self._event(state, result, ticket.operation_id, ticket.actor_id, emergency=True)
@@ -590,13 +733,15 @@ class SessionControl:
     async def _transfer(self, token, operation_id, generation, kind, observation_id):
         with self._lock:
             auth = self.authorize(token, "control")
+            integer(generation)
+            if kind == "handback":
+                _sha256(observation_id)
             request = {"kind": kind, "operation_id": operation_id, "actor_id": auth.actor_id,
                        "control_generation": generation, "observation_id": observation_id}
             original = self._original(operation_id, request)
             if original is not None:
                 return original
             _, mono = self._live()
-            integer(generation)
             if (auth.actor_id != self.spec.owner_actor_id or generation != self._state["control_generation"]
                     or self._state["mode"] == "stopping"
                     or (self._transition_task is not None and not self._transition_task.done())):
@@ -614,16 +759,19 @@ class SessionControl:
             inflight = () if state["inflight"] is None else (self._ticket(state["operations"][state["inflight"]]),)
             ticket = FenceTicket(self.spec.session_id, self.spec.context_id, self.spec.target_id,
                 state["backend_epoch"], operation_id, state["control_generation"], inflight,
-                mono + self.spec.limits.fence_timeout_ms / 1000)
+                min(mono + self.spec.limits.fence_timeout_ms / 1000,
+                    self._grant_deadlines[self._digest(token)]["control"], self._browser_deadline))
             state["operations"][operation_id] = {"request": request, "state": "dispatched",
                 "generation": state["control_generation"], "ticket": {"grant_digest": self._digest(token)}, "audit_persisted": True}
             self._event(state, "quiescing", operation_id, auth.actor_id)
             self._save(state)
             self._frame, self._served = None, {}
-            task = asyncio.create_task(self.adapter.quiesce(ticket))
+            task = self._scheduled(self._invoke_fence(ticket))
+            if task is None:
+                return self._complete_transfer(ticket, kind, None)
             self._transition_task = task
         try:
-            done, _ = await asyncio.wait({task}, timeout=self.spec.limits.fence_timeout_ms / 1000)
+            done, _ = await asyncio.wait({task}, timeout=max(0, ticket.deadline_monotonic - self.clock.monotonic()))
             receipt = task.result() if done else None
         except asyncio.CancelledError:
             self._complete_transfer(ticket, kind, None)
@@ -636,6 +784,17 @@ class SessionControl:
             task.add_done_callback(lambda done: self._late_fence(ticket, done))
         return result
 
+    async def _invoke_fence(self, ticket):
+        with self._lock:
+            self._live()
+            record = self._state["operations"][ticket.operation_id]
+            self._authorized(record["ticket"]["grant_digest"], "control")
+            if (self._state["mode"] != "quiescing" or self._state["control_generation"] != ticket.control_generation
+                    or self.clock.monotonic() >= ticket.deadline_monotonic):
+                return None
+            pending = self.adapter.quiesce(ticket)
+        return await pending
+
     def _late_fence(self, ticket, task):
         # Late evidence may improve original operations, never complete transfer.
         try:
@@ -647,7 +806,9 @@ class SessionControl:
                 self._finish_action(original, outcome)
 
     def _fence_matches(self, ticket, receipt):
-        return (type(receipt) is FenceReceipt and receipt.session_id == ticket.session_id
+        return (type(receipt) is FenceReceipt and type(receipt.session_id) is str
+            and type(receipt.backend_epoch) is str and type(receipt.operation_id) is str
+            and type(receipt.control_generation) is int and receipt.session_id == ticket.session_id
             and receipt.backend_epoch == ticket.backend_epoch and receipt.operation_id == ticket.operation_id
             and receipt.control_generation == ticket.control_generation and type(receipt.quiescent) is bool
             and type(receipt.outcomes) is tuple and len(receipt.outcomes) == len(ticket.inflight)
@@ -709,9 +870,9 @@ class SessionControl:
             return_request = {"kind": "stop", "operation_id": identifier(operation_id), "actor_id": auth.actor_id}
             if operation_id.startswith("host."):
                 raise SessionDenied("reserved_operation_identity")
-        return await self._stop_owned(return_request)
+        return await self._stop_owned(return_request, grant_digest=self._digest(token))
 
-    async def _stop_owned(self, request):
+    async def _stop_owned(self, request, *, grant_digest=None):
         with self._lock:
             key = request["operation_id"]
             original = self._state["operations"].get(key)
@@ -719,7 +880,7 @@ class SessionControl:
                 if original["request"] != request:
                     raise SessionDenied("operation_conflict")
                 return deepcopy(original)
-            if (self._closed or self.adapter is None or self._state["mode"] in _TERMINAL
+            if (self._closed or self.adapter is None or self._teardown_confirmed or self._state["mode"] in _TERMINAL
                     or (self._stop_task is not None and not self._stop_task.done())):
                 raise SessionDenied("stop_unavailable")
             if len(self._state["operations"]) >= self.spec.limits.operations:
@@ -730,9 +891,11 @@ class SessionControl:
             state["mode"], state["actor_id"] = "stopping", None
             self._cancel_queue(state)
             ticket = StopTicket(self.spec.session_id, self.spec.context_id, self.spec.target_id,
-                state["backend_epoch"], key, state["control_generation"], mono + self.spec.limits.stop_timeout_ms / 1000)
+                state["backend_epoch"], key, state["control_generation"],
+                min(mono + self.spec.limits.stop_timeout_ms / 1000,
+                    self._grant_deadlines[grant_digest]["stop"] if grant_digest else float("inf")))
             state["operations"][key] = {"request": request, "state": "dispatched",
-                "generation": state["control_generation"], "ticket": None, "audit_persisted": True}
+                "generation": state["control_generation"], "ticket": {"grant_digest": grant_digest}, "audit_persisted": True}
             self._event(state, "stop_requested", key, request["actor_id"], emergency=True)
             try:
                 self._save(state)
@@ -741,11 +904,14 @@ class SessionControl:
                 # allowed from cached owner authority, without claiming durability.
                 state["operations"][key]["audit_persisted"] = False
             self._frame, self._served = None, {}
-            task = asyncio.create_task(self.adapter.stop(ticket))
+            task = self._scheduled(self._invoke_stop(ticket))
+            if task is None:
+                self._finish_stop(ticket, None)
+                return deepcopy(self._state["operations"][key])
             self._stop_task = task
             task.add_done_callback(lambda done: self._stop_done(ticket, done))
         try:
-            done, _ = await asyncio.wait({task}, timeout=self.spec.limits.stop_timeout_ms / 1000)
+            done, _ = await asyncio.wait({task}, timeout=max(0, ticket.deadline_monotonic - self.clock.monotonic()))
             if not done:
                 self._finish_stop(ticket, None)
         except asyncio.CancelledError:
@@ -753,6 +919,16 @@ class SessionControl:
             raise
         with self._lock:
             return deepcopy(self._state["operations"][key])
+
+    async def _invoke_stop(self, ticket):
+        with self._lock:
+            if self._closed or self.clock.monotonic() >= ticket.deadline_monotonic:
+                return None
+            digest = self._state["operations"][ticket.operation_id]["ticket"]["grant_digest"]
+            if digest is not None:
+                self._authorized(digest, "stop")
+            pending = self.adapter.stop(ticket)
+        return await pending
 
     def _stop_done(self, ticket, task):
         try:
@@ -767,15 +943,21 @@ class SessionControl:
                 return
             state = deepcopy(self._state)
             record = state["operations"][ticket.operation_id]
-            if record["state"] == "confirmed":
+            if record["state"] == "confirmed" or self._teardown_confirmed:
                 return
-            valid = (type(receipt) is StopReceipt and receipt.session_id == ticket.session_id
+            valid = (type(receipt) is StopReceipt and type(receipt.session_id) is str
+                and type(receipt.backend_epoch) is str and type(receipt.operation_id) is str
+                and type(receipt.control_generation) is int and type(receipt.state) is str
+                and receipt.session_id == ticket.session_id
                 and receipt.backend_epoch == ticket.backend_epoch and receipt.operation_id == ticket.operation_id
                 and receipt.control_generation == ticket.control_generation
                 and receipt.state in {"confirmed", "pending", "failed", "unknown"})
             result = receipt.state if valid else "unknown"
+            if result == "confirmed":
+                self._teardown_confirmed = True
             record["state"] = result
-            state["mode"], state["actor_id"] = ("stopped" if result == "confirmed" else "fenced"), None
+            if result == "confirmed" or state["control_generation"] == ticket.control_generation:
+                state["mode"], state["actor_id"] = ("stopped" if result == "confirmed" else "fenced"), None
             self._event(state, "stop_" + result, ticket.operation_id, emergency=True)
             try:
                 self._save(state)

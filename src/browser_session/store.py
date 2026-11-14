@@ -48,6 +48,14 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def discard_temporary(path):
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            raise SessionUnavailable() from None
+
+
 class SessionStore:
     def __init__(self, directory, *, create=False, maximum=16777216):
         self.root = Path(directory)
@@ -165,7 +173,7 @@ class SessionStore:
             sync_directory(self.root)
             self.anchor = anchor
         finally:
-            temporary.unlink(missing_ok=True)
+            discard_temporary(temporary)
 
     def save(self, state):
         """Commit before effects. A failed commit never authorizes dispatch."""
@@ -207,8 +215,7 @@ class SessionStore:
         except (OSError, ValueError, RuntimeError):
             raise SessionUnavailable() from None
         finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            discard_temporary(temporary)
 
     def retain(self, content, maximum):
         """Content-addressed bytes, including failed-write leftovers in the cap."""
@@ -239,8 +246,7 @@ class SessionStore:
         except (OSError, ValueError, RuntimeError):
             raise SessionUnavailable() from None
         finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            discard_temporary(temporary)
 
     def read_result(self, record, maximum):
         try:

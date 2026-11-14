@@ -249,6 +249,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.submit()
         executing = asyncio.create_task(self.core.execute_next())
         await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertEqual(len(self.adapter.executions), 1)
         self.submit("queued")
         receipt = await self.core.takeover(self.human, "takeover", control_generation=0)
         self.assertEqual(receipt["state"], "applied")
@@ -287,7 +289,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.core.execute_next()
         human_view = self.core.observe(self.human)
         with self.assertRaisesRegex(SessionDenied, "fresh_observation_required"):
-            await self.core.handback(self.human, "bad-handback", control_generation=1, observation_id="old")
+            await self.core.handback(self.human, "bad-handback", control_generation=1, observation_id="0" * 64)
         result = await self.core.handback(self.human, "handback", control_generation=1,
             observation_id=human_view["frame"]["observation_id"])
         self.assertEqual(result["state"], "applied")
@@ -296,6 +298,13 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(driver_view["corrections"], [{"operation_id": "correction", "actor_id": "human",
             "text": "Compare total cost.", "generation": 1}])
         self.assertEqual(self.adapter.executions, [])
+        await self.core.stop(self.human, "stop")
+        self.core.close()
+        self.core = SessionControl.reopen(self.directory, self.clock)
+        observer = self.core.issue_grant("returning-reader", {"observe": self.clock.wall + 1000})
+        retained = self.core.observe(observer)
+        self.assertEqual(retained["mode"], "lost")
+        self.assertEqual(retained["corrections"], driver_view["corrections"])
 
     async def test_stop_invalidates_queued_inputs_and_duplicate_does_not_reissue(self):
         self.submit()
@@ -334,6 +343,10 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.adapter.stops), 1)
             self.assertEqual(self.adapter.executions, [])
             self.assertFalse((await self.core.stop(self.human, "emergency-stop"))["audit_persisted"])
+            with self.assertRaisesRegex(SessionDenied, "stop_unavailable"):
+                await self.core.stop(self.human, "different-stop")
+            self.assertEqual(len(self.adapter.stops), 1)
+            self.assertEqual(self.core._state["mode"], "stopped")
         retained = json.loads((self.directory / "session.json").read_bytes())
         self.assertNotIn("emergency-stop", retained["operations"])
 
