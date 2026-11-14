@@ -83,6 +83,46 @@ The default runtime returns all flags false. A trusted adapter may report true
 only after real preflight verification. ZPM must treat missing/unsupported
 capabilities as blocked; no model calls or task effects belong in preflight.
 
+### Typed readiness refusal
+
+Both v1 and v2 capabilities may include this optional, closed `diagnostic`
+object after authenticated scope/profile checks establish that a valid canonical
+authority lacks the approved profile's `child_initial_outcome=1` capability:
+
+```json
+{
+  "schema_version": 1,
+  "producer": "openjules",
+  "dimension": "canonical_authority",
+  "code": "required_capability_unsupported",
+  "requirement": {"name": "child_initial_outcome", "version": 1}
+}
+```
+
+The object is bounded to 1 KiB of UTF-8 JSON. All keys and literals are closed;
+versions are integers, never booleans. Its only valid readiness combination is
+`profile_supported: true`, `repository_access: false`, `managed_dispatch: false`.
+Positive responses and unclassified refusals omit `diagnostic` entirely, including
+authority outages, malformed replies, wrong scope and unapproved profiles. The
+producer never emits `diagnostic: null` or copies authority text into this object.
+V2 still verifies and echoes the original destination binding; this addition
+does not change its other fields or advertised feature support.
+
+During producer-first rollout, the fixed legacy `reason` remains
+`Canonical managed authority is unsupported: child_initial_outcome=1`. Updated
+consumers classify the typed object without matching human wording. A negative
+older response without a diagnostic is generically blocked; an otherwise valid
+healthy older response keeps its existing readiness path. A present null,
+malformed, oversized, unknown or contradictory diagnostic must block even an
+otherwise positive response. Shared response examples are retained in
+[`tests/fixtures/capability-diagnostic-v1.json`](../tests/fixtures/capability-diagnostic-v1.json).
+
+This diagnostic is an observation. It grants no worker/task permission, changes
+no target or deadline, and proves neither termination nor release. Existing
+admission and capture/recovery rules remain authoritative.
+
+### Worker snapshots
+
 Ensure, observe, drain and stop return a worker snapshot:
 
 ```json

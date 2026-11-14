@@ -545,12 +545,14 @@ class ManagedDockerRuntime:
                 authority.repository_access is True,
                 authority.reason,
                 children=authority.usable,
+                diagnostic=authority.diagnostic,
             )
         return RuntimeCapabilities(
             managed_dispatch=authority.usable,
             profile_supported=authority.profile_supported is True,
             repository_access=authority.repository_access is True,
             reason=authority.reason,
+            diagnostic=authority.diagnostic,
         )
 
     def _row(self, worker_id: str, spec: WorkerSpec, *, create: bool = False):
