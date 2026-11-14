@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenJules session</title>
+  <link rel="stylesheet" href="/client/style.css">
+  <script src="/client/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">OpenJules · Standalone host session</p>
+    <h1>Observe, take a turn, hand back.</h1>
+    <p>The browser engine and retained results belong to the session host. Viewing does not grant input ownership.</p>
+  </header>
+
+  <section aria-labelledby="pair-heading" id="pair-panel">
+    <h2 id="pair-heading">Pair this viewer</h2>
+    <form id="pair-form" autocomplete="off">
+      <label for="pair-code">Short-lived pairing code from your session host</label>
+      <div class="row">
+        <input id="pair-code" name="pair-code" type="password" autocomplete="off" spellcheck="false" minlength="43" maxlength="43" required>
+        <button type="submit">Pair</button>
+      </div>
+    </form>
+    <p class="muted">A code can be used once. Pairing and reconnecting do not extend permissions.</p>
+  </section>
+
+  <section aria-labelledby="session-heading">
+    <div class="row heading-row"><h2 id="session-heading">Session</h2><button id="reconnect" type="button">Reconnect view</button></div>
+    <p id="message" role="status" aria-live="polite">Checking this viewer's existing session.</p>
+    <dl id="identity">
+      <div><dt>Session / target</dt><dd id="session-target">Unpaired</dd></div>
+      <div><dt>Current input owner</dt><dd id="owner">Unknown</dd></div>
+      <div><dt>Control / document generation</dt><dd id="generations">Unknown</dd></div>
+      <div><dt>Observation</dt><dd id="freshness">Unavailable</dd></div>
+      <div><dt>Your rights</dt><dd id="rights">None observed</dd></div>
+    </dl>
+    <div class="row controls">
+      <button id="takeover" type="button" disabled>Take control</button>
+      <button id="handback" type="button" disabled>Hand back to driver</button>
+      <button id="stop" class="danger" type="button" disabled>Stop session</button>
+    </div>
+    <p class="muted">Taking control fences driver input. Page scripts and network activity can continue. This session has no private input mode; do not enter credentials.</p>
+    <p id="operation" class="operation" aria-live="polite">No operation requested by this viewer.</p>
+  </section>
+
+  <section aria-labelledby="view-heading">
+    <div class="row heading-row"><h2 id="view-heading">Latest page observation</h2><span id="frame-label" class="badge">No live frame</span></div>
+    <div class="frame-wrap"><img id="frame" alt="Latest page frame from the original session target" hidden></div>
+    <p class="muted">Click the frame only while you own control and the observation is fresh. Keyboard actions are available below.</p>
+    <pre id="projection" aria-label="Observed page values">No current page values.</pre>
+  </section>
+
+  <section aria-labelledby="input-heading">
+    <h2 id="input-heading">Your turn</h2>
+    <fieldset id="input-controls" disabled>
+      <legend>Explicit page actions</legend>
+      <form id="navigate-form">
+        <label for="navigate-url">Fixture page URL</label>
+        <div class="row"><input id="navigate-url" type="url" maxlength="4096" required><button type="submit">Navigate</button></div>
+      </form>
+      <form id="type-form" autocomplete="off">
+        <label for="type-text">Text for the focused page control, up to 20 characters</label>
+        <div class="row"><input id="type-text" type="text" maxlength="20" autocomplete="off" required><button type="submit">Send text</button></div>
+      </form>
+      <form id="key-form">
+        <label for="key-name">Keyboard action</label>
+        <div class="row"><select id="key-name">
+          <option value="enter">Enter</option><option value="tab">Tab</option><option value="escape">Escape</option>
+          <option value="backspace">Backspace</option><option value="delete">Delete</option><option value="space">Space</option>
+          <option value="arrow_up">Arrow up</option><option value="arrow_down">Arrow down</option>
+          <option value="arrow_left">Arrow left</option><option value="arrow_right">Arrow right</option>
+          <option value="home">Home</option><option value="end">End</option>
+          <option value="page_up">Page up</option><option value="page_down">Page down</option><option value="select_all">Select all</option>
+        </select><button type="submit">Send key</button></div>
+      </form>
+      <form id="correction-form">
+        <label for="correction-text">Attributed correction for the driver</label>
+        <textarea id="correction-text" rows="3" maxlength="2048" required></textarea>
+        <button type="submit">Record correction</button>
+      </form>
+    </fieldset>
+    <h3>Retained corrections</h3>
+    <ul id="corrections"><li>No correction observed.</li></ul>
+  </section>
+
+  <section aria-labelledby="results-heading">
+    <h2 id="results-heading">Retained results</h2>
+    <p>These are the original bytes retained by the host. Reopening them does not restart work.</p>
+    <div id="results" class="row"></div>
+    <pre id="result-text" aria-label="Retained result"></pre>
+    <img id="result-image" alt="Original retained session screenshot" hidden>
+  </section>
+</main>
+</body>
+</html>
