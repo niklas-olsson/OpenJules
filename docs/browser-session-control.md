@@ -1,7 +1,8 @@
 # Standalone browser session components
 
 `src/browser_session` implements a bounded session interlock, request
-authentication, an injected HTTP application and a static same-origin client
+authentication, an injected HTTP application, a static same-origin client and
+a deterministic fixture comparison driver
 for the first standalone [#58 slice](https://github.com/niklas-olsson/OpenJules/issues/58).
 It does not launch a browser or HTTP listener, or enable existing standalone
 task routes. Component tests use a deterministic adapter and in-process ASGI
@@ -42,6 +43,7 @@ opens and private modes; Windows and browser-local Python are not qualified.
 | `pairing.py` | Single-use host-prebound pairing codes, opaque browser-cookie aliases and pure HTTPS/Host/Origin/CSRF request validation. |
 | `http_app.py` | Fixed routes, raw-header validation, closed public projections, bounded responses and separate owner Stop capacity. |
 | `client/` | Same-origin pairing, latest-frame presentation, explicit input/takeover/handback/Stop and original-result reads. |
+| `comparison_driver.py` | One bounded fixture comparison through scoped observation, submission and original-operation status. |
 | Future native adapter | Owned engine connection, real sandbox and egress enforcement, native action implementation, exact quiescence and teardown evidence. |
 | Future qualified host composition | Actual verified HTTPS listener, native custody and confinement, independent supervision, and the real client journey. |
 
@@ -301,6 +303,87 @@ an effect, and does not grant observation of other actions or results. Late
 teardown evidence is read from the same original record, including when the
 owner's observation right expired or durable audit storage failed.
 
+## Deterministic comparison driver
+
+`ComparisonDriver` uses the existing [Alpha](../tests/fixtures/browser-engine/alpha.html)
+and [Beta](../tests/fixtures/browser-engine/beta.html) fixtures through a
+`ComparisonPort` containing exactly three synchronous, already scoped callbacks:
+`observe()`, `submit(request)` and `operation(original_id)`. Replies use the
+existing closed public observation and action-acknowledgement projections.
+The host strips private core tickets and grant references before returning them.
+Only an authorized, exact `operation_absent` lookup may become `ABSENT`;
+exceptions, generic denials and missing replies cannot establish absence.
+
+The driver receives no core, Page/CDP handle, credential issuer, dispatcher,
+takeover, handback, Stop or capture interface. The host retains those duties.
+This is a trusted in-process composition, not a Python sandbox or remote-driver
+transport. Synchronous calls cannot be preempted: a blocked callback has not
+been cancelled. Original deadlines are rechecked after return and before more
+work. Callback and later step interruptions preserve any pending original
+before being re-raised to the host.
+
+`DriverSpec` requires the original session/context/target/backend, both actor
+identities, wall start/expiry and monotonic deadline. Neither deadline is rebased
+at construction. One irreversible process-local claim precedes port I/O;
+reconstruction refuses even before a first click. There is no release, eviction
+or production reset API. A real process restart must reopen the existing core
+as LOST. Core authority and limits remain authoritative.
+
+The fixed journey follows Alpha's projected link to Beta and Beta's projected
+return link, observing standard totals of 125 and 118. It then waits for actually
+observed human control, the latest owner correction in that generation, and
+explicit handback to the next driver generation. The supported correction is
+exactly `Use express delivery for Alpha.` It is fixed task data, never an
+arbitrary command. A later retraction overrides an earlier matching note;
+duplicate identities refuse. A missed human phase remains an honest wait or
+refusal, with no automatic handback.
+
+After handback, the driver rereads Alpha's express total of 132 and clicks its
+projected link once more to freshly read Beta's 118. Every quote must satisfy
+`price + delivery == total`. The result computes and separates the historical
+difference of 7 from the post-handback difference of 14, retaining bounded
+observation provenance, the attributed correction and original operation IDs.
+
+The scalar fields are exactly `fixture`, `price`, `delivery`, `total`, `next_url`,
+`next_x` and `next_y`. URLs must match the unchanged fixtures and anchor
+coordinates must fit the observed viewport. Each click requires a strictly
+newer document generation afterwards; an applied acknowledgement alone cannot
+establish page state. No new semantic budget class, selector API or navigation
+bypass is introduced.
+
+All three fixed IDs are checked for exact absence at startup; each future ID is
+checked again before its first submission. They bind the original session,
+context, target, backend, driver actor and phase. Deadlines, budgets, generations,
+caller run IDs and retry counters cannot create replacement keys. Any retained
+row, including `not_applied`, makes an earlier run already used. Lost replies
+retain the exact request and allow only original-key status. Late outcomes may
+improve facts, but an uncertain comparison never resumes automatically.
+
+| Driver upper bound | Value |
+| --- | --- |
+| Runs / pending original | One per host process / one |
+| Original lifetime | 300 seconds, with mandatory original wall and monotonic cutoffs |
+| Eligible steps / total port calls | 1,200 / 2,400 |
+| Calls per eligible step | Two |
+| Eligible-step spacing | At least 250 ms, including after a slow callback returns; at most eight calls/second |
+| Driver click intents | Three |
+| Canonical result JSON | 8 KiB |
+
+Limits can be reduced. Waiting, errors and human control never reset them.
+`step()` neither sleeps nor starts a scheduler. Freshness includes the whole
+observation call's monotonic transit and later parsing/consumption time, so a
+frozen wall clock cannot make a delayed read fresh. A stale final Beta read
+keeps the applied third original and awaits a new observation, without another
+click or duplicate history. Earlier quotes remain explicitly historical.
+
+A completed `DriverProgress.result` contains immutable checked bytes for the
+host to retain with `core.retain_result("result.json", ...)` **before** owner
+Stop. The driver never captures or publishes them. Tests use real core grants
+and public projections with deterministic fixture effects, then verify the same
+host-retained bytes after Stop and retained-only reopen. They do not prove DOM
+extraction, native capture time/document attribution, pixel/input correspondence,
+browser custody, TLS or the real operator journey.
+
 ## Retention and restart
 
 The root and result directory must be owned private directories with mode
@@ -339,7 +422,7 @@ retention refuses access; these components do not schedule physical deletion.
 Run the source tests with the repository's supported Python environment:
 
 ```sh
-python -m pytest tests/unit/test_browser_pairing.py tests/unit/test_browser_session_*.py
+python -m pytest tests/unit/test_browser_pairing.py tests/unit/test_browser_session_*.py tests/unit/test_browser_comparison_driver.py
 ```
 
 The suites cover exact intent replay, independent rights and deadlines, queue
@@ -358,16 +441,24 @@ refusal, transit and clock rollback, bounded original-ID polling, late replies
 after owner Stop, old-view generation and sequence rejection, and restoration
 of a temporarily hidden frame. They open no browser or socket.
 
+The comparison suite additionally exercises checked arithmetic, explicit owner
+turns, original-key ambiguity, late knowledge, immutable deadlines, interruption,
+delayed observation use, finite budgets and host-only result retention.
+
 These tests establish source-component behavior only. Native engine
 qualification, an actual verified HTTPS listener and real operator client, the
-two-fixture autonomous task, live observation/takeover/handback, real Stop and
+native two-fixture task, live observation/takeover/handback, real Stop and
 retained reload remain separately required by #58. This unit does not establish
 browser-local execution, a local model path, managed integration, independent
 distribution or a joined application demonstrator.
 
 The installed Python Playwright 1.62.0 API was inspected as source only: its
 `Screencast.start(on_frame, quality, size)` callback supplies JPEG bytes,
-presentation time and viewport dimensions, but no document/loader identity. It
+a timestamp and viewport dimensions, but no document/loader identity. The
+[pinned Chromium handler](https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/chromium/crPage.ts)
+substitutes `Date.now()` when the native timestamp is missing. A positive
+high-level timestamp therefore cannot prove original native capture time;
+an eventual adapter must preserve that missingness. The inspected API
 has no `fps` argument in that version. Delayed callbacks must not be labeled with
 whichever document happens to be current on arrival. A native adapter needs an
 explicit reviewed interface for the original ordered backend lifecycle, frame
