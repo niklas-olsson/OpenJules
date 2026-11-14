@@ -782,7 +782,12 @@ def test_cleanup_cli_does_not_start_service_or_restore_endpoints(
             managed_dispatcher=s.dispatcher, model_broker=None, child_supervisor=None
         )
     )
-    monkeypatch.setattr(managed_service, "load_configuration", lambda _: ({}, {}))
+    def configuration(_path, *, managed_context=False):
+        assert managed_context
+        managed_service.enter_managed_context()
+        return {}, {}
+
+    monkeypatch.setattr(managed_service, "load_configuration", configuration)
 
     def build(*args, cleanup_only):
         assert cleanup_only is True

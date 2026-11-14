@@ -13,7 +13,7 @@ import math
 import re
 from typing import Mapping
 
-from src.polyphony.managed_client import AuthorityUnavailable, AuthorityUnsupported
+from src.worker.authority_errors import AuthorityUnavailable, AuthorityUnsupported
 from src.worker.lifecycle import RuntimeCapabilities, WorkerSpec
 
 PROTOCOL = "bounded-children-v1"

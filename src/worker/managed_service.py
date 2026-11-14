@@ -16,19 +16,22 @@ import stat
 import threading
 
 from src.api.worker_lifecycle import create_worker_app
-from src.polyphony.managed_client import (
+from src.worker.authority_errors import (
     AuthorityUnavailable,
     AuthorityUnsupported,
-    ManagedAuthorityClient,
     UNSUPPORTED_CHILD_OUTCOME_REASON,
 )
 from src.worker.lifecycle import (
     CapabilityDiagnostic, RuntimeCapabilities, WorkerLifecycle, WorkerScope,
 )
-from src.worker.managed_dispatch import ManagedDispatcher
-from src.worker.execution_context import enter_managed_context, validate_managed_installation
+from src.worker.execution_context import (
+    enter_managed_context, select_managed_context, validate_managed_installation,
+)
 from src.worker.destination import (
-    DestinationState, destination_configuration, initialize_destination,
+    DestinationState, initialize_destination,
+)
+from src.worker.managed_configuration import (
+    MAX_CONFIGURATION_BYTES, parse_configuration_bytes, prepare_configuration,
 )
 
 
@@ -38,85 +41,19 @@ def _read_object(path: Path, *, private: bool = False) -> dict:
     info = path.stat()
     if private and stat.S_IMODE(info.st_mode) & 0o077:
         raise ValueError("credential file must have mode 0600")
-    if info.st_size > 1_000_000:
+    if info.st_size > MAX_CONFIGURATION_BYTES:
         raise ValueError("configuration file is too large")
-    duplicate = False
-
-    def pairs(items):
-        nonlocal duplicate
-        result = {}
-        for key, value in items:
-            if key in result:
-                duplicate = True
-            result[key] = value
-        return result
-
-    data = json.loads(path.read_text(), object_pairs_hook=pairs)
-    if not isinstance(data, dict):
-        raise ValueError("configuration must be an object")
-    children = data.get("children")
-    if duplicate and ("execution_destination" in data or (
-        isinstance(children, list) and any(
-            isinstance(item, dict) and isinstance(item.get("policy"), dict)
-            and "public_discussion" in item["policy"] for item in children
-        )
-    )):
-        # Omitted profiles retain the previous loader's last-value semantics.
-        # Explicit public approval cannot be constructed from ambiguous JSON.
-        raise ValueError("managed opt-in configuration has duplicate JSON fields")
-    return data
+    with path.open("rb") as source:
+        raw = source.read(MAX_CONFIGURATION_BYTES + 1)
+    return parse_configuration_bytes(raw)
 
 
-def load_configuration(path: str | Path):
+def load_configuration(path: str | Path, *, managed_context=False):
     config = _read_object(Path(path))
-    allowed = {
-        "schema_version",
-        "state_directory",
-        "lifecycle_database",
-        "credentials_file",
-        "authority",
-        "profiles",
-        "host",
-        "port",
-        "poll_interval_seconds",
-        "max_parallel",
-        "models",
-        "children",
-        "execution_destination",
-    }
-    required = {
-        "schema_version",
-        "state_directory",
-        "lifecycle_database",
-        "credentials_file",
-        "authority",
-        "profiles",
-    }
-    if not required <= set(config) or not set(config) <= allowed:
-        raise ValueError("managed service configuration fields do not match schema")
-    if type(config["schema_version"]) is not int or config["schema_version"] != 1:
-        raise ValueError("unsupported managed service configuration version")
-    destination_configuration(config)
-    for key in ("state_directory", "lifecycle_database", "credentials_file"):
-        if not isinstance(config[key], str) or not Path(config[key]).is_absolute():
-            raise ValueError("managed service paths must be absolute")
-    if config.get("host", "127.0.0.1") not in {"127.0.0.1", "::1"}:
-        raise ValueError(
-            "managed service listens on loopback; use an authenticated HTTPS proxy for remote access"
-        )
-    port = config.get("port", 8000)
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("invalid managed service port")
-    authority = config["authority"]
-    if not isinstance(authority, dict) or set(authority) != {"endpoint", "token_ref"}:
-        raise ValueError("authority configuration requires endpoint and token_ref")
-    profiles = config["profiles"]
-    if (
-        not isinstance(profiles, list)
-        or not profiles
-        or not all(isinstance(p, dict) for p in profiles)
-    ):
-        raise ValueError("at least one approved runtime profile is required")
+    # Every selected policy and scheduler/authority bound precedes secret reads.
+    prepare_configuration(config)
+    if managed_context:
+        enter_managed_context()
     credentials = _read_object(Path(config["credentials_file"]), private=True)
     scopes = {}
     for token, grants in credentials.items():
@@ -144,64 +81,36 @@ def load_configuration(path: str | Path):
 
 
 def build_app(config: dict, credentials: dict, *, cleanup_only=False):
+    # Direct callers use exactly the same pure schema-1 phase as file loading.
+    # No destination, broker, credential resolver or host check can precede it.
+    prepared = prepare_configuration(config)
     validate_managed_installation()
-    # Validate the complete original set before component constructors can
-    # create state, check providers or contact canonical authority.
-    destination = DestinationState.load(config)
-
-    def journal_context(member):
-        return {"journal_binding": destination.member(member)} if destination else {}
-    # Lazy import keeps the old lifecycle API available without constructing a
-    # Docker client. The managed entrypoint always uses the real runtime.
-    from src.worker.docker_runtime import DockerProfile, ManagedDockerRuntime
-
-    profiles = []
-    for original in config["profiles"]:
-        data = dict(original)
-        if isinstance(data.get("command"), list):
-            data["command"] = tuple(data["command"])
-        if isinstance(data.get("environment_refs", {}), dict):
-            data["environment_refs"] = tuple(
-                sorted(data.get("environment_refs", {}).items())
-            )
-        profiles.append(DockerProfile(**data))
-    profile_by_scope = {(p.deployment_id, p.repository, p.name): p for p in profiles}
-    if len(profile_by_scope) != len(profiles):
-        raise ValueError("duplicate runtime profile binding")
+    profiles = prepared.profiles
+    profile_by_scope = prepared.profile_by_scope
+    model_policies = prepared.model_policies
+    child_policies = prepared.child_policies
     authorized_scopes = {scope for grants in credentials.values() for scope in grants}
     if any(
         WorkerScope(p.deployment_id, p.repository) not in authorized_scopes
         for p in profiles
     ):
         raise ValueError("every profile requires an explicit ZPM credential scope")
+
+    destination = DestinationState.load(config)
+
+    def journal_context(member):
+        return {"journal_binding": destination.member(member)} if destination else {}
+
+    from src.worker.docker_runtime import ManagedDockerRuntime
+    from src.worker.managed_dispatch import ManagedDispatcher
+    from src.polyphony.managed_client import ManagedAuthorityClient
+
     authority = ManagedAuthorityClient(**config["authority"])
     dispatcher = None
     model_broker = None
     child_supervisor = None
-    models = config.get("models", [])
-    if not isinstance(models, list) or len(models) > len(profiles):
-        raise ValueError("models must be a bounded list of approved profile policies")
-    model_policies = {}
-    if models:
-        from src.worker.model_broker import ModelBroker, ModelPolicy
-
-        for item in models:
-            if (
-                not isinstance(item, dict)
-                or set(item) != {"deployment_id", "repository", "profile", "policy"}
-                or not isinstance(item["policy"], dict)
-            ):
-                raise ValueError(
-                    "model policies require an exact approved profile scope"
-                )
-            key = (item["deployment_id"], item["repository"], item["profile"])
-            if key not in profile_by_scope or key in model_policies:
-                raise ValueError("duplicate or unsupported model profile")
-            if profile_by_scope[key].environment_refs:
-                raise ValueError(
-                    "model-backed profiles cannot inject guest credentials"
-                )
-            model_policies[key] = ModelPolicy(**item["policy"])
+    if model_policies:
+        from src.worker.model_broker import ModelBroker
 
         def model_permission(binding):
             return 0 if dispatcher is None else dispatcher.model_permission(binding)
@@ -220,55 +129,9 @@ def build_app(config: dict, credentials: dict, *, cleanup_only=False):
             model_broker.close()
             raise
 
-    child_policies = {}
     try:
-        configured_children = config.get("children", [])
-        if not isinstance(configured_children, list) or len(configured_children) > len(
-            profiles
-        ):
-            raise ValueError(
-                "children must be a bounded list of approved profile policies"
-            )
-        if configured_children:
-            from src.worker.child_types import ChildPolicy
-
-            for item in configured_children:
-                if (
-                    not isinstance(item, dict)
-                    or set(item) != {"deployment_id", "repository", "profile", "policy"}
-                    or not isinstance(item["policy"], dict)
-                ):
-                    raise ValueError(
-                        "child policies require an exact approved profile scope"
-                    )
-                key = (item["deployment_id"], item["repository"], item["profile"])
-                if key not in model_policies or key in child_policies:
-                    raise ValueError(
-                        "children require a unique approved model-backed profile"
-                    )
-                if (
-                    "session_protocol" in item["policy"]
-                    and item["policy"]["session_protocol"] != "cold-clarification-v1"
-                ):
-                    raise ValueError("unsupported explicit child session protocol")
-                if (
-                    "public_discussion" in item["policy"]
-                    and not isinstance(item["policy"]["public_discussion"], dict)
-                ):
-                    raise ValueError("unsupported explicit public discussion policy")
-                child_policies[key] = ChildPolicy(**item["policy"])
-                child_policies[key].validate_root(
-                    profile_by_scope[key].uid, profile_by_scope[key].max_seconds
-                )
-                if child_policies[key].public_discussion is not None:
-                    from src.worker.managed_public_types import (
-                        PublicPolicy, validate_root_command,
-                    )
-
-                    validate_root_command(profile_by_scope[key].command)
-                    PublicPolicy.parse(
-                        child_policies[key].public_discussion
-                    ).check_server()
+        for public_policy in prepared.public_policies.values():
+            public_policy.check_server()
     except BaseException:
         if model_broker is not None:
             model_broker.close()
@@ -498,8 +361,10 @@ def main():
     ):
         parser.error("cleanup requires worker, deployment and repository together")
     try:
-        enter_managed_context()
-        config, credentials = load_configuration(args.config)
+        # Preserve blanket legacy refusal even if static configuration fails.
+        # Actual selector/config host reads occur only after the pure phase.
+        select_managed_context()
+        config, credentials = load_configuration(args.config, managed_context=True)
         if args.initialize_destination or args.inspect_destination:
             if args.initialize_destination:
                 result = initialize_destination(config)

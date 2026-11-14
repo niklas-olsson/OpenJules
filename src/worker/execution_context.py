@@ -139,11 +139,16 @@ def validate_managed_installation(*, required=False):
         raise ManagedInstallationInvalid() from None
 
 
-def enter_managed_context():
-    """Called by the actual managed entrypoint, not by component app builders."""
+def select_managed_context():
+    """Irreversibly refuse legacy work in this process, without reading host files."""
     global _managed_process
     with _lock:
         _managed_process = True
+
+
+def enter_managed_context():
+    """Called by the actual managed entrypoint, not by component app builders."""
+    select_managed_context()
     validate_managed_installation()
 
 

@@ -8,37 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import re
-from urllib.parse import urlsplit
 
 import httpx
 
 from src.worker.lifecycle import WorkerScope
 
 
-class AuthorityUnavailable(RuntimeError):
-    """The canonical reply was unavailable or did not match its scope."""
-
-
-UNSUPPORTED_CHILD_OUTCOME_REASON = (
-    "Canonical managed authority is unsupported: child_initial_outcome=1"
+from src.worker.authority_errors import (
+    AuthorityUnavailable, AuthorityUnsupported, AuthorityRejected,
+    UNSUPPORTED_CHILD_OUTCOME_REASON,
 )
-
-
-class AuthorityUnsupported(AuthorityUnavailable):
-    """A validated authority lacks the configured initial child outcome version."""
-
-    def __init__(self):
-        super().__init__(UNSUPPORTED_CHILD_OUTCOME_REASON)
-
-
-class AuthorityRejected(AuthorityUnavailable):
-    def __init__(self, status: int, *, claim_not_allocated: bool = False):
-        self.status = status
-        self.claim_not_allocated = claim_not_allocated
-        super().__init__(f"Canonical authority rejected the request (HTTP {status})")
+from src.worker.managed_configuration import validate_authority_configuration
 
 
 def token_from_reference(reference: str) -> str:
@@ -61,41 +43,8 @@ class ManagedAuthorityClient:
         timeout_seconds: float = 10,
         max_response_bytes: int = 5_000_000,
     ):
-        parts = urlsplit(endpoint)
-        if (
-            parts.scheme not in {"http", "https"}
-            or not parts.hostname
-            or parts.username is not None
-            or parts.password is not None
-            or parts.query
-            or parts.fragment
-            or parts.path not in {"", "/"}
-            or (
-                parts.scheme == "http"
-                and parts.hostname not in {"localhost", "127.0.0.1", "::1"}
-            )
-        ):
-            raise ValueError(
-                "authority endpoint requires HTTPS or a loopback HTTP root"
-            )
-        # Access .port now so malformed URLs fail during configuration.
-        parts.port
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(timeout_seconds)
-            or not 0 < timeout_seconds <= 120
-        ):
-            raise ValueError("authority timeout must be between zero and 120 seconds")
-        if (
-            type(max_response_bytes) is not int
-            or not 1024 <= max_response_bytes <= 20_000_000
-        ):
-            raise ValueError("invalid authority response limit")
-        if not isinstance(token_ref, str) or not re.fullmatch(
-            r"env:[A-Za-z_][A-Za-z0-9_]*", token_ref
-        ):
-            raise ValueError("authority credential must be an environment reference")
+        validate_authority_configuration(endpoint, token_ref,
+            timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
         self.endpoint = endpoint.rstrip("/")
         self.token_ref = token_ref
         self.timeout_seconds = timeout_seconds

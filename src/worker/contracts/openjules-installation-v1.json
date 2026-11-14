@@ -1,0 +1,449 @@
+{
+  "artifact_schema_version": 1,
+  "bounds": {
+    "child_policy": {
+      "argv_item_characters": [
+        1,
+        4096
+      ],
+      "argv_items": [
+        1,
+        128
+      ],
+      "capabilities_count": [
+        0,
+        100
+      ],
+      "capability_utf8_bytes": [
+        1,
+        512
+      ],
+      "max_child_seconds": {
+        "exclusive_minimum": 0,
+        "maximum": 86400
+      },
+      "max_child_turns": [
+        1,
+        1000
+      ],
+      "max_children": [
+        1,
+        64
+      ],
+      "max_result_bytes": [
+        1024,
+        4000000
+      ],
+      "uid_range": "Nonzero, within 1..65535 and excludes root UID and watchdog 65534.",
+      "verify_argv_items": [
+        0,
+        128
+      ]
+    },
+    "docker_profile": {
+      "argv_item_characters": [
+        1,
+        4096
+      ],
+      "base_commit_pattern": "[0-9a-f]{40}",
+      "cpu_quota": [
+        1000,
+        2147483648
+      ],
+      "forbidden_uid": 65534,
+      "image": "sha256: plus 64 lowercase hex, or immutable name@sha256: digest",
+      "max_archive_bytes": [
+        1024,
+        1073741824
+      ],
+      "max_seconds": [
+        1,
+        86400
+      ],
+      "memory_bytes": [
+        16777216,
+        1099511627776
+      ],
+      "pids_limit": [
+        8,
+        65536
+      ],
+      "profile_name_pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+      "scope_identifier_characters": [
+        1,
+        512
+      ],
+      "uid": [
+        1,
+        65535
+      ]
+    },
+    "managed_public": {
+      "instructions": [
+        1,
+        8
+      ],
+      "invitations": [
+        0,
+        1
+      ],
+      "personas": [
+        1,
+        3
+      ],
+      "policy_bytes": 65536,
+      "root_control_timeout_seconds": {
+        "exclusive_minimum": 0,
+        "maximum": 120
+      },
+      "root_max_turns": [
+        1,
+        1000
+      ],
+      "text_utf8_bytes": [
+        1,
+        4096
+      ],
+      "topic_utf8_bytes": [
+        1,
+        256
+      ]
+    },
+    "model_policy": {
+      "max_calls": [
+        1,
+        1000
+      ],
+      "max_output_tokens": [
+        1,
+        32768
+      ],
+      "max_request_bytes": [
+        1024,
+        524288
+      ],
+      "max_response_bytes": [
+        1024,
+        2097152
+      ],
+      "max_total_output_tokens": [
+        1,
+        10000000
+      ],
+      "model_characters": [
+        1,
+        256
+      ],
+      "request_timeout_seconds": {
+        "exclusive_minimum": 0,
+        "maximum": 120
+      },
+      "token_parameter": [
+        "max_tokens",
+        "max_completion_tokens"
+      ]
+    },
+    "service": {
+      "host": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "max_parallel": [
+        1,
+        256
+      ],
+      "poll_interval_seconds": [
+        0.1,
+        60
+      ],
+      "port": [
+        1,
+        65535
+      ]
+    }
+  },
+  "configuration_fields": {
+    "authority": [
+      "endpoint",
+      "token_ref"
+    ],
+    "execution_destination": [
+      "destination_id"
+    ],
+    "optional": [
+      "host",
+      "port",
+      "poll_interval_seconds",
+      "max_parallel",
+      "models",
+      "children",
+      "execution_destination"
+    ],
+    "policy_binding": [
+      "deployment_id",
+      "repository",
+      "profile",
+      "policy"
+    ],
+    "required": [
+      "schema_version",
+      "state_directory",
+      "lifecycle_database",
+      "credentials_file",
+      "authority",
+      "profiles"
+    ]
+  },
+  "configuration_schema_version": 1,
+  "conformance_vectors": "openjules-installation-v1-vectors.json",
+  "defaults": {
+    "child_policy": {
+      "command": [
+        "python3",
+        "-I",
+        "-S",
+        "/opt/openjules/managed_runner.py"
+      ],
+      "max_result_bytes": 4000000,
+      "outcome_protocol": null,
+      "public_discussion": null,
+      "session_protocol": null,
+      "uid_start": 60000,
+      "verify_argv": []
+    },
+    "docker_profile": {
+      "cpu_quota": 100000,
+      "environment_refs": [],
+      "max_archive_bytes": 16777216,
+      "max_seconds": 300,
+      "memory_bytes": 536870912,
+      "pids_limit": 128,
+      "uid": 65532
+    },
+    "model_policy": {
+      "max_calls": 25,
+      "max_output_tokens": 2048,
+      "max_request_bytes": 524288,
+      "max_response_bytes": 2097152,
+      "max_total_output_tokens": 32768,
+      "request_timeout_seconds": 30,
+      "token_parameter": "max_tokens"
+    },
+    "service": {
+      "children": [],
+      "host": "127.0.0.1",
+      "max_parallel": 16,
+      "models": [],
+      "poll_interval_seconds": 1,
+      "port": 8000
+    }
+  },
+  "descriptor": {
+    "configuration_schema_version": 1,
+    "exclusions": [
+      "host paths",
+      "credential references",
+      "policy fingerprints",
+      "private instructions",
+      "producer self-attestation"
+    ],
+    "execution_destination_identity": "0 when omitted, 1 for existing schema-1 identity opt-in; no portable manifest or host admission claim",
+    "feature_values": {
+      "child_outcome": [
+        null,
+        "initial-v1"
+      ],
+      "child_session": [
+        null,
+        "cold-clarification-v1"
+      ],
+      "children": [
+        null,
+        "bounded-children-v1"
+      ],
+      "model_broker": [
+        null,
+        1
+      ],
+      "public_discussion": [
+        null,
+        "managed-public-pull-v1"
+      ]
+    },
+    "fields": [
+      "configuration_schema_version",
+      "execution_destination_identity",
+      "profiles"
+    ],
+    "peer_contracts": {
+      "keystone-polyphony/managed-runtime-v1": {
+        "always": {
+          "external_root": true,
+          "managed_dispatch": true,
+          "profile_supported": true
+        },
+        "children": {
+          "child_grants": true
+        },
+        "initial-v1": {
+          "child_initial_outcome": 1
+        }
+      },
+      "keystone-polyphony/polyphony-public-conversation-v1": {
+        "managed-public-pull-v1": {
+          "execution_authorized": false,
+          "profile": "polyphony-public-conversation",
+          "schema_version": 1
+        }
+      }
+    },
+    "peer_fields": [
+      "contract",
+      "required_capabilities"
+    ],
+    "profile_fields": [
+      "deployment_id",
+      "repository",
+      "profile",
+      "base_commit",
+      "image",
+      "features",
+      "required_peer_contracts"
+    ],
+    "profile_order": "Lexicographic (deployment_id,repository,profile)"
+  },
+  "encoding": {
+    "artifact": "UTF-8 without BOM; LF line endings; final newline",
+    "artifact_digest": "SHA-256 of exact committed bytes, without JSON normalization",
+    "input_digests": "SHA-256 of exact supplied bounded UTF-8 bytes, including whitespace",
+    "receipt": "ASCII JSON, sorted keys, compact separators, final LF; no NaN or Infinity"
+  },
+  "errors": {
+    "artifact_failure": "No receipt is issued if the installed static artifact cannot be read or recognized; CLI exits 2 with fixed installation_contract_unavailable on stderr.",
+    "codes": [
+      "contract_id_mismatch",
+      "contract_digest_mismatch",
+      "configuration_input_unavailable",
+      "configuration_size",
+      "configuration_json",
+      "configuration_object",
+      "configuration_duplicate_fields",
+      "configuration_fields",
+      "configuration_schema_unsupported",
+      "destination_invalid",
+      "destination_profile_limit",
+      "path_not_absolute",
+      "host_not_loopback",
+      "port_invalid",
+      "authority_fields",
+      "authority_invalid",
+      "dispatcher_poll_interval",
+      "dispatcher_parallelism",
+      "profiles_required",
+      "profile_invalid",
+      "profile_duplicate",
+      "policy_list_invalid",
+      "policy_binding_invalid",
+      "policy_binding_unknown_or_duplicate",
+      "model_guest_credentials",
+      "child_model_required",
+      "child_session_unsupported",
+      "child_public_unsupported",
+      "policy_invalid",
+      "child_root_incompatible",
+      "public_root_command",
+      "scope_declarations_input_unavailable",
+      "scope_declarations_size",
+      "scope_declarations_json",
+      "scope_declarations_invalid",
+      "scope_declarations_duplicate",
+      "scope_declarations_missing_profile",
+      "receipt_size"
+    ],
+    "paths": "JSON pointers into a conceptual envelope containing decoded configuration, decoded scope_declarations, expected_contract and expected_contract_digest. Only fixed field names and generated array indexes appear."
+  },
+  "host_checks_required": [
+    "worker_credentials",
+    "environment_credentials",
+    "source_and_image",
+    "destination_state",
+    "managed_installation_context",
+    "public_host_bindings_when_selected",
+    "live_authority_and_canonical_permission",
+    "runtime_readiness",
+    "provider_qualification_when_selected"
+  ],
+  "input_bounds": {
+    "configuration_bytes": 1000000,
+    "configuration_limit_note": "Decimal 1,000,000 bytes preserves startup behavior and is below 1 MiB (1,048,576 bytes).",
+    "destination_profiles": 256,
+    "errors": 1,
+    "ordinary_profiles": "At least one; count is bounded by the configuration byte limit, with no new profile-count restriction.",
+    "receipt_bytes_including_newline": 8000000,
+    "scope_declarations_bytes": 65536,
+    "scope_declarations_count": [
+      1,
+      256
+    ]
+  },
+  "no_effects": [
+    "No credential file or environment-secret resolution",
+    "No checkout/image or public-host inspection",
+    "No journal/state creation or opening",
+    "No socket/client/subprocess/authority/provider operation",
+    "No inference or repository execution"
+  ],
+  "parser": {
+    "direct_builder": "Complete schema-1 dictionary required by build_app; the same pure preparation precedes destination and broker construction.",
+    "duplicates": "Last value wins except any duplicate is refused when execution_destination or a child public_discussion field is selected.",
+    "numeric_types": "Native integer fields exclude Boolean aliases; numeric duration bounds require finite non-Boolean values.",
+    "schema_versions": [
+      1
+    ],
+    "unicode": "Strict UTF-8 input decoding; no normalization; existing JSON string semantics retained.",
+    "unsupported_schema_versions": [
+      2
+    ]
+  },
+  "producer_identity": "Consumer verifies the pinned producer source/build independently; receipt contains no self-reported attestation.",
+  "receipt_fields": {
+    "configuration_sha256": "64 lowercase hexadecimal characters, or null only when exact bounded bytes were not acquired",
+    "contract_digest": "64 lowercase hexadecimal characters; exact actual installed contract bytes",
+    "descriptor": "closed object below when valid, otherwise null",
+    "errors": "0 or 1 objects with exactly code and path",
+    "host_checks_required": "exact ordered list below; all remain unresolved",
+    "schema_version": "exact integer 1",
+    "scope_declarations_sha256": "64 lowercase hexadecimal characters, or null when omitted or exact bounded bytes were not acquired",
+    "service": "openjules",
+    "valid": "Boolean",
+    "validation_contract": "openjules-installation-v1"
+  },
+  "relations": [
+    "Profiles have unique (deployment_id,repository,name) bindings. Models/children bind exact existing scoped profiles and cannot duplicate bindings.",
+    "Models forbid guest environment_refs. Children require the corresponding model policy; child duration cannot exceed the root maximum.",
+    "initial-v1 requires the approved default child runner; cold-clarification-v1 additionally requires initial-v1 and at least two lifetime slots.",
+    "An explicitly present session_protocol must be cold-clarification-v1. Explicit public_discussion must be an object.",
+    "managed-public-pull-v1 requires explicit public approval, initial-v1, the default child runner, at least two slots, no cold session, and the approved root runner/socket grammar.",
+    "Ordinary model/child profiles retain the approved arbitrary root command semantics; fixed root-helper grammar applies to managed-public only.",
+    "The public root helper is python3 -I -S /opt/openjules/managed_root_runner.py with exact unique --socket /run/openjules-model/model.sock, --control-socket /run/openjules-model/control.sock, --public-socket /run/openjules-model/public.sock; optional --max-turns, --control-timeout-seconds and --verify-json use native bounds.",
+    "All authority/model URLs and environment-reference syntax are checked without DNS, credentials, clients or requests. Public host paths are syntax only until check_server at startup.",
+    "Native DockerProfile, ModelPolicy and ChildPolicy fingerprints and omitted optional-field encoding remain unchanged."
+  ],
+  "scope_declarations": {
+    "authority_limit": "256 is the validation-input bound only; it does not change actual credential scope authority.",
+    "duplicates": "Refused for JSON fields and scope pairs.",
+    "fields": [
+      "schema_version",
+      "scopes"
+    ],
+    "meaning": "Each profile scope must occur in the supplied unique list. Extra declarations grant no authority; omission skips only this structural comparison.",
+    "schema_version": 1,
+    "scope_fields": [
+      "deployment_id",
+      "repository"
+    ]
+  },
+  "service": "openjules",
+  "supported_invocation": "python -B -m src.worker.installation_validation --config FILE --expected-contract openjules-installation-v1 --expected-contract-digest SHA256 [--scope-declarations FILE]",
+  "validation_contract": "openjules-installation-v1"
+}

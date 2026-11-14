@@ -21,6 +21,7 @@ import time
 from uuid import uuid4
 
 from src.worker.destination import connect_journal
+from src.worker.managed_configuration import validate_dispatcher_configuration
 
 from src.polyphony.managed_client import (
     AuthorityRejected,
@@ -149,15 +150,7 @@ class ManagedDispatcher:
         child_supervisor=None,
         journal_binding=None,
     ):
-        if (
-            isinstance(poll_interval_seconds, bool)
-            or not isinstance(poll_interval_seconds, (int, float))
-            or not math.isfinite(poll_interval_seconds)
-            or not 0.1 <= poll_interval_seconds <= 60
-        ):
-            raise ValueError("invalid dispatcher poll interval")
-        if type(max_parallel) is not int or not 1 <= max_parallel <= 256:
-            raise ValueError("invalid dispatcher parallelism")
+        validate_dispatcher_configuration(poll_interval_seconds, max_parallel)
         self.lifecycle = lifecycle
         self.runtime = runtime
         self.authority = authority

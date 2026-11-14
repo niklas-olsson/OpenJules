@@ -324,6 +324,7 @@ def service_config(tmp_path, *, environment_refs=None):
         "schema_version": 1,
         "state_directory": str(tmp_path / "service"),
         "lifecycle_database": str(tmp_path / "service-lifecycle.db"),
+        "credentials_file": str(tmp_path / "explicit-worker-credentials.json"),
         "authority": {
             "endpoint": "http://127.0.0.1:8002",
             "token_ref": "env:MODEL_AUTHORITY_FIXTURE_TOKEN",
@@ -349,7 +350,7 @@ def test_service_and_runtime_reject_guest_credential_injection(tmp_path):
     config, credentials = service_config(
         tmp_path, environment_refs={"OPENAI_API_KEY": TOKEN_REFERENCE}
     )
-    with pytest.raises(ValueError, match="cannot inject guest credentials"):
+    with pytest.raises(ValueError, match="model_guest_credentials"):
         service_module.build_app(config, credentials)
     policy = ModelPolicy(
         "http://127.0.0.1:8001/v1/chat/completions", "fixture", TOKEN_REFERENCE
@@ -375,7 +376,7 @@ def test_service_readiness_matches_broker_credential_validation(
     # elsewhere; this isolates the service's configuration/readiness decision.
     monkeypatch.setattr(ModelBroker, "check_ready", lambda _self: None)
     monkeypatch.setattr(
-        service_module.ManagedAuthorityClient, "capabilities", lambda *_: {}
+        "src.polyphony.managed_client.ManagedAuthorityClient.capabilities", lambda *_: {}
     )
     if token is None:
         monkeypatch.delenv(TOKEN_REFERENCE[4:], raising=False)
