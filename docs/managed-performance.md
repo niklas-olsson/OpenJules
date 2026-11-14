@@ -98,12 +98,29 @@ persistent inability to observe owned resources closes further admission.
 When a process exits during a read, an absent original PID or the same PID/start
 identity in a terminal state is an explicit departure exclusion. A reused PID
 or an unreadable live identity remains missing. Only after an original process
-read fails, confirmation may recheck that identity at 5 ms spacing, up to eleven
-checks, within one 50 ms budget shared by the entire observation. The actual
-sampling gap includes this cost. No terminal observation means the read remains
-missing. Bounded diagnostics retain PID/start identity, read stage, closed error
-code/errno, first and last confirmation states, check count and elapsed time;
-they contain no paths or exception text. Diagnostic truncation is explicit.
+or container read fails, confirmation may recheck at 5 ms spacing, up to eleven
+checks per failed read, within one 50 ms recheck window shared by the observation.
+For a container, each check performs one fresh Docker inspect using its original
+full ID. Only that exact returned ID with explicit `Running: false` and
+`Restarting: false`, integer `Pid: 0` and `Status: exited` or `dead`, or `NotFound`
+for that full ID, establishes terminal engine state. Created/removing states
+do not establish termination of an originally running container. A different ID,
+changed running init PID, live, restarting, malformed or
+unreadable state remains missing. This establishes a passive resource exclusion,
+not task cancellation, capture, acceptance or release.
+
+The original local observation client retains its 3-second request timeout.
+An in-flight inspect may exceed the 50 ms recheck window; that window bounds
+recheck admission, not network IO. Each failed identity receives one initial
+confirmation even if another identity has already spent the shared window.
+Every subsequent process or engine recheck verifies the original deadline
+immediately before starting, including after scheduling oversleep; no recheck
+starts at or after that deadline. Actual sampling gaps include the entire cost.
+Bounded diagnostics retain original container/PID/start identity, read stage,
+closed error code/errno, first and last process or engine observations, check
+count and elapsed time. They contain no paths, engine error bodies or exception
+text. Diagnostic truncation is explicit. No terminal confirmation means the read
+remains missing.
 Before an installed acquisition returns an exact container identity, its
 512 MiB configured ceiling is reserved for cap enforcement. That reservation
 is reported separately and is not a measured cgroup peak.
@@ -196,13 +213,14 @@ not approval of an optimization or release.
 ### Incomplete qualification checkpoints
 
 The failed trials remain separate, with compact durable projections and original
-ZIP/member digests. Neither trial completes the investigation or supports an
+ZIP/member digests. None of these trials completes the investigation or supports an
 implementation-language or optimization decision.
 
 | Trial | Measured revision | Native result | Retained evidence |
 | --- | --- | --- | --- |
 | [A, run 43647286746](https://github.com/niklas-olsson/OpenJules/actions/runs/43647286746) | `4652b02a27991666ee609c9089ce7084d953f1c6` | 16 PASS, 1 FAIL, 49 NOT_RUN; 213.939 seconds | [Trial A projection](managed-cost-evidence/trial-a.json) |
 | [B, run 43649036330](https://github.com/niklas-olsson/OpenJules/actions/runs/43649036330) | `274d897e65e2615ea1628513f0a5e3fc649fd0c1` | 64 PASS, 2 FAIL; all 66 ran in 372.633 seconds | [Trial B projection](managed-cost-evidence/trial-b.json) |
+| [C, run 43650444681](https://github.com/niklas-olsson/OpenJules/actions/runs/43650444681) | `8cce25a810f7319bd870429945842efb9f679e18` | 65 PASS, 1 FAIL; all 66 ran in 441.581 seconds | [Trial C projection](managed-cost-evidence/trial-c.json) |
 
 Trial A reached six installed idle-window spans, but its helper incorrectly
 required physical cleanup of a never-dispatched worker. Its failed result did
@@ -225,9 +243,29 @@ observed `PermissionError`/errno 13 from `/proc/io` while the same PID/start sti
 reported a running state during exit. Fourteen reported the same-identity zombie
 state after 5 ms; two still reported running at that point. This supports the
 bounded confirmation correction described above. It does not retrospectively
-prove either failed trial's cause or relabel their observations. A fresh complete
-trial is still required. Any production optimization needs its own
+prove either failed trial's cause or relabel their observations.
+
+Trial C observed two such process departures directly: the same original
+PID/start changed from running to zombie after about 5.22 ms and 10.38 ms,
+respectively. Those read failures were confirmed without missing process data.
+All 66 samples ran, including the complete installed idle lane. The remaining
+failure was `held-provider-cancel` sample 1, with one unreadable original-container
+observation between a sampled 20,013,056-byte cgroup charge and the following
+observation without a sampled container. The artifact contains no container read
+stage or engine diagnostic for that failure, so its exact cause is unknown.
+The cancellation/capture ordering and final custody checks passed, including
+capture before the fixture provider was released; they do not repair the missing
+resource measurement. Trial C remains failed. The bounded engine confirmation
+and diagnostic correction above applies only to a fresh trial.
+
+A fresh complete trial is still required. Any production optimization needs its own
 correctness/recovery review and qualification.
+
+Reproduce recorded trials from their exact investigation revision and inputs,
+since later main changes intentionally fail the finite baseline check; standalone
+ingress has no dependency on rerunning this investigation or changing downstream
+runtime pins. Later main revisions do not inherit performance qualification from
+these recorded trials.
 
 ### Durable evidence projection
 

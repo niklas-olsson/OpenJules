@@ -40,6 +40,8 @@ EXIT_CONFIRMATION_INTERVAL_NS = 5_000_000
 EXIT_CONFIRMATION_CHECKS = 11
 MAX_PROCESS_DIAGNOSTICS = 16
 MAX_SUMMARY_PROCESS_DIAGNOSTICS = 256
+MAX_CONTAINER_DIAGNOSTICS = 16
+MAX_SUMMARY_CONTAINER_DIAGNOSTICS = 256
 STOP = threading.Event()
 _OWNERSHIP_LOCK = threading.Lock()
 
@@ -79,6 +81,10 @@ def _confirmed_process_departure(original, proc, deadline_ns):
     result = {"checks": 0, "first_identity": None, "first_state": None,
               "last_identity": None, "last_state": None, "confirmed_departed": False}
     while True:
+        now = time.monotonic_ns()
+        if result["checks"] and now >= deadline_ns:
+            result["elapsed_ns"] = now - started
+            return result
         identity, state = "unreadable", None
         try:
             current = proc_stat(original["pid"], proc)
@@ -112,6 +118,118 @@ def _process_read_diagnostic(original, stage, error, confirmation):
             "os_error" if isinstance(error, OSError) else "invalid_data")
     return {"pid": original["pid"], "start_ticks": original["start_ticks"],
             "read_stage": stage, "error_code": code,
+            "errno": error.errno if isinstance(error, OSError) else None, **confirmation}
+
+
+def _container_engine_observation(original, client):
+    """One fresh original-ID inspect, with no cached reload or error bodies."""
+    from docker.errors import APIError, NotFound
+    from requests.exceptions import ConnectionError, Timeout
+
+    result = {"identity": "unavailable", "running": None, "restarting": None,
+              "status": None, "init_pid": None, "error_code": None, "http_status": None}
+    try:
+        # Docker SDK containers.get already performs inspect_container. Calling
+        # reload here would perform a second, differently timed engine read.
+        current = client.containers.get(original["id"])
+        attrs = current.attrs
+        if type(attrs) is not dict or type(attrs.get("Id")) is not str:
+            result["error_code"] = "invalid_engine_identity"
+            return result
+        if attrs["Id"] != original["id"]:
+            result.update(identity="different", error_code="engine_identity_changed")
+            return result
+        result["identity"] = "same"
+        state = attrs.get("State")
+        if type(state) is not dict:
+            result["error_code"] = "invalid_engine_state"
+            return result
+        for name, field in (("Running", "running"), ("Restarting", "restarting")):
+            if type(state.get(name)) is bool:
+                result[field] = state[name]
+            else:
+                result["error_code"] = "invalid_engine_state"
+        status = state.get("Status")
+        if type(status) is str and status in {"created", "running", "paused", "restarting", "removing", "exited", "dead"}:
+            result["status"] = status
+        else:
+            result.update(status="other", error_code="invalid_engine_state")
+        if type(state.get("Pid")) is int and state["Pid"] >= 0:
+            result["init_pid"] = state["Pid"]
+            if result["running"] is True and state["Pid"] not in {0, original["pid"]}:
+                result.update(identity="init_pid_changed", error_code="engine_init_pid_changed")
+        else:
+            result["error_code"] = "invalid_engine_state"
+        if (result["running"] is False and result["restarting"] is False
+                and (result["status"] not in {"exited", "dead"} or result["init_pid"] != 0)):
+            result["error_code"] = "engine_terminal_state_inconsistent"
+    except NotFound:
+        result.update(identity="absent", error_code="engine_not_found", http_status=404)
+    except Timeout:
+        result["error_code"] = "engine_timeout"
+    except ConnectionError:
+        result["error_code"] = "engine_connection_unavailable"
+    except APIError as error:
+        result["error_code"] = "engine_api_error"
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if type(status) is int and 100 <= status <= 599:
+            result["http_status"] = status
+    except Exception:
+        result["error_code"] = "engine_observation_unavailable"
+    return result
+
+
+def _confirmed_container_departure(original, client, deadline_ns):
+    """Confirm terminal state after a failed original process/cgroup read.
+
+    Rechecks share the process observation's 50 ms window. An in-flight inspect
+    retains the original client's request timeout, so this is not an IO deadline.
+    Neither a live/restarted identity nor unreadable engine state is zero charge.
+    """
+    started = time.monotonic_ns()
+    result = {"checks": 0, "first_engine": None, "last_engine": None, "confirmed_terminal": False}
+    if type(original.get("id")) is not str or re.fullmatch(r"[0-9a-f]{64}", original["id"]) is None:
+        result.update(unavailable_reason="invalid_original_container_identity", elapsed_ns=0)
+        return result
+    if client is None:
+        result.update(unavailable_reason="engine_client_unavailable", elapsed_ns=0)
+        return result
+    while True:
+        now = time.monotonic_ns()
+        if result["checks"] and now >= deadline_ns:
+            result["elapsed_ns"] = now - started
+            return result
+        observed = _container_engine_observation(original, client)
+        result["checks"] += 1
+        if result["checks"] == 1:
+            result["first_engine"] = observed
+        result["last_engine"] = observed
+        result["confirmed_terminal"] = observed["identity"] == "absent" or (
+            observed["identity"] == "same" and observed["running"] is False
+            and observed["restarting"] is False and observed["error_code"] is None
+            and observed["status"] in {"exited", "dead"} and observed["init_pid"] == 0
+        )
+        now = time.monotonic_ns()
+        if (result["confirmed_terminal"] or observed["identity"] in {"different", "init_pid_changed"}
+                or result["checks"] >= EXIT_CONFIRMATION_CHECKS or now >= deadline_ns):
+            result["elapsed_ns"] = now - started
+            return result
+        time.sleep(min(EXIT_CONFIRMATION_INTERVAL_NS, deadline_ns - now) / 1_000_000_000)
+
+
+def _container_read_diagnostic(original, stage, error, confirmation):
+    code = ("permission_denied" if isinstance(error, PermissionError) else
+            "not_found" if isinstance(error, FileNotFoundError) else
+            "os_error" if isinstance(error, OSError) else "invalid_data")
+    identity = original.get("id")
+    if type(identity) is not str or re.fullmatch(r"[0-9a-f]{64}", identity) is None:
+        identity = None
+    detail = error.args[0] if error.args and type(error.args[0]) is str else None
+    if detail not in {"container_pid_reused", "invalid_owned_cgroup", "negative_container_memory",
+                      "container_counter_identity_changed"}:
+        detail = None
+    return {"container_id": identity, "init_pid": original["pid"], "start_ticks": original["start_ticks"],
+            "read_stage": stage, "error_code": code, "read_detail": detail,
             "errno": error.errno if isinstance(error, OSError) else None, **confirmation}
 
 
@@ -367,37 +485,40 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
                 missing.append("owned_process_observation_unavailable")
     container_samples = []
     container_departures = 0
+    container_diagnostics, container_diagnostics_omitted = [], 0
     for row in containers:
         if row.get("state") != "running":
             continue
+        stage = "stat_before_memory"
         try:
             observed = proc_stat(row["pid"], proc)
             if observed["start_ticks"] != row["start_ticks"]:
                 raise ValueError("container_pid_reused")
+            stage = "cgroup_identity"
             group = row.get("cgroup")
             if not isinstance(group, str) or not group.startswith("/") or ".." in Path(group).parts:
                 raise ValueError("invalid_owned_cgroup")
+            stage = "memory_current"
             memory = int((cgroups / group.lstrip("/") / "memory.current").read_text())
-            if memory < 0 or proc_stat(row["pid"], proc)["start_ticks"] != row["start_ticks"]:
+            if memory < 0:
+                raise ValueError("negative_container_memory")
+            stage = "stat_after_memory"
+            if proc_stat(row["pid"], proc)["start_ticks"] != row["start_ticks"]:
                 raise ValueError("container_counter_identity_changed")
             container_samples.append({"id": row["id"], "init_pid": row["pid"],
                                       "start_ticks": row["start_ticks"], "memory_current_bytes": memory})
-        except (OSError, ValueError):
-            terminal = False
+        except (OSError, ValueError) as error:
             # The stop/removal callback can race this passive observation.
             # Confirm an actual terminal engine observation; never invent zero
             # charge merely because a cgroup or PID read failed.
-            if container_client is not None:
-                from docker.errors import NotFound
-                try:
-                    current = container_client.containers.get(row["id"])
-                    current.reload()
-                    terminal = current.attrs.get("State", {}).get("Running") is False
-                except NotFound:
-                    terminal = True
-                except Exception:
-                    pass
-            if terminal:
+            if confirmation_deadline_ns is None:
+                confirmation_deadline_ns = time.monotonic_ns() + EXIT_CONFIRMATION_NS
+            confirmation = _confirmed_container_departure(row, container_client, confirmation_deadline_ns)
+            if len(container_diagnostics) < MAX_CONTAINER_DIAGNOSTICS:
+                container_diagnostics.append(_container_read_diagnostic(row, stage, error, confirmation))
+            else:
+                container_diagnostics_omitted += 1
+            if confirmation["confirmed_terminal"]:
                 container_departures += 1
             else:
                 missing.append("owned_container_observation_unavailable")
@@ -423,6 +544,8 @@ def sample_owned(root_pid, root_start, workdir, *, proc=Path("/proc"), cgroups=P
             "process_read_diagnostics": process_diagnostics,
             "process_read_diagnostics_omitted": process_diagnostics_omitted,
             "containers_terminal_during_observation": container_departures,
+            "container_read_diagnostics": container_diagnostics,
+            "container_read_diagnostics_omitted": container_diagnostics_omitted,
             "missing": sorted(set(missing))}
 
 
@@ -433,6 +556,8 @@ def resource_summary(samples):
     gaps = [last["timestamp_ns"] - first["timestamp_ns"] for first, last in zip(good, good[1:])]
     diagnostics = [diagnostic | {"observation_timestamp_ns": row["timestamp_ns"]}
                    for row in good for diagnostic in row.get("process_read_diagnostics", [])]
+    container_diagnostics = [diagnostic | {"observation_timestamp_ns": row["timestamp_ns"]}
+                             for row in good for diagnostic in row.get("container_read_diagnostics", [])]
     return {"sample_count": len(good), "target_sampling_interval_seconds": 0.1,
             "actual_observation_gap_ns": {"minimum": min(gaps, default=None),
                                            "median": statistics.median(gaps) if gaps else None,
@@ -449,8 +574,18 @@ def resource_summary(samples):
                 + max(0, len(diagnostics) - MAX_SUMMARY_PROCESS_DIAGNOSTICS),
             "process_exit_confirmation": {"shared_budget_ns_per_observation": EXIT_CONFIRMATION_NS,
                                            "interval_ns": EXIT_CONFIRMATION_INTERVAL_NS,
-                                           "maximum_checks_per_failed_read": EXIT_CONFIRMATION_CHECKS},
+                                           "maximum_checks_per_failed_read": EXIT_CONFIRMATION_CHECKS,
+                                           "one_initial_check_after_shared_window": True},
             "observed_container_departures": sum(row.get("containers_terminal_during_observation", 0) for row in good),
+            "container_read_diagnostics": container_diagnostics[:MAX_SUMMARY_CONTAINER_DIAGNOSTICS],
+            "container_read_diagnostics_omitted": sum(row.get("container_read_diagnostics_omitted", 0) for row in good)
+                + max(0, len(container_diagnostics) - MAX_SUMMARY_CONTAINER_DIAGNOSTICS),
+            "container_exit_confirmation": {"shared_window_with_process_reads_ns": EXIT_CONFIRMATION_NS,
+                                             "interval_ns": EXIT_CONFIRMATION_INTERVAL_NS,
+                                             "maximum_checks_per_failed_read": EXIT_CONFIRMATION_CHECKS,
+                                             "one_initial_check_after_shared_window": True,
+                                             "engine_request_timeout_seconds": 3,
+                                             "in_flight_inspect_may_exceed_recheck_window": True},
             "scopes": ["simultaneous approximate descendant RSS, not summed individual peaks",
                        "separate owned cgroup-v2 memory.current; excludes container PIDs from host RSS",
                        "shared pages may be counted by several host processes; daemon and kernel cost excluded",

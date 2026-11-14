@@ -232,7 +232,7 @@ def test_live_unreadable_processes_share_one_finite_confirmation_budget(tmp_path
     assert now[0] == 50_000_000 and delays == [0.005] * 10
     assert result["missing"] == ["owned_process_observation_unavailable"]
     assert result["processes_departed_during_observation"] == 0
-    assert [row["checks"] for row in result["process_read_diagnostics"]] == [11, 1]
+    assert [row["checks"] for row in result["process_read_diagnostics"]] == [10, 1]
     assert all(row["last_identity"] == "same" and not row["confirmed_departed"]
                for row in result["process_read_diagnostics"])
     assert resource_summary([result])["complete_observations"] is False
@@ -324,15 +324,239 @@ def test_missing_cgroup_requires_positive_terminal_engine_observation(tmp_path):
     proc, work = tmp_path / "proc", tmp_path / "work"
     proc.mkdir(); work.mkdir()
     fake_proc(proc, 10, 1, 101, 2)
+    container_id = "a" * 64
     (work / "ownership.json").write_text(json.dumps({"containers": [
-        {"id": "owned", "state": "running", "pid": 40, "start_ticks": 700, "cgroup": "/owned"}
+        {"id": container_id, "state": "running", "pid": 40, "start_ticks": 700, "cgroup": "/owned"}
     ]}))
     missing = sample_owned(10, 101, work, proc=proc)
     assert missing["missing"] == ["owned_container_observation_unavailable"]
-    stopped = SimpleNamespace(reload=lambda: None, attrs={"State": {"Running": False}})
+    stopped = SimpleNamespace(attrs={"Id": container_id, "State": {
+        "Running": False, "Restarting": False, "Status": "exited", "Pid": 0,
+    }})
     client = SimpleNamespace(containers=SimpleNamespace(get=lambda _: stopped))
     confirmed = sample_owned(10, 101, work, proc=proc, container_client=client)
     assert not confirmed["missing"] and confirmed["containers_terminal_during_observation"] == 1
+
+
+def container_observation_fixture(tmp_path, monkeypatch):
+    import tools.managed_costs as costs
+    proc, work = tmp_path / "proc", tmp_path / "work"
+    proc.mkdir(); work.mkdir()
+    fake_proc(proc, 10, 1, 101, 2)
+    fake_proc(proc, 40, 1, 700, 2)
+    container_id = "a" * 64
+    (work / "ownership.json").write_text(json.dumps({"containers": [
+        {"id": container_id, "state": "running", "pid": 40, "start_ticks": 700, "cgroup": "/owned"}
+    ]}))
+    now, delays = [0], []
+
+    def advance(seconds):
+        delays.append(seconds)
+        now[0] += round(seconds * 1_000_000_000)
+
+    monkeypatch.setattr(costs.time, "monotonic_ns", lambda: now[0])
+    monkeypatch.setattr(costs.time, "sleep", advance)
+    return proc, work, container_id, now, delays
+
+
+@pytest.mark.parametrize("terminal_status", ["exited", "dead"])
+def test_failed_container_read_rechecks_fresh_full_id_until_stopped(tmp_path, monkeypatch, terminal_status):
+    from types import SimpleNamespace
+    proc, work, container_id, now, delays = container_observation_fixture(tmp_path, monkeypatch)
+    inspected = []
+
+    def inspect(identity):
+        inspected.append(identity)
+        running = len(inspected) == 1
+        return SimpleNamespace(attrs={"Id": container_id, "State": {
+            "Running": running, "Restarting": False, "Pid": 40 if running else 0,
+            "Status": "running" if running else terminal_status,
+        }})
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=inspect))
+    result = sample_owned(10, 101, work, proc=proc, cgroups=tmp_path / "missing-cgroups", container_client=client)
+    assert inspected == [container_id, container_id] and delays == [0.005]
+    assert result["missing"] == [] and result["containers_terminal_during_observation"] == 1
+    assert result["containers"] == []
+    diagnostic = result["container_read_diagnostics"][0]
+    assert diagnostic["read_stage"] == "memory_current" and diagnostic["error_code"] == "not_found"
+    assert diagnostic["container_id"] == container_id and diagnostic["init_pid"] == 40
+    assert diagnostic["first_engine"]["running"] is True
+    assert diagnostic["last_engine"]["running"] is False and diagnostic["confirmed_terminal"]
+    summary = resource_summary([result])
+    assert summary["complete_observations"] and summary["observed_container_departures"] == 1
+    assert summary["container_read_diagnostics"][0]["observation_timestamp_ns"] == now[0]
+
+
+@pytest.mark.parametrize("mode", ["not_found", "live", "wrong_id", "restarted_pid", "missing_running",
+                                  "missing_restarting", "boolean_alias", "restarting", "timeout", "api_error",
+                                  "missing_status", "invalid_status", "missing_pid", "string_pid", "boolean_pid",
+                                  "nonzero_terminal_pid", "status_running", "status_restarting", "status_created",
+                                  "status_removing"])
+def test_container_confirmation_does_not_omit_unresolved_engine_state(tmp_path, monkeypatch, mode):
+    from types import SimpleNamespace
+    from docker.errors import APIError, NotFound
+    from requests.exceptions import Timeout
+    proc, work, container_id, now, delays = container_observation_fixture(tmp_path, monkeypatch)
+    inspected = []
+
+    def inspect(identity):
+        assert identity == container_id
+        inspected.append(identity)
+        if mode == "not_found":
+            raise NotFound("PRIVATE_ERROR_BODY")
+        if mode == "timeout":
+            now[0] += 3_000_000_000
+            raise Timeout("PRIVATE_SOCKET_PATH")
+        if mode == "api_error":
+            raise APIError("PRIVATE_ERROR_BODY", response=SimpleNamespace(status_code=503))
+        state = {"Running": False, "Restarting": False, "Status": "exited", "Pid": 0}
+        if mode in {"live", "restarted_pid"}:
+            state.update(Running=True, Status="running", Pid=40 if mode == "live" else 999)
+        elif mode == "missing_running":
+            del state["Running"]
+        elif mode == "missing_restarting":
+            del state["Restarting"]
+        elif mode == "boolean_alias":
+            state["Running"] = 0
+        elif mode == "restarting":
+            state.update(Restarting=True, Status="restarting")
+        elif mode == "missing_status":
+            del state["Status"]
+        elif mode == "invalid_status":
+            state["Status"] = {"PRIVATE_ENGINE_VALUE": "unexpected"}
+        elif mode == "missing_pid":
+            del state["Pid"]
+        elif mode == "string_pid":
+            state["Pid"] = "0"
+        elif mode == "boolean_pid":
+            state["Pid"] = False
+        elif mode == "nonzero_terminal_pid":
+            state["Pid"] = 999
+        elif mode.startswith("status_"):
+            state["Status"] = mode.removeprefix("status_")
+        return SimpleNamespace(attrs={"Id": "b" * 64 if mode == "wrong_id" else container_id, "State": state})
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=inspect))
+    result = sample_owned(10, 101, work, proc=proc, cgroups=tmp_path / "missing-cgroups", container_client=client)
+    diagnostic = result["container_read_diagnostics"][0]
+    if mode == "not_found":
+        assert result["missing"] == [] and result["containers_terminal_during_observation"] == 1
+        assert diagnostic["last_engine"]["identity"] == "absent"
+    else:
+        assert result["missing"] == ["owned_container_observation_unavailable"]
+        assert result["containers_terminal_during_observation"] == 0
+        assert resource_summary([result])["complete_observations"] is False
+        assert diagnostic["confirmed_terminal"] is False
+    if mode in {"not_found", "wrong_id", "restarted_pid", "timeout"}:
+        assert len(inspected) == 1 and delays == []
+    else:
+        assert len(inspected) == 10 and now[0] == 50_000_000
+    if mode == "timeout":
+        assert diagnostic["elapsed_ns"] == 3_000_000_000
+        assert diagnostic["last_engine"]["error_code"] == "engine_timeout"
+    if mode == "api_error":
+        assert diagnostic["last_engine"]["http_status"] == 503
+    assert "PRIVATE_" not in json.dumps(resource_summary([result]))
+
+
+def test_process_and_container_failures_share_one_confirmation_window(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    proc, work, container_id, now, delays = container_observation_fixture(tmp_path, monkeypatch)
+    fake_proc(proc, 11, 10, 102, 3, io=False)
+    inspected = []
+
+    def inspect(identity):
+        inspected.append(identity)
+        return SimpleNamespace(attrs={"Id": container_id, "State": {
+            "Running": True, "Restarting": False, "Status": "running", "Pid": 40,
+        }})
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=inspect))
+    result = sample_owned(10, 101, work, proc=proc, cgroups=tmp_path / "missing-cgroups", container_client=client)
+    assert now[0] == 50_000_000 and delays == [0.005] * 10
+    assert result["process_read_diagnostics"][0]["checks"] == 10
+    assert result["container_read_diagnostics"][0]["checks"] == 1 and inspected == [container_id]
+    assert result["missing"] == ["owned_container_observation_unavailable", "owned_process_observation_unavailable"]
+
+
+def test_container_recheck_cannot_start_after_scheduler_oversleep(tmp_path, monkeypatch):
+    import tools.managed_costs as costs
+    from types import SimpleNamespace
+    proc, work, container_id, now, _delays = container_observation_fixture(tmp_path, monkeypatch)
+    inspected = []
+
+    def inspect(identity):
+        inspected.append(now[0])
+        running = len(inspected) == 1
+        return SimpleNamespace(attrs={"Id": identity, "State": {
+            "Running": running, "Restarting": False, "Status": "running" if running else "exited",
+            "Pid": 40 if running else 0,
+        }})
+
+    def oversleep(_seconds):
+        now[0] += 51_000_000
+
+    monkeypatch.setattr(costs.time, "sleep", oversleep)
+    client = SimpleNamespace(containers=SimpleNamespace(get=inspect))
+    result = sample_owned(10, 101, work, proc=proc, cgroups=tmp_path / "missing-cgroups", container_client=client)
+    assert inspected == [0]
+    assert result["missing"] == ["owned_container_observation_unavailable"]
+    diagnostic = result["container_read_diagnostics"][0]
+    assert diagnostic["checks"] == 1 and diagnostic["elapsed_ns"] == 51_000_000
+    assert diagnostic["confirmed_terminal"] is False
+
+
+def test_process_recheck_cannot_start_after_scheduler_oversleep(tmp_path, monkeypatch):
+    import tools.managed_costs as costs
+    proc, work, _container_id, now, _delays = container_observation_fixture(tmp_path, monkeypatch)
+    (work / "ownership.json").unlink()
+    fake_proc(proc, 11, 10, 102, 3, io=False)
+    original_stat = costs.proc_stat
+    child_reads = 0
+
+    def stat_after_exit(pid, root):
+        nonlocal child_reads
+        value = original_stat(pid, root)
+        if pid == 11:
+            child_reads += 1
+            if child_reads >= 3:
+                value["state"] = "Z"
+        return value
+
+    def oversleep(_seconds):
+        now[0] += 51_000_000
+
+    monkeypatch.setattr(costs, "proc_stat", stat_after_exit)
+    monkeypatch.setattr(costs.time, "sleep", oversleep)
+    result = sample_owned(10, 101, work, proc=proc)
+    assert child_reads == 2  # enumeration and the first confirmation, no late recheck
+    assert result["missing"] == ["owned_process_observation_unavailable"]
+    diagnostic = result["process_read_diagnostics"][0]
+    assert diagnostic["checks"] == 1 and diagnostic["elapsed_ns"] == 51_000_000
+    assert diagnostic["confirmed_departed"] is False
+
+
+def test_container_diagnostics_are_bounded_and_report_omissions(tmp_path, monkeypatch):
+    import tools.managed_costs as costs
+    from types import SimpleNamespace
+    from docker.errors import NotFound
+    proc, work, _container_id, _now, _delays = container_observation_fixture(tmp_path, monkeypatch)
+    registry = json.loads((work / "ownership.json").read_text())
+    registry["containers"].append(registry["containers"][0] | {"id": "b" * 64})
+    (work / "ownership.json").write_text(json.dumps(registry))
+    monkeypatch.setattr(costs, "MAX_CONTAINER_DIAGNOSTICS", 1)
+    monkeypatch.setattr(costs, "MAX_SUMMARY_CONTAINER_DIAGNOSTICS", 1)
+
+    def absent(_identity):
+        raise NotFound("PRIVATE_ERROR_BODY")
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=absent))
+    result = sample_owned(10, 101, work, proc=proc, cgroups=tmp_path / "missing-cgroups", container_client=client)
+    assert len(result["container_read_diagnostics"]) == 1 and result["container_read_diagnostics_omitted"] == 1
+    summary = resource_summary([result, result | {"timestamp_ns": 100_000_000}])
+    assert len(summary["container_read_diagnostics"]) == 1 and summary["container_read_diagnostics_omitted"] == 3
+    assert summary["observed_container_departures"] == 4
 
 
 def test_pending_installed_acquisition_reserves_memory_without_measuring_a_peak(tmp_path):
