@@ -1,7 +1,7 @@
 # Browser engine investigation
 
 This is the bounded standalone investigation from [#56](https://github.com/niklas-olsson/OpenJules/issues/56).
-Its result applies to one declared host and confinement route. It adds no browser
+Each result applies to its named host and confinement route. It adds no browser
 service, managed execution permission, browser-local claim or engine fallback.
 The distinct live-view and exclusive-input journey remains
 [#58](https://github.com/niklas-olsson/OpenJules/issues/58).
@@ -148,9 +148,12 @@ browser acquisition and enabled-sandbox probe before any download or page
 launch. The current receipt must remain unchanged. Missing installation alone
 does not establish an outside blocker when approved acquisition is feasible.
 No engine fork is justified, and production managed networking remains unchanged.
-The browser investigation and #58 stay open while that next step is assessed.
+At this preliminary checkpoint, the browser investigation and #58 remained open
+while that next step was assessed. The final hosted prerequisite decision is
+recorded below; it does not change this earlier receipt or its input-specific
+limitation.
 
-## Next finite hosted prerequisite
+## Finite hosted prerequisite
 
 The [hosted manifest](browser-engine-evidence/2026-11-14-hosted-prerequisite-1/manifest.json)
 selects one ordinary public GitHub `ubuntu-24.04` runner at image
@@ -209,10 +212,50 @@ network traffic outside the zero candidate-acquisition budget; their bytes are
 not measured by the helper. Reports are small text in run logs, with no binary
 artifact, cache, public endpoint or distribution change.
 
-This source has only mocked component-test evidence until a separately recorded
-native receipt is added. Even `observed` means host prerequisites only. Browser
-acquisition, sessions, pages, model calls, Chromium sandbox verification and
-#58's real attachment/control/result journey remain NOT_RUN. A proved mandatory
-namespace denial can support a selected-route no-go for #56; image drift, missing
-installation or unrelated IPC refusal requires a narrower conclusion. This
-phase does not complete #58 or alter production networking or execution rights.
+### Recorded hosted outcome
+
+The [exact run record and retained evidence](browser-engine-evidence/2026-11-14-hosted-prerequisite-1/run.json)
+bind source `4cf1a2046006014f4865cbf1668bc660c1a941b4`, the unchanged manifest,
+helper and workflow to [run 43612769003, attempt 1](https://github.com/niklas-olsson/OpenJules/actions/runs/43612769003),
+job `132501202327`. Independent source review and the finite declaration were
+[recorded before activation](https://github.com/niklas-olsson/OpenJules/issues/56#issuecomment-6880159039).
+Both independent reviewers passed all 24 mocked checks. The native receipt and
+wrapper classification are retained as exact JSON bytes with original trailing
+newlines, alongside the complete job log. The receipt SHA-256 is
+`2f0d8cc5f236e84e75e1ab9e27cdf37638b90f6abdc3543b2e907e857f3bebfa`;
+the wrapper's recorded digest matches the retained bytes.
+
+| Observation | Actual result |
+| --- | --- |
+| Declared image/kernel/interpreter and nonroot identity | Matched; real/effective UID and GID 1001 |
+| Available host memory and storage | 15,750,107,136 and 91,533,541,376 bytes respectively |
+| Parent process RSS sample | 19,812,352 bytes; no child/browser memory sample |
+| Invoked `unshare` process | One; natural exit 1; 2.059 ms; reaped |
+| Exact native refusal | `unshare: write failed /proc/self/uid_map: Operation not permitted` |
+| Namespace handshake, Unix exchange, live child RSS | NOT_REACHED / NOT_OBSERVED |
+| Probe/effects/cleanup elapsed | 14.947 ms; excludes final receipt writing/fsync |
+| Wrapper and receipt | Complete REFUSED receipt; supervisor exit 3; no forced termination; socket path absent |
+| Acquisition, browser sessions, page actions, model calls, probe Internet connections | Zero |
+
+**Decision: no-go for this selected hosted nonroot mapping and confinement
+route.** The host denied the required UID-map write before the Python namespace
+child could report readiness. The receipt's `namespace_children: 1` counts the
+invoked owned process; it does not prove successful namespace creation. The
+failed workflow conclusion records this intentional prerequisite refusal. It is
+separate from ordinary source CI and supplies no browser qualification.
+
+This is the reproducible prerequisite no-go allowed by #56's investigation
+acceptance. Keep the current production networking restriction and the ordinary
+Chromium adapter recommendation from source comparison; this evidence supplies
+no measured engine advantage or reason to fork. No retry, alternative mapping,
+host-security change or new activation was performed. The frozen source and
+historical receipts remain unchanged.
+
+Browser acquisition, enabled Chromium sandbox verification, fixture execution,
+real client attachment, exclusive input, recovery and retained browser results
+remain NOT_RUN. #58's implementation acceptance remains outstanding. Its native
+journey requires an explicitly named host and confinement route meeting its
+nonroot isolation and enforced-egress requirements, followed by a separately reviewed finite
+matching-artifact acquisition and actual sandbox check. This host-specific denial
+does not reject Chromium or Kitesurf on other environments, and does not qualify
+any session implementation source by itself.
