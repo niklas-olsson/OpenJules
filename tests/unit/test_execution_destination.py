@@ -34,6 +34,8 @@ def configuration(tmp_path, *, optional=False):
         "schema_version": 1,
         "state_directory": str(root),
         "lifecycle_database": str(root / "workers.sqlite3"),
+        "credentials_file": str(tmp_path / "explicit-worker-credentials.json"),
+        "authority": {"endpoint": "https://authority.example.invalid", "token_ref": "env:DESTINATION_AUTH_TOKEN"},
         "execution_destination": {"destination_id": "host-a"},
         "profiles": [{
             "name": "fixture", "deployment_id": SCOPE.deployment_id,
@@ -276,7 +278,7 @@ def test_service_rejects_partial_state_before_authority_or_component_constructio
     def forbidden(*args, **kwargs):
         raise AssertionError("state must be validated before authority construction")
 
-    monkeypatch.setattr(managed_service, "ManagedAuthorityClient", forbidden)
+    monkeypatch.setattr("src.polyphony.managed_client.ManagedAuthorityClient", forbidden)
     with pytest.raises(DestinationUnavailable):
         managed_service.build_app(config, {"lifecycle-fixture-token-" * 2: [SCOPE]})
     assert not Path(state.value["members"]["models"]).exists()
@@ -288,7 +290,7 @@ def test_public_initialization_rejects_wrong_root_command_before_binding(tmp_pat
     config = public_config(tmp_path)
     config["execution_destination"] = {"destination_id": "public-host"}
     config["profiles"][0]["command"] = ["python3", "-I", "-c", "pass"]
-    with pytest.raises(ValueError, match="approved root runner"):
+    with pytest.raises(ValueError, match="public_root_command"):
         initialize_destination(config)
     assert not (Path(config["state_directory"]) / "destination.json").exists()
 
@@ -309,6 +311,9 @@ def test_local_cli_initialization_and_inspection_do_not_build_service(tmp_path, 
         raise AssertionError("identity-only command must not construct the service")
 
     monkeypatch.setattr(managed_service, "build_app", forbidden)
+    # This identity-only fixture must not latch managed context for later tests.
+    # The process-wide refusal itself is exercised in the command-boundary suite.
+    monkeypatch.setattr(managed_service, "select_managed_context", lambda: None)
     monkeypatch.setattr(managed_service, "enter_managed_context", lambda: None)
     monkeypatch.setattr(sys, "argv", ["managed-service", "--config", str(path), "--inspect-destination"])
     with pytest.raises(SystemExit) as error:

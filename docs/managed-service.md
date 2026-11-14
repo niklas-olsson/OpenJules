@@ -424,6 +424,140 @@ An independently bounded watchdog inside the container limits execution even
 when the trusted service dies. See [the runtime contract](managed-docker-runtime.md)
 for confinement, source staging, capture and unresolved launch behavior.
 
+## Installation configuration validation
+
+The producer-owned `openjules-installation-v1` contract validates existing
+configuration **schema 1** before credentials, destination state or runtime
+construction. Schema 2 remains unsupported. The installed
+[static artifact](../src/worker/contracts/openjules-installation-v1.json) describes
+the closed input/result vocabulary, defaults, bounds and feature requirements;
+the accompanying [conformance vectors](../src/worker/contracts/openjules-installation-v1-vectors.json)
+cover root, model, child, initial-outcome, cold-clarification, managed-public and
+destination-identity configurations. These are ordinary source data an installer
+can inspect without executing OpenJules.
+
+After deliberately bootstrapping an isolated supported Linux/Python interpreter,
+run the native validator with the expected digest from the approved pinned
+artifact:
+
+```sh
+python -B -m src.worker.installation_validation \
+  --config /private/installation/config/openjules.json \
+  --expected-contract openjules-installation-v1 \
+  --expected-contract-digest APPROVED_STATIC_CONTRACT_SHA256
+```
+
+`-B` is part of this supported invocation: it prevents interpreter bytecode cache
+writes during cold import. The command spawns no subprocess. It reads only its
+explicit input files and installed static contract, beyond ordinary interpreter
+and dependency code loading. It does not open `credentials_file`, resolve secret
+environment references, inspect a checkout/image or public host binding, open or
+create journals, construct runtime/authority/provider clients, bind sockets,
+perform inference or execute repository code. Docker profile definitions and
+shared authority errors have pure import homes; their former component imports
+continue to re-export the same classes. This avoids the Docker SDK's dependency
+import probing local socket support before policy validation.
+
+### Input and private receipt
+
+Configuration is at most **1,000,000 bytes**, the existing decimal loader limit.
+This is below 1 MiB, which is 1,048,576 bytes. The command and startup use this same
+cap and strict UTF-8 decoding. Digests bind the exact original bytes, including
+whitespace, with no Unicode or JSON normalization. The static contract digest is
+SHA-256 of the exact committed UTF-8 artifact bytes, including its final newline.
+
+Optional `--scope-declarations /private/installation/scopes.json` supplies a
+token-free structural comparison:
+
+```json
+{
+  "schema_version": 1,
+  "scopes": [
+    {"deployment_id": "my-installation", "repository": "github:github.com/example/project"}
+  ]
+}
+```
+
+The scope document has only those fields, at most 65,536 bytes and 256 distinct
+scope pairs, and rejects duplicate JSON fields. Every selected profile scope
+must occur in the supplied list. Omitting it skips that structural comparison.
+The declaration cannot grant authority or prove compatibility with actual worker
+credentials. Its count bound applies only to this validation input; actual
+credential-scope authority is unchanged.
+
+The deterministic JSON result has exactly ten top-level fields:
+
+| Fields | Meaning |
+| --- | --- |
+| `schema_version`, `service`, `validation_contract` | Exact receipt version `1`, service `openjules`, contract `openjules-installation-v1` |
+| `contract_digest` | Actual installed static contract bytes, including when the caller's expected ID/digest mismatches |
+| `configuration_sha256`, `scope_declarations_sha256` | Exact acquired input bytes; null only for omitted scopes or unreadable/oversized input whose complete bounded bytes were not acquired |
+| `valid`, `errors` | Boolean static validity and at most one fixed `{code,path}` failure |
+| `descriptor` | Complete bounded projection when valid; null on every failure |
+| `host_checks_required` | The exact unresolved host-check list published by the static artifact |
+
+Error paths are JSON pointers into a conceptual envelope containing decoded
+`configuration`, decoded `scope_declarations`, `expected_contract` and
+`expected_contract_digest`. They use known field names and generated indexes.
+Errors never include supplied values, private filesystem paths, native exception
+text or extracted credentials. An oversized file is never represented by a hash
+of its read prefix. A missing or unrecognized installed contract produces no
+receipt: the command exits `2` with fixed `installation_contract_unavailable` on
+stderr. Otherwise it exits `0` for valid input or `2` for refusal and emits one
+ASCII JSON line, at most 8,000,000 bytes including newline.
+
+The descriptor contains configuration schema, selected destination identity
+version and sorted scoped profiles. Each profile exposes its name, immutable
+base/image, selected model/child/session/public feature versions and required peer
+contracts/capabilities. It omits host paths, credential references, private
+instructions and policy fingerprints. Public profiles additionally require the
+existing `polyphony-public-conversation` profile-v1 service. Canonical child policy
+equality and live availability still require their existing host checks.
+
+Keep input and receipt in the host-private installation record. ZPM independently
+verifies the pinned producer source/build and binds its receipt to the exact
+sealed configuration, optional declarations and static artifact. The receipt
+does not self-attest its source revision. Changed bytes, contract or producer
+source invalidate consumer composition evidence. This producer delivery does
+not activate ZPM's native preflight: [ZPM #56](https://github.com/niklas-olsson/zero-point-modulator/issues/56)
+also requires the independently delivered [Polyphony #139](https://github.com/niklas-olsson/keystone-polyphony/issues/139)
+validator at exact supported pins. Offline preparation continues to read sibling
+source data without running it.
+
+### Startup, compatibility and evidence
+
+`load_configuration` now completes the pure Docker/model/child/public policy,
+authority-reference and dispatcher-bound checks before opening worker credentials.
+`build_app` repeats that same preparation for direct callers before installed
+context checks, destination loading or broker/runtime construction. The managed
+command still irreversibly selects its process-wide legacy refusal even when
+configuration is invalid; its actual installed-selector host reads occur after
+the pure phase. Valid startup retains actual credential scope, filesystem,
+destination journal, public executable/scope-key, model transport, Docker/source,
+live authority and per-attempt permission checks. Provider qualification remains
+separate. Static validity cannot start work, make an installation ready, release
+uncertain capacity or authorize publication.
+
+Successful schema-1 bytes retain existing native policy normalization and
+fingerprints, including omitted optional fields. Ordinary duplicate JSON fields
+retain the previous last-value behavior; the existing destination/public opt-ins
+continue to reject any duplicate. Fixed root-helper/socket grammar remains
+specific to managed-public profiles. Ordinary model/child profiles retain
+operator-approved arbitrary root argv. The direct `build_app` dictionary must now
+contain the complete schema-1 configuration, including `credentials_file`, even
+when the host passes already loaded credentials; that method does not read the
+path again. Invalid policy now raises the fixed `ConfigurationInvalid` code
+before creating a model journal, instead of discovering that error afterward.
+
+The shared vectors retain native fingerprint goldens from source
+`0dd5bf4e42b3677c3f2f564655bc87a97c4bf973`. Tests run the actual validator and
+managed-service CLI under cold-import sentinels, refuse secret/host inspection,
+state writes, SQLite, subprocesses, threads and sockets, and verify zero effects
+for valid validation and invalid startup. Existing model/child/public/destination
+tests still exercise later host checks, journal ownership and recovery. These
+are producer/component checks, with no claim of live inference, an installed
+paired deployment or completed consumer activation.
+
 ## Configuration
 
 The version 1 service object requires `state_directory`, `lifecycle_database`,

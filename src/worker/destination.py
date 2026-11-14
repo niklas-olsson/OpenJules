@@ -203,63 +203,14 @@ def journal_members(config):
 
 
 def policy_fingerprints(config):
-    # Policy constructors validate existing formats without constructing runtime,
-    # broker, authority or daemon objects. No secret values are resolved here.
-    from .docker_runtime import DockerProfile
-    from .model_broker import ModelPolicy
-    from .child_types import ChildPolicy
+    # Share the native pure policy phase with service startup and validation.
+    # This destination API also accepts the existing profile-only config shape.
+    from .managed_configuration import prepare_profiles
 
-    profiles = {}
-    for original in config["profiles"]:
-        data = dict(original)
-        if isinstance(data.get("command"), list):
-            data["command"] = tuple(data["command"])
-        profile = DockerProfile(**data)
-        key = (profile.deployment_id, profile.repository, profile.name)
-        if key in profiles:
-            raise ValueError("duplicate destination profile")
-        profiles[key] = profile
-    if not profiles or len(profiles) > 256:
+    prepared = prepare_profiles(config)
+    if len(prepared.profiles) > 256:
         raise ValueError("destination requires bounded approved profiles")
-    policies = {key: {
-        "version": 1, "docker": value.fingerprint, "model": None, "children": None,
-    } for key, value in profiles.items()}
-    model_keys = set()
-    for category, constructor, component in (
-        ("models", ModelPolicy, "model"), ("children", ChildPolicy, "children"),
-    ):
-        items = config.get(category, [])
-        if not isinstance(items, list) or len(items) > len(profiles):
-            raise ValueError("invalid destination policy list")
-        seen = set()
-        for item in items:
-            if not isinstance(item, dict) or set(item) != {
-                "deployment_id", "repository", "profile", "policy",
-            }:
-                raise ValueError("invalid destination policy scope")
-            key = (item["deployment_id"], item["repository"], item["profile"])
-            if key not in profiles or key in seen:
-                raise ValueError("duplicate or unknown destination policy")
-            seen.add(key)
-            policy = constructor(**item["policy"])
-            if component == "model":
-                if profiles[key].environment_refs:
-                    raise ValueError("model-backed profiles cannot inject guest credentials")
-                model_keys.add(key)
-            else:
-                if key not in model_keys:
-                    raise ValueError("child policies require a model-backed profile")
-                if "session_protocol" in item["policy"] and item["policy"]["session_protocol"] != "cold-clarification-v1":
-                    raise ValueError("unsupported explicit child session protocol")
-                if "public_discussion" in item["policy"] and not isinstance(item["policy"]["public_discussion"], dict):
-                    raise ValueError("unsupported explicit public discussion policy")
-                policy.validate_root(profiles[key].uid, profiles[key].max_seconds)
-                if policy.public_discussion is not None:
-                    from .managed_public_types import validate_root_command
-                    validate_root_command(profiles[key].command)
-            policies[key][component] = policy.fingerprint
-    return policies
-
+    return prepared.fingerprints()
 
 @dataclass(frozen=True)
 class JournalBinding:

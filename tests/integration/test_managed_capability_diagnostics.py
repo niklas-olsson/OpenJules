@@ -123,6 +123,7 @@ async def composed_service(
             "schema_version": 1,
             "state_directory": str(tmp_path / "service"),
             "lifecycle_database": str(tmp_path / "lifecycle.sqlite3"),
+            "credentials_file": str(tmp_path / "explicit-worker-credentials.json"),
             "authority": {
                 "endpoint": endpoint,
                 "token_ref": "env:DIAGNOSTIC_AUTHORITY_TOKEN",

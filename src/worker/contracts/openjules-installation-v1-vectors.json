@@ -1,0 +1,1179 @@
+{
+  "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+  "fingerprint_source_revision": "0dd5bf4e42b3677c3f2f564655bc87a97c4bf973",
+  "fixture_notice": "Synthetic paths, credentials references, repositories and models; no host check or live execution.",
+  "validation_contract": "openjules-installation-v1",
+  "vectors": [
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "dab9b114edbec9578e636645ebc6bc68876e7fa60c6716ad943276db7dacbf0e",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": null,
+                "model_broker": null,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "root",
+      "original_native_fingerprints": {
+        "children": null,
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": null
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}]}",
+      "expected": {
+        "configuration_sha256": "23278e13b36d3ec742c659602f0bb6e1a5d801669d0ea3ea71ed763cae90b647",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": null,
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "model",
+      "original_native_fingerprints": {
+        "children": null,
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"]}}]}",
+      "expected": {
+        "configuration_sha256": "37f8a6ed06fd26179ebaa6d59de39c69863f86cc57746bf264bf5de131525b51",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": "bounded-children-v1",
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "child_grants": true,
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "children",
+      "original_native_fingerprints": {
+        "children": "2ec80c84dc06cafaf048f1faccdad342e38b932ffcce6d68e4315f01b337d509",
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\"}}]}",
+      "expected": {
+        "configuration_sha256": "ce1f0cf3f8c67698a68485f841e1dc5ba5fc51d6b016de9ea841c8a29239cb88",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": "initial-v1",
+                "child_session": null,
+                "children": "bounded-children-v1",
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "child_grants": true,
+                    "child_initial_outcome": 1,
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "initial_outcome",
+      "original_native_fingerprints": {
+        "children": "80ff005c5e43d9eb458fd0e33f13697d6425c15bc77325767dcebe3d071f5a3a",
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"session_protocol\":\"cold-clarification-v1\"}}]}",
+      "expected": {
+        "configuration_sha256": "beb6455402e362562faf6ac38b78ad78690f2da4f03f331ba072561146980897",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": "initial-v1",
+                "child_session": "cold-clarification-v1",
+                "children": "bounded-children-v1",
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "child_grants": true,
+                    "child_initial_outcome": 1,
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "cold_clarification",
+      "original_native_fingerprints": {
+        "children": "3e7b4196f5e4b8c34ac99984eb8bea3ae47bdb282f6654277db72c184cef977b",
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-S\",\"/opt/openjules/managed_root_runner.py\",\"--socket\",\"/run/openjules-model/model.sock\",\"--control-socket\",\"/run/openjules-model/control.sock\",\"--public-socket\",\"/run/openjules-model/public.sock\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"public_discussion\":{\"protocol\":\"managed-public-pull-v1\",\"public_approved\":true,\"topic\":\"Fixture public topic\",\"server\":{\"python\":\"/private/uninstalled-polyphony/bin/python\",\"cwd\":\"/private/uninstalled-polyphony/source\",\"scope_key_file\":\"/private/unread-public-scope.key\",\"scope_key_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"},\"personas\":{\"independent\":\"Independent fixture participant.\"},\"instructions\":{\"proposal\":\"Discuss this public fixture question.\"},\"invitations\":{}}}}]}",
+      "expected": {
+        "configuration_sha256": "af0ef952606278ab9c34d7d202d94f02910ad3f114fa4a00a0a3f7ce1f3f0f01",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": "initial-v1",
+                "child_session": null,
+                "children": "bounded-children-v1",
+                "model_broker": 1,
+                "public_discussion": "managed-public-pull-v1"
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "child_grants": true,
+                    "child_initial_outcome": 1,
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                },
+                {
+                  "contract": "keystone-polyphony/polyphony-public-conversation-v1",
+                  "required_capabilities": {
+                    "execution_authorized": false,
+                    "profile": "polyphony-public-conversation",
+                    "schema_version": 1
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "managed_public",
+      "original_native_fingerprints": {
+        "children": "583df20386d664aeb2d5e5e67d3afc59fdac49981e54f32bcf80afb30440713e",
+        "docker": "0bc28c9712673efc4d08d608510ba529e7a86cb6f1ed097ca0144f7629ce957c",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"session_protocol\":\"cold-clarification-v1\"}}],\"execution_destination\":{\"destination_id\":\"fixture-host\"}}",
+      "expected": {
+        "configuration_sha256": "b843982716196200922e2e3f163797f20709df7953e4c77da9ab10928d51de96",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 1,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": "initial-v1",
+                "child_session": "cold-clarification-v1",
+                "children": "bounded-children-v1",
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "child_grants": true,
+                    "child_initial_outcome": 1,
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "destination_identity",
+      "original_native_fingerprints": {
+        "children": "3e7b4196f5e4b8c34ac99984eb8bea3ae47bdb282f6654277db72c184cef977b",
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}]}",
+      "expected": {
+        "configuration_sha256": "23278e13b36d3ec742c659602f0bb6e1a5d801669d0ea3ea71ed763cae90b647",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": null,
+                "model_broker": 1,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": "b8352fa68d047f151ac1cfb1abfba07c948b92f34db8963fa96eca3c8c6b7bab",
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "scope_declarations",
+      "original_native_fingerprints": {
+        "children": null,
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": "4fe67070891ee31379a90762831d799ab578b9396bdd1d31d8b799c879f5624b"
+      },
+      "scope_declarations_utf8": "{\"schema_version\":1,\"scopes\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\"}]}"
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":2,\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "478a6173feb0120cbf41c49e8fca7ae020e7174bf3528e9a03746cb47459c1c3",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": null,
+                "model_broker": null,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/project",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "legacy_duplicate_last_value",
+      "original_native_fingerprints": {
+        "children": null,
+        "docker": "01dcfba46610bdce70b07097101726ad1c9205dedaab9a936971b8d62ae1b779",
+        "model": null
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/caf\u00e9\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\",\"environment_refs\":{\"OPENAI_API_KEY\":\"env:FIXTURE_GUEST_MODEL_TOKEN\"}}]}",
+      "expected": {
+        "configuration_sha256": "b2170f7c6da9581c2b6d9f9cec83812e6a4295f2e978712ea54b436f09a4d1bc",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": {
+          "configuration_schema_version": 1,
+          "execution_destination_identity": 0,
+          "profiles": [
+            {
+              "base_commit": "2222222222222222222222222222222222222222",
+              "deployment_id": "fixture-installation",
+              "features": {
+                "child_outcome": null,
+                "child_session": null,
+                "children": null,
+                "model_broker": null,
+                "public_discussion": null
+              },
+              "image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "profile": "fixture",
+              "repository": "github:github.com/example/caf\u00e9",
+              "required_peer_contracts": [
+                {
+                  "contract": "keystone-polyphony/managed-runtime-v1",
+                  "required_capabilities": {
+                    "external_root": true,
+                    "managed_dispatch": true,
+                    "profile_supported": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "errors": [],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": true,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "unicode_and_legacy_environment",
+      "original_native_fingerprints": {
+        "children": null,
+        "docker": "42fa5335942614aa4ed449c7fd1edb1259138316e39d83b8c19608121e47ab08",
+        "model": null
+      },
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":2,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "ce6c980199aa8e4a2a89f0347227a7416655f84042673640009accf841cdec51",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "configuration_schema_unsupported",
+            "path": "/configuration/schema_version"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "schema_two",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"port\":true}",
+      "expected": {
+        "configuration_sha256": "6f3189af5b1131e20844e6e31867e02ea0f33625269e535ce98935ddd9a99075",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "port_invalid",
+            "path": "/configuration/port"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "boolean_port",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"max_parallel\":true}",
+      "expected": {
+        "configuration_sha256": "a7dbc44a988402cfccbc8611fa9fe567d1fb6abe73c9b00a8772aa81b7757080",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "dispatcher_parallelism",
+            "path": "/configuration/max_parallel"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "boolean_parallelism",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"poll_interval_seconds\":false}",
+      "expected": {
+        "configuration_sha256": "fd4e093596da5bfe929bcbd2b4c2ddd7fa79ef14fcf9060adc5e217a94efd8a3",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "dispatcher_poll_interval",
+            "path": "/configuration/poll_interval_seconds"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "boolean_interval",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"http://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "be2860758470dfb1a41155d25f1a955014cd332c263d38187a152e72f8bdc0d0",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "authority_invalid",
+            "path": "/configuration/authority"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "nonlocal_http_authority",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\",\"uid\":true}]}",
+      "expected": {
+        "configuration_sha256": "f1d7137fd3b34120171065e655ef50d1e45aebbf41ffd872d1d513572638d4f4",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "profile_invalid",
+            "path": "/configuration/profiles/0"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "boolean_uid",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\",\"environment_refs\":{\"OPENAI_API_KEY\":\"env:DO_NOT_RESOLVE\"}}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}]}",
+      "expected": {
+        "configuration_sha256": "7b2b1903738260b781cae8046e30105c3f1a59bccabaf989026a6a4944eb3b2c",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "model_guest_credentials",
+            "path": "/configuration/models/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "guest_model_credentials",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"uid_start\":65532}}]}",
+      "expected": {
+        "configuration_sha256": "845f019612237032ec1fe61195a8e3e18644dd61ff30f079def8684acfc5d3d3",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "child_root_incompatible",
+            "path": "/configuration/children/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "child_root_uid_overlap",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":301,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"]}}]}",
+      "expected": {
+        "configuration_sha256": "e9309a93394242e5020324da4caa938d38f4f09cd08a70efd5ce58f33c3f8b08",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "child_root_incompatible",
+            "path": "/configuration/children/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "excess_child_duration",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"python\",\"python\"]}}]}",
+      "expected": {
+        "configuration_sha256": "24f9d40c48c5574203b9c8a7daafe51f5231e3028cb46f3294068eceabe4ed0f",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "policy_invalid",
+            "path": "/configuration/children/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "duplicate_child_capabilities",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"session_protocol\":null}}]}",
+      "expected": {
+        "configuration_sha256": "c07eaf737b9c14895584a388c802aba987fb279dcad48481ac3a7de529da8411",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "child_session_unsupported",
+            "path": "/configuration/children/0/policy/session_protocol"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "explicit_null_session",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-S\",\"/opt/openjules/managed_root_runner.py\",\"--socket\",\"/run/openjules-model/model.sock\",\"--control-socket\",\"/run/openjules-model/control.sock\",\"--public-socket\",\"/run/openjules-model/public.sock\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"public_discussion\":{\"protocol\":\"managed-public-pull-v1\",\"public_approved\":true,\"topic\":\"Fixture public topic\",\"server\":{\"python\":\"/private/uninstalled-polyphony/bin/python\",\"cwd\":\"/private/uninstalled-polyphony/source\",\"scope_key_file\":\"/private/unread-public-scope.key\",\"scope_key_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"},\"personas\":{\"independent\":\"Independent fixture participant.\"},\"instructions\":{\"proposal\":\"Discuss this public fixture question.\"},\"invitations\":{}},\"session_protocol\":\"cold-clarification-v1\"}}]}",
+      "expected": {
+        "configuration_sha256": "c10afc5277da2f331958a9c64c4cb8bb02a306e8a8d6f2f46f517d60c03794f4",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "policy_invalid",
+            "path": "/configuration/children/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "incompatible_public_cold",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-S\",\"/opt/openjules/managed_root_runner.py\",\"--socket\",\"/run/openjules-model/model.sock\",\"--control-socket\",\"/run/openjules-model/control.sock\",\"--public-socket\",\"/private/not-the-approved-socket\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"public_discussion\":{\"protocol\":\"managed-public-pull-v1\",\"public_approved\":true,\"topic\":\"Fixture public topic\",\"server\":{\"python\":\"/private/uninstalled-polyphony/bin/python\",\"cwd\":\"/private/uninstalled-polyphony/source\",\"scope_key_file\":\"/private/unread-public-scope.key\",\"scope_key_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"},\"personas\":{\"independent\":\"Independent fixture participant.\"},\"instructions\":{\"proposal\":\"Discuss this public fixture question.\"},\"invitations\":{}}}}]}",
+      "expected": {
+        "configuration_sha256": "398d6ed854d0aaa580b24d6e05724bac656ccde6df42ac935ae1028028dc2f31",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "public_root_command",
+            "path": "/configuration/profiles/0/command"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "wrong_public_root_socket",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-S\",\"/opt/openjules/managed_root_runner.py\",\"--socket\",\"/run/openjules-model/model.sock\",\"--control-socket\",\"/run/openjules-model/control.sock\",\"--public-socket\",\"/run/openjules-model/public.sock\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"public_discussion\":{\"protocol\":\"future-v2\",\"public_approved\":true,\"topic\":\"Fixture public topic\",\"server\":{\"python\":\"/private/uninstalled-polyphony/bin/python\",\"cwd\":\"/private/uninstalled-polyphony/source\",\"scope_key_file\":\"/private/unread-public-scope.key\",\"scope_key_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"},\"personas\":{\"independent\":\"Independent fixture participant.\"},\"instructions\":{\"proposal\":\"Discuss this public fixture question.\"},\"invitations\":{}}}}]}",
+      "expected": {
+        "configuration_sha256": "5ecbf78aaa02e9824ea2751e0ba9f3f78966b129f67268d1c4d817d97ce84130",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "policy_invalid",
+            "path": "/configuration/children/0/policy"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "unknown_public_protocol",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":2,\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-S\",\"/opt/openjules/managed_root_runner.py\",\"--socket\",\"/run/openjules-model/model.sock\",\"--control-socket\",\"/run/openjules-model/control.sock\",\"--public-socket\",\"/run/openjules-model/public.sock\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}],\"models\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"endpoint\":\"https://model.example.invalid/v1/chat/completions\",\"model\":\"fixture-model\",\"token_ref\":\"env:FIXTURE_MODEL_TOKEN\"}}],\"children\":[{\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"profile\":\"fixture\",\"policy\":{\"max_children\":2,\"max_child_seconds\":20,\"max_child_turns\":3,\"capabilities\":[\"tools\",\"python\"],\"outcome_protocol\":\"initial-v1\",\"public_discussion\":{\"protocol\":\"managed-public-pull-v1\",\"public_approved\":true,\"topic\":\"Fixture public topic\",\"server\":{\"python\":\"/private/uninstalled-polyphony/bin/python\",\"cwd\":\"/private/uninstalled-polyphony/source\",\"scope_key_file\":\"/private/unread-public-scope.key\",\"scope_key_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\"},\"personas\":{\"independent\":\"Independent fixture participant.\"},\"instructions\":{\"proposal\":\"Discuss this public fixture question.\"},\"invitations\":{}}}}]}",
+      "expected": {
+        "configuration_sha256": "71cc2c1779f38dff1e16da1c8a20546ef0de620a054cb4a2c317412d0ffc26d0",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "configuration_duplicate_fields",
+            "path": "/configuration"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": null,
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "public_duplicate_fields",
+      "scope_declarations_utf8": null
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "dab9b114edbec9578e636645ebc6bc68876e7fa60c6716ad943276db7dacbf0e",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "scope_declarations_missing_profile",
+            "path": "/scope_declarations/scopes"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": "8989a8a6d3c88d646470e3edb4f95404b70dfa0b3bafeefe9794b14876573229",
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "scope_coverage_missing",
+      "scope_declarations_utf8": "{\"schema_version\": 1, \"scopes\": [{\"deployment_id\": \"other\", \"repository\": \"other\"}]}"
+    },
+    {
+      "configuration_utf8": "{\"schema_version\":1,\"state_directory\":\"/private/fixture-state\",\"lifecycle_database\":\"/private/fixture-state/workers.sqlite3\",\"credentials_file\":\"/private/fixture-worker-credentials.json\",\"authority\":{\"endpoint\":\"https://authority.example.invalid\",\"token_ref\":\"env:FIXTURE_AUTHORITY_TOKEN\"},\"profiles\":[{\"name\":\"fixture\",\"deployment_id\":\"fixture-installation\",\"repository\":\"github:github.com/example/project\",\"source_path\":\"/private/fixture-source\",\"image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"command\":[\"python3\",\"-I\",\"-c\",\"pass\"],\"base_commit\":\"2222222222222222222222222222222222222222\"}]}",
+      "expected": {
+        "configuration_sha256": "dab9b114edbec9578e636645ebc6bc68876e7fa60c6716ad943276db7dacbf0e",
+        "contract_digest": "1eaa70ae5ea2b28259c7f7f1884bb93335f7f51cd3dc1edbaf58710f9644573b",
+        "descriptor": null,
+        "errors": [
+          {
+            "code": "scope_declarations_invalid",
+            "path": "/scope_declarations"
+          }
+        ],
+        "host_checks_required": [
+          "worker_credentials",
+          "environment_credentials",
+          "source_and_image",
+          "destination_state",
+          "managed_installation_context",
+          "public_host_bindings_when_selected",
+          "live_authority_and_canonical_permission",
+          "runtime_readiness",
+          "provider_qualification_when_selected"
+        ],
+        "schema_version": 1,
+        "scope_declarations_sha256": "43066a66faee0f71360282110b7a69c016e90701d8c797e15b31a3d546074a43",
+        "service": "openjules",
+        "valid": false,
+        "validation_contract": "openjules-installation-v1"
+      },
+      "name": "token_field_in_scope_declaration",
+      "scope_declarations_utf8": "{\"schema_version\": 1, \"scopes\": [{\"deployment_id\": \"fixture-installation\", \"repository\": \"github:github.com/example/project\"}], \"token\": \"fixture-canary-never-echo\"}"
+    }
+  ]
+}

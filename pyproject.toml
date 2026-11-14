@@ -34,3 +34,4 @@ include = ["src*"]
 
 [tool.setuptools.package-data]
 "src" = ["ui/static/standalone.html", "ui/static/standalone.css"]
+"src.worker" = ["contracts/*.json"]

@@ -1,7 +1,8 @@
 """Actual public configuration parsing and original service construction bounds.
 
-The loader, descriptors, model journal and ownership lock are real. The existing
-explicit runtime constructor stop fixture prevents Docker/authority/provider work.
+The loader and descriptors are real. Invalid syntax creates no model journal;
+valid syntax still performs real host checks and model-lock handling before the
+explicit runtime stop fixture prevents Docker/authority/provider work.
 """
 
 from copy import deepcopy
@@ -57,28 +58,28 @@ def test_present_nonobject_public_approval_is_refused_and_corrected_same_state_c
     config = public_config(tmp_path)
     original_block = deepcopy(config["children"][0]["policy"]["public_discussion"])
     config["children"][0]["policy"]["public_discussion"] = value
-    path, raw, loaded, credentials = load_file(tmp_path, config)
-    with pytest.raises(ValueError, match="unsupported explicit public discussion policy"):
+    path, raw, loaded, credentials = load_file(tmp_path, config, invalid="child_public_unsupported")
+    with pytest.raises(ValueError, match="child_public_unsupported"):
         service.build_app(loaded, credentials)
     assert construction_boundary.runtime_policies == [] and path.read_bytes() == raw
-    assert len(construction_boundary.brokers) == 1
+    assert construction_boundary.brokers == []
     assert_brokers_released(construction_boundary)
     config["children"][0]["policy"]["public_discussion"] = original_block
     _, _, corrected, credentials = load_file(tmp_path, config)
     with pytest.raises(RuntimeBoundaryReached):
         service.build_app(corrected, credentials)
     assert len(construction_boundary.runtime_policies) == 1
-    assert len(construction_boundary.brokers) == 2
+    assert len(construction_boundary.brokers) == 1
     assert_brokers_released(construction_boundary)
 
 
 @pytest.mark.parametrize(("missing", "message"), [
-    ("initial", "requires initial-v1"),
-    ("two_slots", "requires initial-v1"),
-    ("child_runner", "requires the approved managed runner"),
-    ("root_runner", "requires the approved root runner"),
-    ("model", "children require a unique approved model-backed profile"),
-    ("cold", "requires initial-v1"),
+    ("initial", "policy_invalid"),
+    ("two_slots", "policy_invalid"),
+    ("child_runner", "policy_invalid"),
+    ("root_runner", "public_root_command"),
+    ("model", "child_model_required"),
+    ("cold", "policy_invalid"),
     ("scope_bytes", "host bindings are unavailable"),
 ])
 def test_public_opt_in_requires_existing_approval_and_fixed_runtime_bindings(
@@ -100,13 +101,13 @@ def test_public_opt_in_requires_existing_approval_and_fixed_runtime_bindings(
         policy["session_protocol"] = "cold-clarification-v1"
     else:
         policy["public_discussion"]["server"]["scope_key_sha256"] = "0" * 64
-    path, raw, loaded, credentials = load_file(tmp_path, config)
+    path, raw, loaded, credentials = load_file(tmp_path, config, invalid=None if missing == "scope_bytes" else message)
     original_loaded = deepcopy(loaded)
     with pytest.raises(ValueError, match=message):
         service.build_app(loaded, credentials)
     assert construction_boundary.runtime_policies == []
     assert path.read_bytes() == raw and loaded == original_loaded
-    assert len(construction_boundary.brokers) == (0 if missing == "model" else 1)
+    assert len(construction_boundary.brokers) == (1 if missing == "scope_bytes" else 0)
     assert_brokers_released(construction_boundary)
 
 
@@ -125,7 +126,7 @@ def test_raw_ambiguous_public_configuration_is_rejected_before_construction(
         assert raw.startswith("{")
         raw = '{"schema_version":2,' + raw[1:]
     path.write_text(raw, encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate JSON fields"):
+    with pytest.raises(ValueError, match="configuration_duplicate_fields"):
         service.load_configuration(path)
     assert path.read_text() == raw
     assert construction_boundary.runtime_policies == [] and construction_boundary.brokers == []

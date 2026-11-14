@@ -1,13 +1,11 @@
 """Malformed public policy is refused before managed worker effects.
 
-The raw configuration loader and ordinary model journal/lock are real. The
-runtime constructor is an explicit stop fixture. These cases prove admission
-and cleanup boundaries, not Docker, native transport or provider readiness.
+The raw configuration loader refuses before credentials and model state. A
+corrected policy opens the real model journal/lock with an explicit runtime stop
+fixture. These cases do not prove Docker, native transport or provider readiness.
 """
 
-from contextlib import closing
 from copy import deepcopy
-import sqlite3
 
 import pytest
 
@@ -43,7 +41,7 @@ def public_document(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["ordinary", "initial", "cold"])
-def test_raw_public_policy_refuses_before_worker_effects_and_releases_broker(
+def test_raw_public_policy_refuses_before_credentials_or_broker_construction(
     tmp_path, monkeypatch, construction_boundary, mode
 ):
     config = configuration(tmp_path)
@@ -64,36 +62,31 @@ def test_raw_public_policy_refuses_before_worker_effects_and_releases_broker(
         pytest.fail("configuration admission must not dispatch inference")
 
     monkeypatch.setattr(
-        service_module.ManagedAuthorityClient, "request", unexpected_authority
+        "src.polyphony.managed_client.ManagedAuthorityClient.request", unexpected_authority
     )
     monkeypatch.setattr(ModelBroker, "_forward", unexpected_provider)
-    path, original_bytes, loaded, credentials = load_file(tmp_path, config)
+    path, original_bytes, loaded, credentials = load_file(tmp_path, config, invalid="policy_invalid")
     original_loaded = deepcopy(loaded)
     # Bind refusal to the unsupported protocol, before public prerequisites or
     # validation of this fixture's intentionally uninstalled host references.
-    with pytest.raises(ValueError, match="^invalid managed public discussion policy$"):
+    with pytest.raises(ValueError, match="^policy_invalid$"):
         service_module.build_app(loaded, credentials)
 
     assert loaded == original_loaded
     assert path.read_bytes() == original_bytes
     assert construction_boundary.runtime_policies == []
-    assert len(construction_boundary.brokers) == 1
+    assert construction_boundary.brokers == []
     assert_brokers_released(construction_boundary)
-    broker = construction_boundary.brokers[0]
-    # Existing service construction may create its ordinary broker database.
-    # It must not allocate a worker or reserve/dispatch a model call.
-    with closing(sqlite3.connect(f"file:{broker.database}?mode=ro", uri=True)) as db:
-        assert db.execute("SELECT COUNT(*) FROM workers").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+    assert not (tmp_path / "service").exists()
     assert not (tmp_path / "public-state").exists()
 
-    # Removing only the malformed public option reuses the same real journal/lock
+    # Removing only the malformed public option opens the first real journal/lock
     # and reaches the ordinary runtime boundary with the selected old mode.
     policy.pop("public_discussion")
     _, _, corrected, credentials = load_file(tmp_path, config)
     with pytest.raises(RuntimeBoundaryReached):
         service_module.build_app(corrected, credentials)
-    assert len(construction_boundary.brokers) == 2
+    assert len(construction_boundary.brokers) == 1
     assert len(construction_boundary.runtime_policies) == 1
     approved = construction_boundary.runtime_policies[0][SCOPE_KEY]
     assert approved.session_protocol == (

@@ -14,7 +14,7 @@ import math
 import re
 from typing import Any, Mapping
 
-from src.polyphony.managed_client import AuthorityUnavailable
+from src.worker.authority_errors import AuthorityUnavailable
 
 PROTOCOL = "bounded-children-v1"
 WATCHDOG_UID = 65534
