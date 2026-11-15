@@ -36,7 +36,7 @@ _AUTH_PREFIXES = {
 }
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
-SUPPORTED_OPERATIONS = frozenset({"task.start", "review.start", "receipt.read"})
+SUPPORTED_OPERATIONS = frozenset({"task.start", "review.start", "task.read", "receipt.read"})
 
 
 class IngressError(ValueError):
