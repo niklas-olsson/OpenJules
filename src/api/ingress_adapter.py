@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import stat
 import threading
+from types import MappingProxyType
 
 from src.api.ingress_policy import IngressError
 
@@ -224,3 +225,109 @@ class GitHubTaskAdapter:
             return result
         finally:
             client.close()
+
+
+class ReviewCredentialSnapshot:
+    """Only explicitly selected review credentials, frozen for this owner.
+
+    Construction reads bounded host configuration. It opens no model, daemon or
+    forge transport and mints no installation token. Nothing here is serialized
+    into a receipt or supplied to a guest.
+    """
+
+    def __init__(self, binding, policy, *, environ=None):
+        from src.api.review_policy import secret_reference
+        require_legacy_execution()
+        self._policy = policy
+        self._environment = policy._environment if environ is None else environ
+        self._mutex = threading.RLock()
+        self._revoked = False
+        self._binding = binding
+        profile = binding.review_profile.document
+        self._profile_digest = binding.review_profile.digest
+        auth, model = profile["forge_auth"], profile["model"]
+        refs = set()
+        self._model_ref = None
+        if model["credential_ref"] is not None:
+            self._model_ref = secret_reference(model["credential_ref"])
+            refs.add(self._model_ref)
+        self._kind = auth["kind"]
+        self._token_ref = self._app_ref = self._key_ref = None
+        if self._kind == "pat":
+            self._token_ref = secret_reference(auth["token_ref"])
+            self._username = auth["username"]
+            refs.add(self._token_ref)
+        else:
+            self._app_ref = secret_reference(auth["app_id_ref"])
+            self._key_ref = secret_reference(auth["private_key_path_ref"])
+            self._username = "x-access-token"
+            refs.update((self._app_ref, self._key_ref))
+        self._values = {name: self._environment.get(name) for name in refs}
+        self._key_text, self._key_identity = None, None
+        if self._key_ref is not None:
+            try:
+                self._key_text, self._key_identity = _private_app_key(self._values[self._key_ref])
+            except IngressError:
+                pass  # Missing configuration cannot become available mid-epoch.
+        self.validate_epoch()
+
+    def _check_separation(self):
+        values = dict(self._values)
+        if self._key_text is not None:
+            values["OPENJULES_SELECTED_REVIEW_APP_KEY_MATERIAL"] = self._key_text
+        self._policy.assert_execution_separation(values)
+
+    def validate_epoch(self):
+        require_legacy_execution()
+        with self._mutex:
+            if self._revoked:
+                raise IngressError("review_credentials_changed", 503)
+            try:
+                if any(self._environment.get(name) != value for name, value in self._values.items()):
+                    raise IngressError("review_credentials_changed", 503)
+                self._check_separation()
+                for name in (self._model_ref, self._token_ref):
+                    if name is not None:
+                        _token(self._values[name])
+                if self._key_ref is not None:
+                    if self._key_identity is None:
+                        raise IngressError("review_credentials_unavailable", 503)
+                    _text, identity = _private_app_key(self._values[self._key_ref])
+                    if identity != self._key_identity:
+                        raise IngressError("review_credentials_changed", 503)
+                    app = self._values[self._app_ref]
+                    if (type(app) is not str or not 1 <= len(app) <= 19 or not app.isascii()
+                            or not app.isdecimal() or not 1 <= int(app) < 2**63):
+                        raise IngressError("review_credentials_unavailable", 503)
+            except (IngressError, AdapterUnavailable, KeyError, TypeError, ValueError):
+                self._revoked = True
+                raise IngressError("review_credentials_unavailable", 503) from None
+
+    @property
+    def model_key(self):
+        self.validate_epoch()
+        return None if self._model_ref is None else self._values[self._model_ref]
+
+    @property
+    def forge(self):
+        self.validate_epoch()
+        if self._kind == "pat":
+            return MappingProxyType({
+                "kind": "pat", "token": self._values[self._token_ref], "username": self._username,
+            })
+        return MappingProxyType({
+            "kind": "app", "app_id": int(self._values[self._app_ref]),
+            "private_key": self._key_text, "installation_id": self._binding.installation_id,
+            "username": "x-access-token",
+        })
+
+    @property
+    def literal_secrets(self):
+        # This remains usable for original retirement after grant revocation.
+        values = [principal._secret for principal in self._policy.principals.values()]
+        for name in (self._model_ref, self._token_ref):
+            if name is not None and type(self._values.get(name)) is str:
+                values.append(self._values[name])
+        if self._key_text is not None:
+            values.append(self._key_text)
+        return tuple(dict.fromkeys(values))

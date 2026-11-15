@@ -17,6 +17,8 @@ jobs:
     env:
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
       OPENJULES_MANAGED_DOCKER_TESTS: "1"
+      OPENJULES_REVIEW_DOCKER_TESTS: "1"
+      OPENJULES_REVIEW_UNIX_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,6 +34,11 @@ jobs:
         run: |
           docker build --iidfile managed-test-image.id -f tests/fixtures/Dockerfile.managed-runtime .
           echo "OPENJULES_MANAGED_IMAGE_ID=$(cat managed-test-image.id)" >> "$GITHUB_ENV"
+      - name: Build the standalone review fixture image
+        run: |
+          docker tag "$(cat managed-test-image.id)" openjules-review-fixture-base:ci
+          docker build --iidfile review-test-image.id -f tests/fixtures/Dockerfile.review-runtime .
+          echo "OPENJULES_REVIEW_IMAGE_ID=$(cat review-test-image.id)" >> "$GITHUB_ENV"
       - name: Build the managed coding-agent image
         run: |
           docker build --build-arg PYTHON_BASE=python:3.12-slim --iidfile managed-agent-image.id -f docker/Dockerfile.managed-agent .

@@ -1,0 +1,11 @@
+# Integration fixture only. Reuse the already-built managed fixture filesystem
+# while selecting fresh, minimal image metadata for the review guest contract.
+# The runtime receives the resulting immutable image ID and never pulls this tag.
+FROM openjules-review-fixture-base:ci AS runtime
+FROM scratch
+COPY --from=runtime / /
+ENV PATH=/usr/local/bin:/usr/bin:/bin
+USER 1000:1000
+WORKDIR /workspace/run
+ENTRYPOINT []
+CMD []

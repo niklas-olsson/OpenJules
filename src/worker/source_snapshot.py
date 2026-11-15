@@ -20,6 +20,9 @@ import tempfile
 import time
 
 
+MAX_SOURCE_OBJECTS = 100000
+
+
 class SnapshotUnavailable(RuntimeError):
     pass
 
@@ -140,13 +143,20 @@ def _git(
 class SourceSnapshots:
     """Immutable, local, content-addressed shallow Git exports."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, git_runner=None, retain_failed=False):
         self.root = root
+        # Optional neutral mechanics for an independently owned operation.
+        # Existing managed callers keep their original runner and cleanup.
+        if type(retain_failed) is not bool:
+            raise ValueError("invalid source retention")
+        self.git_runner = git_runner or _git
+        self.retain_failed = retain_failed
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         (root / "locks").mkdir(mode=0o700, exist_ok=True)
 
     def prepare(
-        self, source_path: str, base: str, max_bytes: int, *, timeout: float = 30
+        self, source_path: str, base: str, max_bytes: int, *, timeout: float = 30,
+        deadline: float | None = None, max_objects: int = MAX_SOURCE_OBJECTS,
     ) -> Path:
         if not re.fullmatch(r"[0-9a-f]{40}", base):
             raise SnapshotUnavailable("a full approved commit ID is required")
@@ -159,7 +169,11 @@ class SourceSnapshots:
             )
         key = hashlib.sha256((str(source) + "\0" + base).encode()).hexdigest()
         destination = self.root / key
-        deadline = time.monotonic() + timeout
+        deadline = min(time.monotonic() + timeout, deadline if deadline is not None else float("inf"))
+        if type(max_objects) is not int or not 1 <= max_objects <= MAX_SOURCE_OBJECTS:
+            raise SnapshotUnavailable("invalid source object limit")
+        if time.monotonic() >= deadline:
+            raise SnapshotUnavailable("source export deadline exceeded")
         with (self.root / "locks" / (key + ".lock")).open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -170,12 +184,13 @@ class SourceSnapshots:
             try:
                 if destination.exists():
                     metadata = json.loads((destination / "manifest.json").read_text())
-                    if metadata["base"] != base or metadata["object_bytes"] > max_bytes:
+                    if (metadata["base"] != base or metadata["object_bytes"] > max_bytes
+                            or metadata["objects"] > max_objects):
                         raise SnapshotUnavailable(
                             "approved source exceeds profile limit"
                         )
                     return destination / "repo"
-                return self._export(objects, base, max_bytes, deadline, destination)
+                return self._export(objects, base, max_bytes, deadline, destination, max_objects)
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -186,6 +201,7 @@ class SourceSnapshots:
         max_bytes: int,
         deadline: float,
         destination: Path,
+        max_objects: int = MAX_SOURCE_OBJECTS,
     ) -> Path:
         staging = Path(tempfile.mkdtemp(prefix="export-", dir=self.root))
         try:
@@ -194,7 +210,7 @@ class SourceSnapshots:
             # database. It never opens the source repository's config or refs.
             _bare(reader, base)
             _bare(exported, base)
-            commit = _git(
+            commit = self.git_runner(
                 reader,
                 ["cat-file", "commit", base],
                 deadline=deadline,
@@ -207,7 +223,7 @@ class SourceSnapshots:
             if actual != base or not re.match(rb"tree [0-9a-f]{40}\n", commit):
                 raise SnapshotUnavailable("approved commit object does not match")
             tree = commit[5:45].decode("ascii")
-            entries = _git(
+            entries = self.git_runner(
                 reader,
                 ["ls-tree", "-r", "-t", "-z", tree],
                 deadline=deadline,
@@ -230,10 +246,10 @@ class SourceSnapshots:
                 if kind not in {b"blob", b"tree"}:
                     raise SnapshotUnavailable("unsupported approved tree entry")
                 selected[identity.decode("ascii")] = kind.decode("ascii")
-            if len(selected) > 100000:
+            if len(selected) > max_objects:
                 raise SnapshotUnavailable("approved source object count exceeds limit")
             object_input = ("\n".join(sorted(selected)) + "\n").encode("ascii")
-            sizes = _git(
+            sizes = self.git_runner(
                 reader,
                 ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
                 data=object_input,
@@ -257,7 +273,7 @@ class SourceSnapshots:
                 checked.add(identity)
             if checked != set(selected) or total > max_bytes:
                 raise SnapshotUnavailable("approved source exceeds profile byte limit")
-            pack = _git(
+            pack = self.git_runner(
                 reader,
                 [
                     "pack-objects",
@@ -273,14 +289,14 @@ class SourceSnapshots:
                 limit=max_bytes * 2 + 1048576,
                 objects=objects,
             )
-            _git(
+            self.git_runner(
                 exported,
                 ["index-pack", "--stdin"],
                 data=pack,
                 deadline=deadline,
                 limit=1024,
             )
-            actual_objects = _git(
+            actual_objects = self.git_runner(
                 exported,
                 ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"],
                 deadline=deadline,
@@ -326,5 +342,5 @@ class SourceSnapshots:
                 os.close(descriptor)
             return destination / "repo"
         finally:
-            if staging.exists():
+            if staging.exists() and not self.retain_failed:
                 shutil.rmtree(staging)
