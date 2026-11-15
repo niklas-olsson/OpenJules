@@ -742,7 +742,10 @@ class ReceiptStore:
                 if not row["target_key"].endswith(":task.start"):
                     raise IngressError("task_not_found", 404)
                 try:
-                    normalized = strict_json(row["normalized_input"].encode("utf-8"), TASK_READ_LIMIT)
+                    retained = row["normalized_input"]
+                    if type(retained) is not str:
+                        raise ValueError()
+                    normalized = strict_json(retained.encode("utf-8"), TASK_READ_LIMIT)
                     exact_object(normalized, {"principal_id", "binding_id", "binding", "task",
                         "source_kind", "source_id", "request_key", "actor_id"})
                     task = bounded_task(normalized["task"])

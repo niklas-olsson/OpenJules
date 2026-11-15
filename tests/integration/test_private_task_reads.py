@@ -290,6 +290,7 @@ os._exit(0)
 
 @pytest.mark.parametrize("column,value", [
     ("normalized_input", '{"private_corrupt_value":"do not disclose"}'),
+    ("normalized_input", b"{}"),
     ("normalized_input", " " * (TASK_READ_LIMIT + 1)),
     ("repository_key", "github:987"),
     ("target_key", "github:123:issue:8:task.start"),
