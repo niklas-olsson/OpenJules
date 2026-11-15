@@ -17,7 +17,7 @@ class HarnessConfig(BaseModel):
     )
     max_refinements: int = Field(
         default=3,
-        description="Maximum number of inner-loop harness refinement proposals per task.",
+        description="Maximum adaptive proposals after failed verification, within the engine's separate verification-attempt limit.",
     )
     inject_experience: bool = Field(
         default=True,
