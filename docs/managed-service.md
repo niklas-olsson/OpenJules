@@ -284,7 +284,8 @@ The managed installation selector remains the existing separate refusal check.
 
 The separately selected [standalone policy](standalone-ingress.md) enables
 authenticated GitHub issue tasks, explicit operator tasks, optional bounded
-same-repository review and scoped original dispatch receipts. It requires an
+same-repository review, scoped original dispatch receipts and retained task
+observations under a separate `task.read` grant. It requires an
 explicitly initialized original journal and stopped-service policy enrollment.
 Task activation and review activation are separate attributable declarations;
 review additionally requires a complete finite host profile. It does not enable
@@ -308,8 +309,10 @@ cannot gain admission merely by being added to the app.
 
 The table below describes the **default status app**. For an explicitly
 configured app, only `POST /api/tasks`, `POST /api/webhook`
-and `GET /api/ingress/receipts/{operation_id}` enter the common authenticated
-policy/receipt gate. Every other private route below remains unavailable. Accepted
+and `GET` on `/api/ingress/receipts/{operation_id}` or `/api/tasks/{operation_id}`
+enter the common authenticated policy/receipt gate. The task read projects original
+admitted text and dispatch evidence, without live execution or resumption. Every
+other private route below remains unavailable. Accepted
 task input never selects the repository, credential route or dispatch identity
 outside the approved binding.
 
@@ -319,7 +322,7 @@ outside the approved binding.
 | `POST /api/radicle/webhook` | Radicle dispatch and runtime/forge effects |
 | `GET /api/tasks` | Retained task listing |
 | `POST /api/tasks` | Task execution; explicit configured policy permits the qualified operator task form |
-| `GET /api/tasks/{task_id}` | Private task detail |
+| `GET /api/tasks/{task_id}` | Private task detail; configured `task.read` accepts only an original ingress operation ID and its scoped retained projection |
 | `GET /api/tasks/{task_id}/diff` | Retained code diff |
 | `POST /api/tasks/{task_id}/comments` | Private task discussion and feedback dispatch |
 | `POST /api/tasks/{task_id}/command` | Palette controls, including former verify/commit/push stubs |

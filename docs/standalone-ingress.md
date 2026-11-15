@@ -3,7 +3,7 @@
 The default `src.api.webhook:app`, ordinary `openjules serve` and default Compose
 service remain health/static only. An explicitly selected, enrolled host policy
 enables a limited GitHub issue-task API, an optional bounded same-repository
-review adapter and scoped dispatch-receipt reads. These are separate source
+review adapter, scoped dispatch-receipt reads and retained task observations. These are separate source
 increments under [#53](https://github.com/niklas-olsson/OpenJules/issues/53).
 Radicle, cohort and the remaining scoped private HTTP work remain unsupported.
 
@@ -28,10 +28,11 @@ grants, never a forge, model-provider, runtime-owner or journal credential.
 | `POST /api/webhook` | Exact-body GitHub HMAC, approved repository ID/name, allowlisted triggering actor, `task.start` | Admits a recognized issue or explicit issue-comment trigger |
 | `POST /api/webhook` | Exact-body GitHub HMAC, original same-repository review/actor, `review.start`, separately activated review scope and complete review profile | Admits one explicitly requested feedback-fix operation |
 | `GET /api/ingress/receipts/{operation_id}` | Dedicated bearer principal and current `receipt.read` on the original binding | Returns a closed projection of the original dispatch receipt |
+| `GET /api/tasks/{operation_id}` | Dedicated bearer principal and current `task.read` on the original binding | Returns the admitted task text and its original dispatch receipt; no live execution state |
 | `GET`/`HEAD` `/`, `/health`, `/static/standalone.css` | None | Harmless static notice and process liveness |
 
 All other private/effectful routes remain unavailable, even if a caller supplies
-credentials. General PR conversations, other review events, Radicle, task listings/details/comments, palette
+credentials. General PR conversations, other review events, Radicle, task listings/diffs/comments, palette
 commands, cohort operations and all WebSockets are unsupported. The page has no
 script, forms, bearer-token storage or private task data. It is not a task UI.
 The managed installation selector still refuses standalone construction and use.
@@ -52,7 +53,7 @@ permissions, links or symlinked parent path. The policy and activation declarati
 are each bounded to 256 KiB. Unknown/duplicate fields, unsupported versions,
 Boolean integer aliases, malformed text and unsupported capabilities are refused.
 There are at most 128 bindings and principals. This slice accepts GitHub bindings,
-empty `cohort_profiles`, and `task.start`/`receipt.read` grants. `review.start`
+empty `cohort_profiles`, and `task.start`/`task.read`/`receipt.read` grants. `review.start`
 requires the optional profile and activation described below, and only an HMAC
 principal can hold that grant. Empty grants
 or operation lists authorize nothing.
@@ -88,7 +89,7 @@ repository ID**, paths, journal ID and principal grants before enrollment:
     },
     "grants": [{
       "binding_id": "approved-repository",
-      "operations": ["task.start", "receipt.read"]
+      "operations": ["task.start", "task.read", "receipt.read"]
     }]
   }]
 }
@@ -406,6 +407,8 @@ The private local SQLite store is an admission journal, not a task ledger. It
 retains the normalized admitted task title/body, approved binding and original
 source/key data. Scoped HTTP receipt reads expose only the closed operation,
 status, code and optional handler-return projection, not that private input.
+The separate `task.read` projection below exposes only the admitted task text,
+public repository identity and its dispatch receipt under its own current grant.
 The journal binds its original random journal ID, file/lock identity, schema and active policy
 revision. One process holds the owner lock until its actual callbacks quiesce.
 Missing/replaced state is unavailable. Copies, rollback, shared filesystems and
@@ -439,6 +442,54 @@ cannot release another invocation's custody. Stopping the HTTP process does not
 prove that downstream Docker, model, Git or forge effects stopped. Preserve the
 original journal and use the original producer's controls for uncertain work.
 
+## Scoped retained task reads
+
+An enrolled bearer principal with `task.read` on the **original binding ID** can
+request `GET /api/tasks/{operation_id}`. Use the operation ID returned by task
+admission, not a legacy dashboard task ID. Host, Origin, transport and bearer
+checks are the same as other configured private routes. `task.start` and
+`receipt.read` do not grant this read, and `task.read` does not grant submission
+or generic receipt access. A grant using a different binding alias, including
+one naming the same repository, does not apply to the original task.
+
+The closed JSON response contains only `schema_version`, `protocol`,
+`observation: "retained_dispatch"`, the original `operation_id` and `binding_id`,
+`repository` (`forge`, `repository`, `repository_id`), `task` (`issue_id`,
+`issue_title`, `issue_body`), the existing closed `receipt` projection, and
+`managed_authority: false` / `release_authorized: false`. It does not project
+source keys, credential configuration, host paths, clone URLs or raw journal
+metadata. The current ingress-secret check also applies to retained input;
+arbitrary secrets embedded in task text are not automatically identified.
+It is served as JSON with `Cache-Control: no-store` and
+`X-Content-Type-Options: nosniff`. Task text remains untrusted data; clients must
+not insert it as HTML. The public static page never displays it or collects
+credentials.
+
+This observation describes the retained admission and dispatch evidence, not
+current execution, completion, resumability or publication. Reading it performs
+no adapter, model, forge or callback action and does not modify the task or its
+identity. A restarted journal retains original uncertainty, including
+`reconciliation_required` after an interrupted owner. A read never schedules that
+work again.
+
+Unknown IDs, review operations and bindings outside the current grant return the
+same `404 task_not_found` envelope, without task data. Missing or replaced original
+state remains unavailable with HTTP 503. Inconsistent or oversized retained task
+data returns `503 task_state_invalid` without a partial projection. Native title
+and body limits still apply; the **whole encoded JSON response**, including
+escaping, is additionally bounded to 1 MiB. Escaping can exceed that ceiling
+even when native field sizes fit; the read refuses rather than truncating data.
+
+For an observation-only service, stop the old owner, enroll a new policy retaining
+the original journal and binding, and give the reader only `task.read`. Such a
+policy needs no execution credentials. The original submitting principal need
+not retain submission rights or remain enrolled. Each read checks the current
+ingress policy and credential epoch. Observed changes revoke that owner epoch;
+restoring old bytes cannot reopen it. Use the stopped-service maintenance process
+below to revoke a grant or rotate credentials. This protocol has no timed bearer
+expiry. Closing admission or changing execution credentials does not itself
+revoke an otherwise authorized read of the retained evidence.
+
 ## Policy maintenance and validation
 
 Stop admission and all old API/callback processes before changing policy or
@@ -458,6 +509,9 @@ Qualification uses real ASGI routes, exact-body HMAC, original SQLite state,
 independent owner processes and controlled adapter-effect counters. It exercises
 authentication/scope failures, original replay/conflict, queue failure,
 process interruption, callback shutdown, rotation and missing/replaced state.
+`tests/integration/test_private_task_reads.py` additionally checks stopped-service
+read-only enrollment, original binding and operation type, private response
+bounds, credential/policy revocation and reads with zero dispatch effects.
 Provider/forge effects are fixtures. These checks do not demonstrate a live
 GitHub task, deployed TLS, model quality, installed managed execution or browser
 distribution. The ordinary Python/Docker CI suites and the pinned standalone

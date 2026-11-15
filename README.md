@@ -81,7 +81,7 @@ execution before queue, model or Docker effects. Canonical service, publication
 and owned cleanup retain their existing authority checks. Separate standalone
 interpreters retain explicit trusted CLI/components; their private HTTP/WS
 operations are disabled by default. An enrolled host policy enables only the
-documented scoped task/review routes. Raw legacy access to a Docker
+documented scoped task/review routes, dispatch receipts and retained task reads. Raw legacy access to a Docker
 container labeled as managed is refused in every interpreter. This is an
 installation boundary, not another enrollment or task-authority database.
 
@@ -390,7 +390,7 @@ the linked explanation. Update this map when routing changes.
 | Change | Representative source | Documentation home |
 | --- | --- | --- |
 | Service configuration, ingress and readiness | [managed_service.py](src/worker/managed_service.py), [execution_context.py](src/worker/execution_context.py) | [Managed service](docs/managed-service.md) |
-| Default-deny standalone ingress, explicit task admission and original receipts | [standalone_ingress.py](src/api/standalone_ingress.py), [ingress_policy.py](src/api/ingress_policy.py), [ingress_http.py](src/api/ingress_http.py), [ingress_adapter.py](src/api/ingress_adapter.py), [ingress_receipts.py](src/storage/ingress_receipts.py) | [Standalone ingress](docs/standalone-ingress.md) and [managed-service boundary](docs/managed-service.md#standalone-ingress-boundary) |
+| Default-deny standalone ingress, explicit task admission, original receipts and scoped retained task reads | [standalone_ingress.py](src/api/standalone_ingress.py), [ingress_policy.py](src/api/ingress_policy.py), [ingress_http.py](src/api/ingress_http.py), [ingress_adapter.py](src/api/ingress_adapter.py), [ingress_receipts.py](src/storage/ingress_receipts.py) | [Standalone ingress](docs/standalone-ingress.md) and [managed-service boundary](docs/managed-service.md#standalone-ingress-boundary) |
 | Optional same-repository feedback fix, original effect budget and host CAS | [review_policy.py](src/api/review_policy.py), [review_ingress.py](src/api/review_ingress.py), [review_receipts.py](src/storage/review_receipts.py), [standalone_review.py](src/worker/standalone_review.py), [review_native.py](src/worker/review_native.py) | [Review profile, scope activation and uncertainty](docs/standalone-ingress.md#optional-same-repository-review) |
 | Pure schema-1 installation validation and static contract | [managed_configuration.py](src/worker/managed_configuration.py), [installation_validation.py](src/worker/installation_validation.py), [contract and vectors](src/worker/contracts/openjules-installation-v1.json) | [Installation configuration validation](docs/managed-service.md#installation-configuration-validation) |
 | Worker state and lifecycle API | [lifecycle.py](src/worker/lifecycle.py), [worker_lifecycle.py](src/api/worker_lifecycle.py) | [Worker lifecycle](docs/worker-lifecycle.md) |
@@ -418,7 +418,7 @@ installed pins and [joined acceptance](https://github.com/niklas-olsson/zero-poi
 | Entry point | Current behavior |
 | --- | --- |
 | Managed service | Authenticated lifecycle and canonical managed dispatch, isolated execution and retained capture. Publication is a separate approved host operation. |
-| Default standalone HTTP/WS | Health/static only. An explicitly enrolled host policy enables the documented task/review routes and scoped original receipts. Cohort control, private dashboard and subscriptions remain unsupported. |
+| Default standalone HTTP/WS | Health/static only. An explicitly enrolled host policy enables the documented task/review routes, scoped original receipts and retained task reads. Cohort control, private dashboard and subscriptions remain unsupported. |
 | Trusted host CLI/components | Explicit legacy executor, reviewer, poller and MCP components, refused in installed managed context. Swarm start/drain remain unavailable until a production signal transport is qualified; an injected local adapter supports the experimental controller contract. |
 
 ### Agent execution paths
@@ -468,7 +468,7 @@ for canonical managed authority:
    - `src/forge/radicle.py`: Radicle integration supporting the `rad` CLI (`rad clone`, `rad patch open`) and Radicle Node HTTP API.
    - `src/git_manager/lifecycle.py`: Task branch management (`openjules/task-{issue_id}-{slug}`), Conventional Commits, diff calculation, and PR/Patch summary generation.
 5. **Control Plane & Background Task Workers (`src/api/` & `src/worker/`)**:
-   - `src/api/webhook.py`: Harmless status/health by default. An explicitly enrolled host policy selects bounded task/review admission; other private HTTP/WS routes refuse.
+   - `src/api/webhook.py`: Harmless status/health by default. An explicitly enrolled host policy selects bounded task/review admission, scoped receipts and retained task reads; other private HTTP/WS routes refuse.
    - `src/worker/dispatcher.py`: Extensible `TaskDispatcher` interface.
    - `src/worker/radicle_poller.py`: Background poller for local or self-hosted Radicle nodes (`rad:<rid>`).
    - `src/worker/executor.py`: End-to-end task runner opening PRs/Patches and posting status comments.

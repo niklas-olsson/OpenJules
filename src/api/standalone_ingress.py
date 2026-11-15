@@ -1,7 +1,7 @@
 """Fail-closed outer gate for default status and explicitly selected ingress.
 
 The default selector remains status-only. Only a host-built configured app can
-pass the three supported operations to their authenticated policy adapter.
+pass the explicitly supported routes to their authenticated policy adapter.
 This module imports no execution or storage client.
 """
 
@@ -83,6 +83,8 @@ class StandaloneIngressGate:
             (scope.get("method") == "POST" and scope.get("path") in {"/api/tasks", "/api/webhook"})
             or (scope.get("method") == "GET" and re.fullmatch(
                 r"/api/ingress/receipts/[A-Za-z0-9_-]{1,128}", scope.get("path", "")) is not None)
+            or (scope.get("method") == "GET" and re.fullmatch(
+                r"/api/tasks/[A-Za-z0-9_-]{1,128}", scope.get("path", "")) is not None)
         )
         if kind == "http" and (
             scope["method"] not in {"GET", "HEAD"}

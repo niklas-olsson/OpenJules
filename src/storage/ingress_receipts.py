@@ -31,6 +31,7 @@ from src.worker.execution_context import LegacyExecutionRefused, require_legacy_
 
 SCHEMA_VERSION = 1
 PROTOCOL = "standalone-ingress-v1"
+TASK_READ_LIMIT = 1_048_576
 _RESULT_CODES = frozenset({
     "handler_returned", "handler_outcome_unknown", "registration_outcome_unknown",
     "repository_identity_mismatch", "pull_request_unsupported", "target_unavailable",
@@ -715,6 +716,60 @@ class ReceiptStore:
                 except IngressError:
                     raise IngressError("receipt_not_found", 404) from None
                 return _projection(row)
+
+    def read_task(self, operation_id, principal_id):
+        """Read original admitted task data, never a live execution or task ledger.
+
+        task.read is independent of task.start and receipt.read. It permits
+        this closed task projection, including its dispatch observation, only
+        under the original stored repository binding and current host policy.
+        """
+        identifier(operation_id)
+        identifier(principal_id)
+        with self._mutex:
+            self._check_open()
+            with _transaction(self._owner) as connection:
+                self._check_policy(connection)
+                row = connection.execute("SELECT * FROM receipts WHERE operation_id=?", (operation_id,)).fetchone()
+                if row is None:
+                    raise IngressError("task_not_found", 404)
+                try:
+                    binding = self.policy.require_grant(principal_id, row["binding_id"], "task.read")
+                except IngressError:
+                    raise IngressError("task_not_found", 404) from None
+                if type(row["target_key"]) is not str:
+                    _unavailable("task_state_invalid")
+                if not row["target_key"].endswith(":task.start"):
+                    raise IngressError("task_not_found", 404)
+                try:
+                    normalized = strict_json(row["normalized_input"].encode("utf-8"), TASK_READ_LIMIT)
+                    exact_object(normalized, {"principal_id", "binding_id", "binding", "task",
+                        "source_kind", "source_id", "request_key", "actor_id"})
+                    task = bounded_task(normalized["task"])
+                    if (
+                        digest_json(normalized) != row["request_sha256"]
+                        or normalized["principal_id"] != row["principal_id"]
+                        or normalized["binding_id"] != row["binding_id"]
+                        or normalized["binding"] != binding.effect_input()
+                        or row["repository_key"] != binding.canonical_repository
+                        or row["target_key"] != f"{binding.canonical_repository}:issue:{task['issue_id']}:task.start"
+                        or normalized["source_kind"] not in {"operator_task", "github_issue_initial", "github_issue_comment"}
+                    ):
+                        raise ValueError()
+                    self.policy.assert_no_ingress_secrets(normalized)
+                    result = {
+                        "schema_version": 1, "protocol": PROTOCOL, "observation": "retained_dispatch",
+                        "operation_id": row["operation_id"], "binding_id": row["binding_id"],
+                        "repository": {"forge": binding.forge, "repository": binding.repository,
+                            "repository_id": binding.repository_id},
+                        "task": task, "receipt": _projection(row),
+                        "managed_authority": False, "release_authorized": False,
+                    }
+                    if len(canonical_json(result).encode("utf-8")) > TASK_READ_LIMIT:
+                        raise ValueError()
+                except (IngressError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+                    _unavailable("task_state_invalid")
+                return result
 
     def close_admission(self):
         with self._mutex:
