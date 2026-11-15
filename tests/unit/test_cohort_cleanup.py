@@ -189,6 +189,29 @@ def test_removal_without_drain_cannot_discard_worker_custody():
     assert registry.get_controller(controller.config.swarm_id) is None
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_stop_callback_cannot_retarget_original_reconciliation_identity(raises):
+    provider, _, controller, _, workers, _ = cohort("removal")
+    worker = workers[0]
+    original_actor, original_container = worker.actor_id, worker.container_id
+
+    def mutate_worker(container_id):
+        assert container_id == original_container
+        worker.actor_id = "changed-actor"
+        worker.container_id = "changed-container"
+        if raises:
+            raise TimeoutError("fixture stop reply lost")
+        return False
+
+    with patch.object(provider, "stop_worker", side_effect=mutate_worker) as stop:
+        with pytest.raises(OutboxError, match="worker_cleanup_not_confirmed"):
+            controller.stop_worker(worker)
+        stop.assert_called_once_with(original_container)
+    assert controller.reconciliation_required["actor_id"] == original_actor
+    assert controller.reconciliation_required["container_id"] == original_container
+    assert controller.reconcile_signals() == [controller.reconciliation_required]
+
+
 def test_new_component_methods_refuse_managed_context_before_local_state(monkeypatch):
     controller = object.__new__(SwarmResourceController)
     provider = object.__new__(DockerContainerProvisioner)

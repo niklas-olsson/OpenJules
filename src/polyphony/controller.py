@@ -107,15 +107,16 @@ class SwarmResourceController:
     def stop_worker(self, worker: WorkerContainerInfo) -> None:
         """Stop under the serial controller contract, retaining uncertain custody."""
         self.require_unpaused()
+        actor_id, container_id = worker.actor_id, worker.container_id
         try:
-            confirmed = self.provisioner.stop_worker(worker.container_id)
+            confirmed = self.provisioner.stop_worker(container_id)
         except Exception:
             confirmed = False
         if confirmed is not True:
             self.reconciliation_required = _experimental({
                 "status": "RECONCILIATION_REQUIRED", "outcome": "UNKNOWN",
                 "reason": "worker_cleanup_not_confirmed",
-                "actor_id": worker.actor_id, "container_id": worker.container_id,
+                "actor_id": actor_id, "container_id": container_id,
             })
             raise OutboxError(OutboxOutcome.UNKNOWN, "worker_cleanup_not_confirmed")
 
