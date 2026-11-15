@@ -73,7 +73,7 @@ def test_executor_github_provider_integration():
     mock_issue.create_comment.assert_called()
 
 
-def test_executor_radicle_provider_integration():
+def test_executor_radicle_provider_does_not_translate_missing_patch_output_to_success():
     mock_sandbox = MagicMock(spec=SandboxManager)
     mock_agent = MagicMock(spec=AgentEngine)
     mock_git = MagicMock(spec=GitLifecycleManager)
@@ -113,6 +113,6 @@ def test_executor_radicle_provider_integration():
     )
 
     success = executor.execute_task(payload)
-    assert success is True
-    # Verify patch command was called inside container
-    assert mock_sandbox.exec_in_sandbox.called
+    assert success is False
+    # Configuration inspection can run, but publication is not attempted.
+    assert all("rad patch" not in call.args[1] for call in mock_sandbox.exec_in_sandbox.call_args_list)

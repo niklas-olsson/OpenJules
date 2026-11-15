@@ -1,4 +1,4 @@
-"""Trusted local Radicle execution/poller flow with deterministic fixtures."""
+"""Legacy Radicle publication refusal and polling with deterministic fixtures."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -15,7 +15,7 @@ from src.worker.radicle_poller import RadicleNodePoller
 pytestmark = pytest.mark.e2e
 
 
-def test_flow_b_radicle_full_lifecycle_e2e(tmp_path):
+def test_flow_b_radicle_unqualified_publication_is_not_success(tmp_path):
     ws_dir = str(tmp_path)
     mock_sandbox = MagicMock(spec=SandboxManager)
 
@@ -27,9 +27,7 @@ def test_flow_b_radicle_full_lifecycle_e2e(tmp_path):
 
     def fake_exec(cid, cmd, timeout=120, workdir="/workspace", env=None):
         executed_cmds.append(cmd)
-        if "rad patch open" in cmd:
-            return ExecResult(stdout="rad:patch:789abcde\n", stderr="", exit_code=0)
-        elif "git commit" in cmd:
+        if "git commit" in cmd:
             return ExecResult(stdout="commit ok\n" + ("b" * 40), stderr="", exit_code=0)
         elif "pytest" in cmd:
             return ExecResult(stdout="all tests green", stderr="", exit_code=0)
@@ -61,8 +59,8 @@ def test_flow_b_radicle_full_lifecycle_e2e(tmp_path):
         forge="radicle", issue_id="rad-issue-77", issue_title="Fix gossip sync delay",
         issue_body="DHT announcements taking over 10s", repo_full_name="rad:z4V1sJY123",
         repo_clone_url="rad:z4V1sJY123", default_branch="master",
-    )) is True
-    assert any("rad patch open" in command for command in executed_cmds)
+    )) is False
+    assert all("rad patch" not in command for command in executed_cmds)
 
     # 2. Test RadicleNodePoller discovering and dispatching issues
     poller_resp = MagicMock()
@@ -83,7 +81,8 @@ def test_flow_b_radicle_full_lifecycle_e2e(tmp_path):
         dispatcher=mock_dispatcher,
     )
 
-    with patch("httpx.Client.get", return_value=poller_resp):
+    with patch("src.worker.radicle_poller.httpx.Client") as client_factory:
+        client_factory.return_value.__enter__.return_value.get.return_value = poller_resp
         dispatched_tasks = poller.poll_all_repositories()
         assert len(dispatched_tasks) == 1
         assert dispatched_tasks[0].forge == "radicle"

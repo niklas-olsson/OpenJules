@@ -6,7 +6,7 @@ import pytest
 
 from src.forge.base import ForgeProvider, ProposalResult
 from src.forge.github import GitHubProvider
-from src.forge.radicle import RadicleProvider
+from src.forge.radicle import RadicleProvider, RadiclePublicationUnsupported
 from src.sandbox.docker_driver import ExecResult, SandboxContext, SandboxManager
 from src.worker.dispatcher import TaskPayload
 from src.worker.executor import TaskExecutor
@@ -19,7 +19,7 @@ def test_radicle_provider_get_clone_url():
     assert rad.get_clone_url("rad:z4V1sJY123") == "rad:z4V1sJY123"
 
 
-def test_radicle_provider_create_proposal_cli():
+def test_radicle_provider_refuses_unqualified_proposal_before_cli():
     mock_sandbox = MagicMock(spec=SandboxManager)
     mock_sandbox.exec_in_sandbox.return_value = ExecResult(
         stdout="rad:patch:abcd1234efgh\n",
@@ -31,18 +31,16 @@ def test_radicle_provider_create_proposal_cli():
     mock_context = MagicMock(spec=SandboxContext)
     mock_context.container_id = "cont-rad-1"
 
-    prop = rad.create_proposal(
-        repo_identifier="rad:z4V1sJY123",
-        title="fix: radicle support",
-        description="add radicle adapter",
-        source_branch="openjules/task-1-fix",
-        target_branch="master",
-        context=mock_context,
-    )
-
-    assert prop.id == "rad:patch:abcd1234efgh"
-    assert "rad:z4V1sJY123/patches/rad:patch:abcd1234efgh" in prop.url_or_id
-    mock_sandbox.exec_in_sandbox.assert_called_once()
+    with pytest.raises(RadiclePublicationUnsupported, match="radicle_patch_publication_unsupported"):
+        rad.create_proposal(
+            repo_identifier="rad:z4V1sJY123",
+            title="fix: radicle support",
+            description="add radicle adapter",
+            source_branch="openjules/task-1-fix",
+            target_branch="master",
+            context=mock_context,
+        )
+    mock_sandbox.exec_in_sandbox.assert_not_called()
 
 
 def test_radicle_poller_repository(monkeypatch):
@@ -69,7 +67,8 @@ def test_radicle_poller_repository(monkeypatch):
     mock_resp.status_code = 200
     mock_resp.json.return_value = mock_issues
 
-    with patch("httpx.Client.get", return_value=mock_resp):
+    with patch("src.worker.radicle_poller.httpx.Client") as client_factory:
+        client_factory.return_value.__enter__.return_value.get.return_value = mock_resp
         tasks = poller.poll_repository("rad:z4V1sJY123")
         assert len(tasks) == 1
         assert tasks[0].forge == "radicle"
@@ -84,7 +83,7 @@ def test_radicle_poller_repository(monkeypatch):
 
 
 
-def test_task_executor_with_radicle_forge():
+def test_task_executor_with_injected_radicle_proposal_fixture():
     mock_sandbox = MagicMock()
     mock_agent = MagicMock()
     mock_git = MagicMock()

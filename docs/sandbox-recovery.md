@@ -38,6 +38,44 @@ Destructive cleanup requires confirmed termination, no pending command exchange,
 
 A failed create response may hide a container using the workspace mount. `SandboxLaunchUnknown` therefore exposes the retained workspace path instead of deleting it.
 
+## Radicle publication refusal
+
+The default legacy `RadicleProvider` has no qualified comment or patch write
+contract. `post_issue_comment` returns `False` without making an HTTP request or
+logging private comment text. `create_proposal` raises
+`RadiclePublicationUnsupported("radicle_patch_publication_unsupported")` before
+running a CLI command. Missing context, empty output and arbitrary command output
+cannot produce a simulated patch ID. There is no alternate write command or
+automatic retry after an uncertain outcome. Existing issue-inspection GETs and
+their empty-result fallback are unchanged.
+
+This corrects false success reporting; it does not select a replacement
+transport, signing profile or Radicle release. The pinned upstream
+[Heartwood patch manual](https://github.com/radicle-dev/heartwood/blob/8b053320dc3d5dc2189be3105546ed4d852b0583/rad-patch.1.adoc)
+describes a Git-push opening workflow rather than the old `rad patch open`
+command. The separately pinned
+[HTTP repository router](https://github.com/radicle-dev/radicle-gui/blob/efc6ae961fb4530f3adef68d8bcca61293888d75/explorer/crates/radicle-httpd/src/api/v1/repos.rs)
+exposes issue reads, not the old bare comment POST. Neither reference establishes
+an installed OpenJules write adapter. No new workflow or response grammar is
+adopted here.
+
+The task executor's comment wrapper preserves the provider's boolean result;
+its status messages remain best effort. Task execution is not a preflight-only
+operation: local model/Git work and the ordinary branch push can already have
+occurred when proposal creation refuses. That refusal follows the existing
+error path, returns `False`, marks the legacy backlog `error` and releases its
+batons. It never announces an opened patch or acknowledges artifact capture.
+The sandbox cleanup rules above therefore retain the uncaptured work, including
+when termination remains uncertain. Refusal does not roll back earlier effects
+or make replay safe. Inspect the original repository and retained workspace
+before deciding what to do next; older versions may have attempted publication
+even when their output was lost or fabricated.
+
+Regression checks use controlled HTTP reads and the real sandbox lifecycle with
+fixture Docker replies. They check write refusal, malformed/lost read replies,
+the executor's error result and retained workspace. They do not demonstrate a
+live Radicle publication, signing configuration or qualified replacement CLI.
+
 ## Operator capture and cleanup
 
 For `run_sandbox` callers, the retained workspace path, immutable container ID and reason are included in a warning log. Failed sandbox initialization also logs those identifiers when a container handle is known, because no context can be returned to that caller. Direct callers must record the `SandboxContext` and `CleanupResult` themselves. Preserve those identifiers until recovery is complete.
