@@ -452,16 +452,57 @@ retained reload remain separately required by #58. This unit does not establish
 browser-local execution, a local model path, managed integration, independent
 distribution or a joined application demonstrator.
 
-The installed Python Playwright 1.62.0 API was inspected as source only: its
-`Screencast.start(on_frame, quality, size)` callback supplies JPEG bytes,
-a timestamp and viewport dimensions, but no document/loader identity. The
-[pinned Chromium handler](https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/chromium/crPage.ts)
-substitutes `Date.now()` when the native timestamp is missing. A positive
-high-level timestamp therefore cannot prove original native capture time;
-an eventual adapter must preserve that missingness. The inspected API
-has no `fps` argument in that version. Delayed callbacks must not be labeled with
-whichever document happens to be current on arrival. A native adapter needs an
-explicit reviewed interface for the original ordered backend lifecycle, frame
-attribution, active-effect custody and actual process teardown. Constructing an
-adapter or receiving `Page.close()` alone cannot prove sandbox, egress or process
-reaping. No Playwright adapter or launch path is implemented by this HTTP unit.
+## Native producer contract mapping
+
+This source-only mapping follows the [selected #58 contract investigation](https://github.com/niklas-olsson/OpenJules/issues/58#issuecomment-6896747236).
+The inspected Playwright source is `e3950d9c140d007bd52853b45813c6274b24e36f`:
+its [package][native-pw-package] is 1.62.0 and its [browser metadata][native-pw-browsers]
+selects Chromium revision 1234 / 151.0.7922.34, matching the existing investigation.
+The Chromium version tag resolves to `782af9cb30a53f54487e5d2e44738645a8ec457c`;
+Python binding v1.62.0 resolves to `3b7c24c3e67dc84f7b0eddd0c5fd2ca685705021`.
+These pin inspected source, not an acquired executable or a qualified host.
+The current [consumer values](../src/browser_session/types.py) and
+[control checks](../src/browser_session/control.py) remain unchanged.
+
+| Existing consumer requirement | Fact established by pinned producer source | Required mapping or unresolved mechanism |
+| --- | --- | --- |
+| `Observation`: original target/document and matching image, projection and viewport | Chromium [`Page.Frame` and `frameNavigated`][native-page] carry frame/loader identity. `screencastFrame` instead contains image bytes, geometry, optional timestamp and an acknowledgement number, without frame/loader identity. Playwright's [forwarded frame][native-pw-frame] also lacks document identity. | Separate navigation and frame events do not establish which document produced those pixels or the separately read projection. No supported join is identified here. Do not label a delayed image with the current document, URL or control generation; image/viewport/input-coordinate correspondence also remains to be qualified. |
+| `Observation`: genuine capture time, freshness and ordered frames | Chromium's [metadata builder][native-capture-time] stamps `Time::Now()` while handling a received video frame, before [asynchronous encoding][native-encode]. Playwright substitutes `Date.now()` for a missing/falsy native timestamp and can [deliver a cached last frame][native-pw-stream] to a new observer. | Even a present timestamp from this route does not establish original bitmap capture time. Raw CDP alone does not repair that gap. Arrival time, a positive high-level timestamp and a newly attached viewer are insufficient freshness evidence. |
+| `ActionTicket`: original operation, epoch/generations and immutable deadline | [`CRSession`][native-pw-connection] correlates command IDs with callbacks; disposal rejects and clears pending callbacks. Python [cancellation][native-python-connection] attempts to send `__abort__` with the original request ID and waits for response or transport error. Server [progress cancellation][native-pw-progress] races/signals abort. | A consumer action may involve several native commands. Their IDs and replies are not its durable operation identity or proof of the whole action's outcome. A supported adapter must retain that original mapping and native work custody through timeout, cancellation, disconnect and late completion. No negative-effect proof or replay permission follows from abort/error alone; the required drain/outcome mechanism is not implemented. |
+| `FenceTicket`: all original in-flight outcomes, confirmed quiescence and a fresh observation before transfer | Chromium [screencast start/stop/ack][native-stream-control] uses a stream counter; [pending encode callbacks][native-encode] emit using the then-current counter. Stopping capture does not drain those callbacks. These stream operations and command-abort paths do not provide the consumer's effect/transfer barrier. | Fence new dispatch under the existing generation rules, retain every original unresolved action, and withhold ownership until actual quiescence and known outcomes are established. A callback cannot acquire a new document/generation merely because it arrives later. `sessionId`, stream stop or a fresh CDP connection cannot stand in for this barrier. |
+| `StopTicket`: original resource custody and observed physical teardown | Playwright's [owned launch][native-pw-launch] retains a `ChildProcess`; its [launcher][native-pw-process] retains a process-group kill fallback and awaits the child's close callback plus a temporary-cleanup attempt. By contrast, [`connectOverCDP`][native-pw-attach] supplies close/kill functions that close the transport and attempt temporary cleanup, without an owned process handle. | Connection/page closure is insufficient teardown evidence. The qualified host must retain original owned-process/driver custody and observe the required cleanup; the child callback alone is not an independent census of all descendants. The library's [30-second default][native-pw-time] cannot replace the original Stop deadline. Pending/failed/unknown results and late knowledge stay on the original Stop, without recreating the engine or renewing authority. |
+
+`Observation.captured_at_ms` and `document_id` have no unknown-value variant.
+Insufficient native provenance therefore means **do not publish a live
+`Observation`**. It does not authorize zero/current-time values, current-state
+relabelling, or a consumer schema change. The screencast counter is not a unique
+per-frame/document identifier: Chromium increments it at stream start, and an
+older encode callback can read a later counter. No attribution or capture-time
+repair is selected by this mapping.
+
+Native acceptance must challenge delayed/cached frames across navigation and
+stream restart, missing or processing-time timestamps, original-command abort
+and disconnect races, unresolved takeover, late completion, and Stop without
+confirmed process custody. Reopening retained state remains LOST and read-only;
+a new handle, connection or viewer cannot resume the original owner. These
+requirements preserve the existing action catalog, authority, epochs, deadlines
+and resource limits. The named compliant host/confinement route and real HTTPS
+driver/human/handback/Stop/same-byte-reopen journey remain outstanding under the
+[native prerequisite checkpoint](https://github.com/niklas-olsson/OpenJules/issues/58#issuecomment-6880535400).
+This mapping adds no adapter, native launch, acquisition or qualification claim.
+
+[native-pw-package]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/package.json
+[native-pw-browsers]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/browsers.json
+[native-page]: https://github.com/chromium/chromium/blob/782af9cb30a53f54487e5d2e44738645a8ec457c/third_party/blink/public/devtools_protocol/domains/Page.pdl
+[native-capture-time]: https://github.com/chromium/chromium/blob/782af9cb30a53f54487e5d2e44738645a8ec457c/content/browser/devtools/protocol/page_handler.cc#L155-L182
+[native-encode]: https://github.com/chromium/chromium/blob/782af9cb30a53f54487e5d2e44738645a8ec457c/content/browser/devtools/protocol/page_handler.cc#L1735-L1814
+[native-stream-control]: https://github.com/chromium/chromium/blob/782af9cb30a53f54487e5d2e44738645a8ec457c/content/browser/devtools/protocol/page_handler.cc#L1566-L1631
+[native-pw-frame]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/chromium/crPage.ts#L893-L903
+[native-pw-stream]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/screencast.ts#L84-L101
+[native-pw-connection]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/chromium/crConnection.ts#L138-L202
+[native-python-connection]: https://github.com/microsoft/playwright-python/blob/3b7c24c3e67dc84f7b0eddd0c5fd2ca685705021/playwright/_impl/_connection.py
+[native-pw-progress]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/progress.ts
+[native-pw-launch]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/browserType.ts#L211-L281
+[native-pw-process]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/utils/processLauncher.ts
+[native-pw-attach]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/playwright-core/src/server/chromium/chromium.ts#L104-L169
+[native-pw-time]: https://github.com/microsoft/playwright/blob/e3950d9c140d007bd52853b45813c6274b24e36f/packages/isomorphic/time.ts
