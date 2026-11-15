@@ -26,6 +26,23 @@ from src.sandbox.docker_driver import SandboxContext, SandboxManager
 logger = logging.getLogger(__name__)
 
 
+class _HarnessCompletion:
+    """Keep helper inference on one snapshot of the selected engine route."""
+
+    def __init__(self, engine):
+        self._call = engine._call_llm
+        self._config = engine.llm_config.model_copy(deep=True)
+        self._config.model = engine.model_name
+
+    def completion(self, *, model, messages, temperature):
+        if model != self._config.model:
+            raise ValueError("harness cannot replace the selected engine model")
+        # Proposal/distillation temperatures are purpose-specific overrides;
+        # endpoint, credential and token bound stay on the selected route.
+        config = self._config.model_copy(update={"temperature": temperature})
+        return self._call(messages, active_config=config)
+
+
 class PlanOutput(BaseModel):
     """Structured plan generated during Step A."""
 
@@ -137,6 +154,8 @@ class AgentEngine:
         context: SandboxContext,
         task_instruction: str,
         tools: AgentTools,
+        *,
+        harness: Optional[AdaptiveHarness] = None,
     ) -> PlanOutput:
         """Step A: Inspect repository context and generate structured JSON plan."""
         # Probe directory tree and README
@@ -158,7 +177,8 @@ class AgentEngine:
         )
 
         # Inject accumulated experience and adaptive guardrails from the harness
-        harness_context = self.harness.get_system_prompt_extension(context.workspace_dir)
+        selected_harness = self.harness if harness is None else harness
+        harness_context = selected_harness.get_system_prompt_extension(context.workspace_dir)
         agents_rules_context = self.rule_engine.get_prompt_context(context.workspace_dir)
 
         system_content = "You are a senior software architect planning a code change. Always return valid JSON."
@@ -229,6 +249,8 @@ class AgentEngine:
         plan: PlanOutput,
         tools: AgentTools,
         on_progress: Optional[Callable[[str], None]] = None,
+        *,
+        harness: Optional[AdaptiveHarness] = None,
     ) -> int:
         """Step B: Stateful ReAct loop with max turn limit."""
         system_prompt = (
@@ -246,7 +268,8 @@ class AgentEngine:
         )
 
         # Inject accumulated experience and adaptive guardrails from the harness
-        harness_context = self.harness.get_system_prompt_extension(context.workspace_dir)
+        selected_harness = self.harness if harness is None else harness
+        harness_context = selected_harness.get_system_prompt_extension(context.workspace_dir)
         full_system_prompt = system_prompt
         if harness_context:
             full_system_prompt += f"\n\n{harness_context}"
@@ -349,12 +372,24 @@ class AgentEngine:
         task_instruction: str = "",
         fix_attempts: int = 3,
         on_progress: Optional[Callable[[str], None]] = None,
+        *,
+        harness: Optional[AdaptiveHarness] = None,
+        harness_client: Optional[Any] = None,
     ) -> bool:
-        """Step C: Automatically execute config.test_command and adaptively loop fixes if failing."""
+        """Verify at most fix_attempts times, with separately capped adaptation.
+
+        Disabling adaptation or exhausting its proposal budget still permits
+        ordinary corrective model/tool calls within this same attempt limit.
+        """
+        if type(fix_attempts) is not int or fix_attempts < 1:
+            raise ValueError("fix_attempts must be a positive integer")
+        selected_harness = self.harness if harness is None else harness
+        selected_client = _HarnessCompletion(self) if harness_client is None else harness_client
         test_cmd = context.config.test_command
         if not test_cmd:
             return True
 
+        refinements = 0
         for attempt in range(1, fix_attempts + 1):
             if on_progress:
                 on_progress(f"Running verification: '{test_cmd}' (attempt {attempt}/{fix_attempts})...")
@@ -367,21 +402,27 @@ class AgentEngine:
                 logger.warning(f"Verification failed on final attempt:\n{res.stdout}\n{res.stderr}")
                 return False
 
-            # Inner Loop Adaptation: Propose harness refinement
             error_trace = f"{res.stdout}\n{res.stderr}".strip()
-            proposal = self.harness.propose_harness_adaptation(
-                llm_client=self.llm_client,
-                model_name=self.model_name,
-                task_instruction=task_instruction,
-                failing_command=test_cmd,
-                test_traceback=error_trace,
-            )
-
-            # Probe any suggested helper commands inside the sandbox
             probe_results = []
-            for helper_cmd in proposal.suggested_helper_commands:
-                probe_res = self.sandbox_manager.exec_in_sandbox(context.container_id, helper_cmd)
-                probe_results.append(f"$ {helper_cmd}\n{probe_res.stdout or probe_res.stderr}")
+            adaptation_text = ""
+            if selected_harness.config.adaptive and refinements < selected_harness.config.max_refinements:
+                refinements += 1
+                proposal = selected_harness.propose_harness_adaptation(
+                    llm_client=selected_client,
+                    model_name=self.model_name,
+                    task_instruction=task_instruction,
+                    failing_command=test_cmd,
+                    test_traceback=error_trace,
+                )
+
+                # Only an enabled, budgeted proposal can introduce probes.
+                for helper_cmd in proposal.suggested_helper_commands:
+                    probe_res = self.sandbox_manager.exec_in_sandbox(context.container_id, helper_cmd)
+                    probe_results.append(f"$ {helper_cmd}\n{probe_res.stdout or probe_res.stderr}")
+                adaptation_text = (
+                    f"Adaptive Strategy: {proposal.suggested_strategy}\n"
+                    f"Active Guardrails: {proposal.targeted_guardrails}\n"
+                )
 
             probe_text = ("\n\nDiagnostic Probe Results:\n" + "\n".join(probe_results)) if probe_results else ""
 
@@ -390,8 +431,7 @@ class AgentEngine:
                 f"The test verification command '{test_cmd}' failed with exit code {res.exit_code}.\n"
                 f"[STDOUT]:\n{res.stdout}\n"
                 f"[STDERR]:\n{res.stderr}\n\n"
-                f"Adaptive Strategy: {proposal.suggested_strategy}\n"
-                f"Active Guardrails: {proposal.targeted_guardrails}\n"
+                f"{adaptation_text}"
                 f"{probe_text}\n"
                 f"Analyze the traceback and fix the code using your tools."
             )
@@ -420,6 +460,10 @@ class AgentEngine:
         polyphony: Optional[PolyphonyClient] = None,
     ) -> AgentResult:
         """Executes full Step A -> Step B -> Step C workflow with Polyphony coordination."""
+        # Explicitly pass run-local state: the same engine may serve overlapping
+        # repositories, so temporarily replacing self.harness is not safe.
+        harness = self.harness.for_run(context.config.harness)
+        harness_client = _HarnessCompletion(self)
         tools = AgentTools(self.sandbox_manager, context.container_id)
 
         # Step A: Planning
@@ -429,7 +473,7 @@ class AgentEngine:
             polyphony.set_status("planning")
             polyphony.share_thought("Step A: Formulating plan for repository...")
 
-        plan = self.step_a_planning(context, task_instruction, tools)
+        plan = self.step_a_planning(context, task_instruction, tools, harness=harness)
 
         if polyphony:
             polyphony.share_thought(f"Step A plan generated: {plan.rationale[:150]}")
@@ -444,7 +488,7 @@ class AgentEngine:
             polyphony.set_status("busy")
             polyphony.share_thought("Step B: Executing ReAct loop edits inside sandbox...")
 
-        turns = self.step_b_action_loop(context, task_instruction, plan, tools, on_progress)
+        turns = self.step_b_action_loop(context, task_instruction, plan, tools, on_progress, harness=harness)
 
         # Step C: Optional static analysis linter run before test suite
         if context.config.lint_command:
@@ -466,6 +510,8 @@ class AgentEngine:
             tools,
             task_instruction=task_instruction,
             on_progress=on_progress,
+            harness=harness,
+            harness_client=harness_client,
         )
 
         if polyphony:
@@ -475,13 +521,13 @@ class AgentEngine:
             polyphony.set_status("idle")
 
         # Outer Loop Adaptation: On successful verification, distill learnings into EXPERIENCE.md
-        if verified and context.workspace_dir:
+        if verified and context.workspace_dir and harness.config.adaptive:
             try:
-                self.harness.record_successful_run(
+                harness.record_successful_run(
                     workspace_dir=context.workspace_dir,
                     task_title=task_instruction[:80],
                     task_instruction=task_instruction,
-                    llm_client=self.llm_client,
+                    llm_client=harness_client,
                     model_name=self.model_name,
                 )
             except Exception as e:

@@ -1,5 +1,6 @@
 """Adaptive Agent Harness implementing the Propose-Probe-Compose optimization loop."""
 
+import copy
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -36,6 +37,24 @@ class AdaptiveHarness:
         self.experience_mgr = ExperienceManager(self.config.experience_path)
         self.active_guardrails: List[str] = []
 
+    def for_run(self, config: HarnessConfig) -> "AdaptiveHarness":
+        """Bind repository settings and fresh task state to this behavior template.
+
+        A shallow clone preserves injected subclass methods. Subclasses with
+        additional mutable per-run state must override this factory to isolate
+        that state too. The template itself is never changed by an engine run.
+        """
+        # Check at consumption: the legacy repository parser replaces invalid
+        # Pydantic models with defaults, which must not turn disabled adaptation
+        # back on merely because this newly consumed budget is negative.
+        if type(config.max_refinements) is not int or config.max_refinements < 0:
+            raise ValueError("max_refinements must be a nonnegative integer")
+        session = copy.copy(self)
+        session.config = config.model_copy(deep=True)
+        session.experience_mgr = ExperienceManager(session.config.experience_path)
+        session.active_guardrails = []
+        return session
+
     def get_system_prompt_extension(self, workspace_dir: str) -> str:
         """Constructs context additions including accumulated experience and active guardrails."""
         parts = []
@@ -64,6 +83,8 @@ class AdaptiveHarness:
         test_traceback: str,
     ) -> HarnessProposal:
         """Inner Loop - Propose: Analyzes failure trace and generates a targeted harness configuration."""
+        if not self.config.adaptive:
+            return HarnessProposal()
         prompt = (
             f"You are the OpenJules Adaptive Agent Harness optimizer.\n"
             f"A task failed automated verification.\n\n"

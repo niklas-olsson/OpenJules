@@ -398,6 +398,7 @@ the linked explanation. Update this map when routing changes.
 | Approved execution manifest and destination-local admission | [execution_contract.py](src/worker/execution_contract.py), [execution_admission.py](src/worker/execution_admission.py), [execution_inspection.py](src/worker/execution_inspection.py) | [Full execution contract](docs/managed-service.md#full-execution-contract-and-local-admission), [Full HTTP v2](docs/worker-lifecycle.md#full-execution-contract-v1) |
 | Docker, source snapshots, capture and cleanup | [docker_runtime.py](src/worker/docker_runtime.py), [source_snapshot.py](src/worker/source_snapshot.py) | [Managed Docker runtime](docs/managed-docker-runtime.md) |
 | Coding tools, model access and limits | [model_broker.py](src/worker/model_broker.py), [managed_runner.py](src/agent/managed_runner.py) | [Model broker](docs/managed-model-broker.md) |
+| Trusted legacy agent and repository harness settings | [engine.py](src/agent/engine.py), [adaptive_engine.py](src/harness/adaptive_engine.py), [experience.py](src/harness/experience.py) | [Adaptive agent harness](#adaptive-agent-harness-harness²-paradigm), [legacy model configuration](#self-hosted-llms-vllm-llamacpp-ollama) |
 | Finite managed-image acquisition, sealed build and archive verification | [managed_image.py](tools/managed_image.py), [production Dockerfile](docker/Dockerfile.managed-agent) | [Operator-local distribution](docs/managed-model-broker.md#finite-operator-local-distribution) |
 | Optional finite managed-cost investigation | [managed_costs.py](tools/managed_costs.py), [case manifest](tests/fixtures/managed-cost-manifest.json), [durable evidence projector](tools/managed_cost_evidence.py) | [Measurement scopes, bounds and evidence](docs/managed-performance.md) |
 | Bounded browser-engine prerequisite investigation | [browser_engine_preflight.py](tools/browser_engine_preflight.py) | [Selected-host evidence and engine decision](docs/browser-engine-investigation.md) |
@@ -420,18 +421,37 @@ installed pins and [joined acceptance](https://github.com/niklas-olsson/zero-poi
 | Default standalone HTTP/WS | Health/static only. An explicitly enrolled host policy enables the documented task/review routes and scoped original receipts. Cohort control, private dashboard and subscriptions remain unsupported. |
 | Trusted host CLI/components | Explicit legacy executor, reviewer, poller and MCP components, refused in installed managed context. Swarm start/drain remain unavailable until a production signal transport is qualified; an injected local adapter supports the experimental controller contract. |
 
+### Agent execution paths
+
+Select the execution path before configuring an agent. The repository contains
+separate loops with different model and authority boundaries:
+
+| Path | Agent loop and model access | Authority and retained work |
+| --- | --- | --- |
+| Managed coding profile | The stdlib [managed runner](src/agent/managed_runner.py) runs inside the approved container and calls the host [model broker](src/worker/model_broker.py). A profile without a model policy runs its approved root command without inference. | Polyphony owns canonical task permission. The host retains original model reservations, execution journals and capture; worker networking is disabled and provider credentials stay on the host. |
+| Explicit standalone review | The [review engine](src/agent/standalone_review_engine.py) uses its own host model client and five bounded guest tools. Its complete profile selects one endpoint and the original effect allowance. | The enrolled signed review request, original receipt journal and host-owned publication checks govern this standalone operation. See [review scope and recovery](docs/standalone-ingress.md#optional-same-repository-review). |
+| Trusted legacy executor | [AgentEngine](src/agent/engine.py) uses LiteLLM, repository configuration and [AdaptiveHarness](src/harness/adaptive_engine.py) for its planning, editing and verification loop. | This explicit host path uses legacy forge/peer components and [standalone sandbox recovery](docs/sandbox-recovery.md). It is refused in an installed managed interpreter. |
+| Standalone browser-session components | The [comparison driver](src/browser_session/comparison_driver.py) is a bounded deterministic driver with no model inference. | Session control, pairing and retained source-level records are implemented; the [native adapter and actual browser journey](docs/browser-session-control.md) remain unqualified. |
+
+The adaptive harness and its experience file belong to the trusted legacy
+executor. Managed model selection uses the immutable host policy documented in
+the [model broker guide](docs/managed-model-broker.md); standalone review uses its
+separate enrolled profile. A provider configuration or passing component test
+does not establish live model quality, native browser execution or installed
+acceptance for another path.
+
 The following legacy components remain available to explicit trusted local
 callers. They are not loaded by the default standalone HTTP app and are not a substitute
 for canonical managed authority:
 
 1. **Repository Configuration & Sandbox Runtime (`src/sandbox/`)**:
    - `src/sandbox/config.py`: Schema parser for `.openjules.yaml` defining base image, setup scripts, test commands, timeouts, env vars, LLM parameters, and adaptive harness settings.
-   - `src/sandbox/docker_driver.py`: `SandboxManager` handling container spawning with resource limits (`mem_limit="4g"`, `nano_cpus=2000000000`), workspace mounting, credential injection, command streaming, and strict `try...finally` cleanup.
+   - `src/sandbox/docker_driver.py`: `SandboxManager` handles container spawning with legacy resource defaults (`mem_limit="4g"`, `nano_cpus=2000000000`), workspace mounting, credential injection and command streaming. Cleanup records termination and pending exchanges; removal requires confirmed capture. See [retained sandbox work](docs/sandbox-recovery.md).
 2. **Adaptive Agent Harness & Two-Stage Engine (`src/harness/` & `src/agent/`)**:
    - `src/harness/adaptive_engine.py`: Self-contained, adaptive harness implementing the **Propose–Probe–Compose** cycle.
      - **Inner-Loop Adaptation (Task-Level)**: Proposes dynamic guardrails and diagnostic probe commands when verification tests fail, probing them in the sandbox before retrying fixes.
-     - **Outer-Loop Adaptation (Harnessing-Level)**: Distills lessons learned from successful runs into `EXPERIENCE.md`, compounding repository-specific rules across all future tasks.
-   - `src/agent/tools.py`: Safe tools executing directly inside the sandbox: `read_file`, `write_file`, `apply_patch` (unified diff + search/replace block support), `run_command`, `list_files`.
+     - **Outer-Loop Adaptation (Harnessing-Level)**: Attempts to record summaries after successful verification in the configured experience file. Later tasks can read that file when it is retained and experience injection is enabled.
+   - `src/agent/tools.py`: Tools executing inside the sandbox: `read_file`, `write_file`, `apply_patch` (unified diff + search/replace block support), `run_command`, `list_files`.
    - `src/agent/engine.py`:
      - **Step A (Planning Phase)**: Injects historical experience from `EXPERIENCE.md` and generates structured JSON plan (`rationale`, `target_files`, `planned_tests`, `action_steps`).
      - **Step B (Action Loop)**: Stateful ReAct loop with turn limit. Native OpenAI function calling with automatic prompt-guided JSON fallback for local LLMs lacking tool calling schemas.
@@ -537,19 +557,54 @@ See [upgrade and validation details](docs/managed-service.md#upgrade-retained-wo
 In autonomous agent workflows, an agent is:
 $$\text{Agent} = \text{Foundation Model} + \text{Harness}$$
 
-OpenJules keeps model weights frozen while dynamically optimizing the **Harness**:
+The trusted legacy `AgentEngine` keeps model weights frozen while adapting its
+prompt context and verification loop through `AdaptiveHarness`:
 1. **Inner Loop (Task Adaptation)**:
    - When a test verification fails, the harness analyzes the execution trace and generates targeted guardrails and probe commands (`propose_harness_adaptation`).
    - The probe commands run inside the sandbox, and the empirical findings are fed back to guide the next fix attempt.
 2. **Outer Loop (Compounded Experience)**:
-   - On every verified task, successful architectural strategies and discovered guardrails are committed to `EXPERIENCE.md`.
-   - Subsequent tasks automatically read `EXPERIENCE.md` during Step A planning, starting with accumulated project context.
+   - After successful verification, an enabled adaptive harness attempts to append a model-produced summary to the configured experience file.
+   - Subsequent tasks can read that file during planning when experience injection is enabled and the file is available in their workspace. This is retained prompt context, not a guarantee of improved task quality.
+
+Each `AgentEngine.run()` uses a fresh harness with that repository's settings.
+Active guardrails do not carry into sequential or overlapping runs on the same
+engine. The settings have separate effects:
+
+| Setting | Effect in the legacy agent loop |
+| --- | --- |
+| `adaptive` | Enables refinement proposals, their diagnostic probes and successful-run experience summaries. `false` leaves ordinary bounded corrective attempts available. |
+| `inject_experience` | Controls reading the experience file into planning and action prompts independently of `adaptive`. |
+| `experience_path` | Selects a file relative to the workspace. Absolute paths and traversal are refused; file operations do not follow symlinks or accept special or multiply-linked files. Safe nested relative paths are supported. |
+| `max_refinements` | Caps adaptive proposals after failed verification. It must be nonnegative. Zero permits ordinary corrective attempts without adaptive proposals. |
+
+The ordinary loop retains its limit of three verification attempts. The
+refinement cap does not add attempts, so at most two proposals can occur in that
+default loop. Experience writes append under a nonblocking local file lock;
+if a write is unavailable, the task can still succeed. Experience retention is
+separate from canonical capture. This file boundary requires POSIX
+descriptor-relative opens, `O_NOFOLLOW` and `flock`; native Windows hosts are
+not supported by it.
+
+Trusted component callers can inject an `AdaptiveHarness` behavior template.
+Its `for_run()` factory preserves subclass behavior and isolates the standard
+configuration, experience manager and guardrails. Subclasses with additional
+mutable task state must isolate that state in their factory too. Direct stage
+calls retain the explicitly selected harness.
 
 ---
 
 ## Self-Hosted LLMs (vLLM, llama.cpp, Ollama)
 
-OpenJules natively connects to any OpenAI-compatible inference endpoint:
+The following environment variables select the trusted legacy `AgentEngine`
+model route at construction through LiteLLM. A trusted caller can instead pass
+`LLMConfig`. Repository `llm` settings are parsed but are not applied automatically
+by the current executor; the YAML example below configures only the harness.
+Enabled adaptive proposal and summary calls retain the engine's selected
+endpoint, credential and output-token limit, with their own prompt temperatures.
+Actual endpoint, model and tool-schema support must be checked for the selected
+provider. Managed coding profiles use the
+separate [host model policy](docs/managed-model-broker.md#host-owned-policy);
+standalone review uses its [enrolled review profile](docs/standalone-ingress.md#optional-same-repository-review).
 
 ### Configuration via Environment Variables
 
@@ -561,45 +616,46 @@ export LLM_API_KEY="EMPTY"
 
 # Connect to llama.cpp server
 export LLM_API_BASE="http://localhost:8081/v1"
-export LLM_MODEL="gpt-3.5-turbo"
+export LLM_MODEL="openai/your-served-model"
 export LLM_API_KEY="EMPTY"
 
 # Connect to Ollama
-export LLM_API_BASE="http://localhost:11434/v1"
+export LLM_API_BASE="http://localhost:11434"
 export LLM_MODEL="ollama/codellama"
 export LLM_API_KEY="ollama"
 ```
 
-### Configuration via Repository (`.openjules.yaml`)
+Set the model identifier to one actually served by the selected endpoint.
+The `openai/` prefix selects LiteLLM's OpenAI-compatible route; the `ollama/`
+prefix uses its native Ollama route, whose base URL omits `/v1`. See the
+[LiteLLM compatible-endpoint](https://docs.litellm.ai/docs/providers/openai_compatible)
+and [Ollama](https://docs.litellm.ai/docs/providers/ollama) references.
+
+### Repository harness configuration (`.openjules.yaml`)
 
 ```yaml
-llm:
-  model: "Qwen/Qwen2.5-Coder-7B-Instruct"
-  api_base: "http://vllm:8000/v1"
-  api_key: "EMPTY"
-  temperature: 0.2
-  max_tokens: 4096
-
 harness:
   adaptive: true
   experience_path: "EXPERIENCE.md"
   inject_experience: true
+  max_refinements: 3
 ```
 
 ---
 
 ## Keystone Polyphony Integration (https://github.com/LokiMetaSmith/keystone-polyphony)
 
-Every agent operating on the same repository automatically joins that repository's Polyphony:
+The trusted legacy executor uses repository-scoped Polyphony peer coordination:
 - **Repo-Scoped Anchoring**: The `SWARM_KEY` is derived deterministically from the repository name or Radicle RID, partitioning coordination cleanly.
-- **Mutex Batons**: Agents acquire `task:{issue_id}` on startup and `file:{path}` during planning, preventing race conditions or conflicting code changes.
+- **Mutex Batons**: The executor requests `task:{issue_id}` and the engine requests `file:{path}` during planning. These legacy requests are separate from managed canonical task and attempt authority.
 - **Liminal Thoughts Stream**: Real-time progress thoughts stream into the shared mesh.
 
 ---
 
 ## Radicle Integration Guide (https://radicle.dev)
 
-OpenJules natively supports Radicle peer-to-peer code collaboration:
+The explicit trusted legacy forge components support Radicle peer-to-peer code
+collaboration:
 - **Repository IDs (`rad:<rid>`)**: Clones and works on decentralized repos without a centralized server.
 - **Radicle Patches**: Changes are proposed via `rad patch open` rather than GitHub PRs.
 - **Explicit Local Polling**: `RadicleNodePoller` remains a trusted host component. The standalone `POST /api/radicle/webhook` is unavailable under the ingress boundary above.
@@ -608,9 +664,14 @@ OpenJules natively supports Radicle peer-to-peer code collaboration:
 
 ## Architecture Background & Philosophy
 
-OpenJules embraces the **frozen model + adaptive harness** philosophy:
-- **Strict Sandbox Boundary**: Every task is constrained to an isolated container with deterministic resource limits (`4g` RAM, `2 CPUs`), ephemeral storage, and guaranteed `try...finally` teardown.
-- **Adaptive Harnessing**: Dynamic guardrail generation and persistent `EXPERIENCE.md` library ensure continuous learning without retraining.
-- **Model Agnostic & Self-Hosted**: Seamlessly swaps between frontier cloud APIs and offline, self-hosted models (vLLM, llama.cpp, Ollama).
-- **Keystone Polyphony Swarm**: Coordinates multiple agents working asynchronously on the same repo using RTOS-inspired mutex batons and shared liminal context.
-- **Decentralized & Multi-Forge**: Pluggable forge layer decouples the agent core from any single centralized platform, natively powering both GitHub and Radicle p2p networks.
+Execution, inference, authority, capture and publication have separate contracts.
+Managed resource limits come from the approved profile; legacy defaults do not
+describe every worker. Results and uncertain resources are retained until the
+owning path's capture and cleanup conditions are met. A stop request or a
+`finally` block alone cannot prove termination or safe removal.
+
+Adaptive prompt context, legacy peer coordination and forge adapters remain
+available through their explicit paths above. Qualification records identify
+the actual revisions and distinguish deterministic provider fixtures from live
+inference. Changing a model, execution backend or installation requires its own
+compatible configuration and evidence.
