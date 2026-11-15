@@ -29,10 +29,11 @@ grants, never a forge, model-provider, runtime-owner or journal credential.
 | `POST /api/webhook` | Exact-body GitHub HMAC, original same-repository review/actor, `review.start`, separately activated review scope and complete review profile | Admits one explicitly requested feedback-fix operation |
 | `GET /api/ingress/receipts/{operation_id}` | Dedicated bearer principal and current `receipt.read` on the original binding | Returns a closed projection of the original dispatch receipt |
 | `GET /api/tasks/{operation_id}` | Dedicated bearer principal and current `task.read` on the original binding | Returns the admitted task text and its original dispatch receipt; no live execution state |
+| `GET /api/tasks` | Dedicated bearer principal and current `task.read` on each exact original binding | Returns a complete bounded inventory of retained task admissions, without task bodies or live execution state |
 | `GET`/`HEAD` `/`, `/health`, `/static/standalone.css` | None | Harmless static notice and process liveness |
 
 All other private/effectful routes remain unavailable, even if a caller supplies
-credentials. General PR conversations, other review events, Radicle, task listings/diffs/comments, palette
+credentials. General PR conversations, other review events, Radicle, task diffs/comments, palette
 commands, cohort operations and all WebSockets are unsupported. The page has no
 script, forms, bearer-token storage or private task data. It is not a task UI.
 The managed installation selector still refuses standalone construction and use.
@@ -490,6 +491,66 @@ below to revoke a grant or rotate credentials. This protocol has no timed bearer
 expiry. Closing admission or changing execution credentials does not itself
 revoke an otherwise authorized read of the retained evidence.
 
+### Bounded retained task inventory
+
+Configured `GET /api/tasks` lets the same enrolled `task.read` principal discover
+original task admissions in its exact granted binding IDs. This is the
+[selected v1 interpretation](https://github.com/niklas-olsson/OpenJules/issues/53#issuecomment-6898147598):
+the grant authorizes discovery and the summary below within those bindings.
+An operation ID is a locator, not a credential. `task.start` or `receipt.read`
+alone does not authorize inventory; a principal with no `task.read` grant receives
+`403 scope_denied`. A repository alias does not expose another binding's history.
+No `task.list` capability or policy/journal schema change is introduced.
+
+The closed response contains `schema_version`, `protocol`,
+`observation: "retained_dispatch_inventory"`, `tasks`, and
+`managed_authority: false` / `release_authorized: false`. Each entry contains
+the original `operation_id`, `binding_id`, `repository` identity,
+`task` with only `issue_id` and `issue_title`, and its existing closed `receipt`.
+Entries sort by original operation ID; that order does not claim chronology.
+The original input digest, repository/binding, native task fields and current
+ingress-secret checks still validate the complete retained input before its body
+is omitted. The same `no-store` / `nosniff` headers, untrusted-JSON handling,
+current epoch checks and observation-only re-enrollment rules apply. Query
+parameters, pagination and partial responses are not supported.
+
+The inventory is complete within its granted scope or refuses the whole request:
+
+- At most **32 task records**. A bounded metadata query detects a 33rd record.
+- At most **8 MiB of selected input**, counting the encoded text/blob bytes of
+  the ten journal columns needed for original task and receipt validation:
+  operation ID, input digest, original principal and binding IDs, repository and
+  target keys, normalized input, dispatch state/code and optional result JSON.
+  This is checked before fetching those full private rows in the same original
+  transaction. Each normalized input retains its existing 1 MiB parser ceiling.
+- At most **1 MiB for the whole encoded JSON response**, including escaping.
+- Both selection statements share a **100,000 progress-callback allowance**
+  with SQLite's VM instruction interval set to one. The interval is approximate
+  and may include statement preparation. It bounds cooperative query work, not
+  arbitrary filesystem I/O or wall-clock duration. A large unindexed history can
+  therefore refuse even when few task rows would be visible.
+- A temporary SQLite value/row length ceiling of **1 MiB + 16 KiB** bounds
+  acquisition, including corrupted cells. The extra 16 KiB covers the finite
+  identifiers, binding metadata and closed receipt surrounding a valid input.
+  The original length limit and absence of a progress handler are restored
+  before transaction commit or rollback, including refusals and interruptions.
+
+Exceeded row/input/output/query limits return fixed
+`503 task_inventory_unavailable`. Malformed selected task data returns
+`503 task_state_invalid`; no earlier valid entries are disclosed. Known review
+records and other bindings are excluded before private input decoding. An
+unrecognized or nontext operation classifier in an authorized binding refuses
+the snapshot rather than silently hiding a possibly damaged task. Missing or
+replaced original history remains unavailable. An authorized empty inventory
+means there are no selected task records in this original snapshot; it does not
+prove the absence of work in another runtime, host or store.
+
+Reading performs no callback, model, forge, execution, capture or publication
+action and changes no journal receipt, fence or task identity. Returned and
+unknown dispatch evidence retains its original meaning after restart. This
+route does not report current task progress, cancellation, completion or
+acceptance and does not enable a dashboard.
+
 ## Policy maintenance and validation
 
 Stop admission and all old API/callback processes before changing policy or
@@ -512,6 +573,9 @@ process interruption, callback shutdown, rotation and missing/replaced state.
 `tests/integration/test_private_task_reads.py` additionally checks stopped-service
 read-only enrollment, original binding and operation type, private response
 bounds, credential/policy revocation and reads with zero dispatch effects.
+`tests/integration/test_private_task_inventory.py` covers bounded discovery,
+original binding isolation, complete-or-refused results, retained uncertainty,
+SQLite scan exhaustion and usable later reads after limit restoration.
 Provider/forge effects are fixtures. These checks do not demonstrate a live
 GitHub task, deployed TLS, model quality, installed managed execution or browser
 distribution. The ordinary Python/Docker CI suites and the pinned standalone

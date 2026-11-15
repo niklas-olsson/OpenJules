@@ -456,6 +456,14 @@ def install_routes(app, policy, verify_signature):
         return JSONResponse(content=store.read(operation_id, principal.principal_id),
                             headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/tasks")
+    async def list_tasks(request: Request):
+        headers = request_headers(request, policy)
+        principal = bearer_principal(policy, headers)
+        store, _callbacks = state(request)
+        return JSONResponse(content=store.list_tasks(principal.principal_id),
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     @app.get("/api/tasks/{operation_id}")
     async def read_task(operation_id: str, request: Request):
         headers = request_headers(request, policy)
