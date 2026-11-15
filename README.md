@@ -9,8 +9,9 @@ with explicitly configured cloud or self-hosted models.
 **The default standalone server provides only a status page and health response.**
 An explicitly selected, enrolled host policy enables a limited authenticated
 GitHub issue-task API, an opt-in bounded same-repository review adapter and scoped
-original dispatch receipts. Review requires its own original-journal activation,
-complete finite profile and signed `/jules review` request. Radicle, cohort,
+original dispatch receipts and bounded retained task discovery. Review requires
+its own original-journal activation, complete finite profile and signed
+`/jules review` request. Radicle, cohort,
 private dashboard and WebSocket routes remain unavailable. See
 [explicit standalone ingress](docs/standalone-ingress.md) for enrollment,
 credential separation, supported transport, recovery and remaining #53 scope.

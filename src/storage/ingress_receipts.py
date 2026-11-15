@@ -859,7 +859,7 @@ class ReceiptStore:
                         f"({sizes}) AS selected_bytes FROM receipts "
                         f"WHERE binding_id IN ({placeholders}) "
                         "AND NOT (typeof(target_key)='text' AND substr(target_key,-13)=':review.start') "
-                        "ORDER BY operation_id LIMIT ?",
+                        "ORDER BY receipts.operation_id LIMIT ?",
                         (*sorted(bindings), TASK_INVENTORY_ROWS + 1),
                     ).fetchall()
                     if len(selected) > TASK_INVENTORY_ROWS:

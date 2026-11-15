@@ -309,9 +309,10 @@ cannot gain admission merely by being added to the app.
 
 The table below describes the **default status app**. For an explicitly
 configured app, only `POST /api/tasks`, `POST /api/webhook`
-and `GET` on `/api/ingress/receipts/{operation_id}` or `/api/tasks/{operation_id}`
-enter the common authenticated policy/receipt gate. The task read projects original
-admitted text and dispatch evidence, without live execution or resumption. Every
+and `GET` on `/api/ingress/receipts/{operation_id}`, `/api/tasks/{operation_id}`
+or `/api/tasks` enter the common authenticated policy/receipt gate. Task reads
+project original admitted text and dispatch evidence; the bounded inventory
+omits bodies. Neither reports live execution or resumption. Every
 other private route below remains unavailable. Accepted
 task input never selects the repository, credential route or dispatch identity
 outside the approved binding.
