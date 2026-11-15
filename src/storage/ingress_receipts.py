@@ -32,6 +32,17 @@ from src.worker.execution_context import LegacyExecutionRefused, require_legacy_
 SCHEMA_VERSION = 1
 PROTOCOL = "standalone-ingress-v1"
 TASK_READ_LIMIT = 1_048_576
+TASK_INVENTORY_ROWS = 32
+TASK_INVENTORY_INPUT_LIMIT = 8 * 1_048_576
+TASK_INVENTORY_VM_STEPS = 100_000
+# A valid selected row has at most 1 MiB of normalized input and much less
+# than 16 KiB of identifiers, binding metadata and closed dispatch result.
+_INVENTORY_SQLITE_LENGTH = TASK_READ_LIMIT + 16_384
+_TASK_COLUMNS = (
+    "operation_id", "request_sha256", "principal_id", "binding_id",
+    "repository_key", "target_key", "normalized_input", "state", "code",
+    "result_json",
+)
 _RESULT_CODES = frozenset({
     "handler_returned", "handler_outcome_unknown", "registration_outcome_unknown",
     "repository_identity_mismatch", "pull_request_unsupported", "target_unavailable",
@@ -375,6 +386,72 @@ def _projection(row):
             _unavailable("receipt_state_invalid")
         result["result"] = observed
     return result
+
+
+def _task_projection(row, binding, policy, *, summary=False):
+    """Validate the original admission before projecting any retained task text."""
+    try:
+        retained = row["normalized_input"]
+        if type(retained) is not str:
+            raise ValueError()
+        normalized = strict_json(retained.encode("utf-8"), TASK_READ_LIMIT)
+        exact_object(normalized, {"principal_id", "binding_id", "binding", "task",
+            "source_kind", "source_id", "request_key", "actor_id"})
+        task = bounded_task(normalized["task"])
+        if (
+            digest_json(normalized) != row["request_sha256"]
+            or normalized["principal_id"] != row["principal_id"]
+            or normalized["binding_id"] != row["binding_id"]
+            or normalized["binding"] != binding.effect_input()
+            or row["repository_key"] != binding.canonical_repository
+            or row["target_key"] != f"{binding.canonical_repository}:issue:{task['issue_id']}:task.start"
+            or normalized["source_kind"] not in {"operator_task", "github_issue_initial", "github_issue_comment"}
+        ):
+            raise ValueError()
+        policy.assert_no_ingress_secrets(normalized)
+        result = {
+            "schema_version": 1, "protocol": PROTOCOL, "observation": "retained_dispatch",
+            "operation_id": row["operation_id"], "binding_id": row["binding_id"],
+            "repository": {"forge": binding.forge, "repository": binding.repository,
+                "repository_id": binding.repository_id},
+            "task": {name: task[name] for name in ("issue_id", "issue_title")} if summary else task,
+            "receipt": _projection(row),
+            "managed_authority": False, "release_authorized": False,
+        }
+        if len(canonical_json(result).encode("utf-8")) > TASK_READ_LIMIT:
+            raise ValueError()
+    except (IngressError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        _unavailable("task_state_invalid")
+    return result
+
+
+@contextmanager
+def _inventory_query_limits(connection):
+    """Bound this query's VM work and values, then restore before transaction cleanup.
+
+    The connection is owned here and normally has no progress handler. Both
+    selections share at most 100,000 progress callbacks with interval one.
+    SQLite's instruction interval is approximate; this is not a bound on
+    filesystem syscall or wall-clock duration.
+    """
+    previous_length = connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH)
+    remaining = TASK_INVENTORY_VM_STEPS
+
+    def progress():
+        nonlocal remaining
+        remaining -= 1
+        return remaining <= 0
+
+    try:
+        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH,
+                            min(previous_length, _INVENTORY_SQLITE_LENGTH))
+        connection.set_progress_handler(progress, 1)
+        yield
+    except sqlite3.Error:
+        _unavailable("task_inventory_unavailable")
+    finally:
+        connection.set_progress_handler(None, 0)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, previous_length)
 
 
 class ReceiptStore:
@@ -741,37 +818,68 @@ class ReceiptStore:
                     _unavailable("task_state_invalid")
                 if not row["target_key"].endswith(":task.start"):
                     raise IngressError("task_not_found", 404)
-                try:
-                    retained = row["normalized_input"]
-                    if type(retained) is not str:
-                        raise ValueError()
-                    normalized = strict_json(retained.encode("utf-8"), TASK_READ_LIMIT)
-                    exact_object(normalized, {"principal_id", "binding_id", "binding", "task",
-                        "source_kind", "source_id", "request_key", "actor_id"})
-                    task = bounded_task(normalized["task"])
-                    if (
-                        digest_json(normalized) != row["request_sha256"]
-                        or normalized["principal_id"] != row["principal_id"]
-                        or normalized["binding_id"] != row["binding_id"]
-                        or normalized["binding"] != binding.effect_input()
-                        or row["repository_key"] != binding.canonical_repository
-                        or row["target_key"] != f"{binding.canonical_repository}:issue:{task['issue_id']}:task.start"
-                        or normalized["source_kind"] not in {"operator_task", "github_issue_initial", "github_issue_comment"}
-                    ):
-                        raise ValueError()
-                    self.policy.assert_no_ingress_secrets(normalized)
-                    result = {
-                        "schema_version": 1, "protocol": PROTOCOL, "observation": "retained_dispatch",
-                        "operation_id": row["operation_id"], "binding_id": row["binding_id"],
-                        "repository": {"forge": binding.forge, "repository": binding.repository,
-                            "repository_id": binding.repository_id},
-                        "task": task, "receipt": _projection(row),
-                        "managed_authority": False, "release_authorized": False,
-                    }
+                return _task_projection(row, binding, self.policy)
+
+    def list_tasks(self, principal_id):
+        """A complete bounded snapshot of original, exactly scoped task admissions.
+
+        task.read also permits discovery within its original binding. Neither
+        legacy dashboard IDs nor repository aliases grant access to these rows.
+        """
+        identifier(principal_id)
+        with self._mutex:
+            self._check_open()
+            with _transaction(self._owner) as connection:
+                self._check_policy(connection)
+                principal = self.policy.principals.get(principal_id)
+                bindings = {} if principal is None else {
+                    name: self.policy.require_grant(principal_id, name, "task.read")
+                    for name, operations in principal.grants.items()
+                    if "task.read" in operations
+                }
+                if not bindings:
+                    raise IngressError("scope_denied", 403)
+                result = {
+                    "schema_version": 1, "protocol": PROTOCOL,
+                    "observation": "retained_dispatch_inventory", "tasks": [],
+                    "managed_authority": False, "release_authorized": False,
+                }
+                with _inventory_query_limits(connection):
+                    # Count and size the authorized task rows before fetching
+                    # their full private data. The original transaction keeps
+                    # both selections on the same journal snapshot. LIMIT alone
+                    # does not bound the scan, hence the shared VM allowance.
+                    placeholders = ",".join("?" for _ in bindings)
+                    sizes = "+".join(f"coalesce(length(CAST({name} AS BLOB)),0)"
+                                     for name in _TASK_COLUMNS)
+                    selected = connection.execute(
+                        f"SELECT operation_id,({sizes}) AS selected_bytes FROM receipts "
+                        f"WHERE binding_id IN ({placeholders}) "
+                        "AND typeof(target_key)='text' AND substr(target_key,-11)=':task.start' "
+                        "ORDER BY operation_id LIMIT ?",
+                        (*sorted(bindings), TASK_INVENTORY_ROWS + 1),
+                    ).fetchall()
+                    if len(selected) > TASK_INVENTORY_ROWS:
+                        _unavailable("task_inventory_unavailable")
+                    if sum(row["selected_bytes"] for row in selected) > TASK_INVENTORY_INPUT_LIMIT:
+                        _unavailable("task_inventory_unavailable")
+                    operations = []
+                    for row in selected:
+                        try:
+                            operations.append(identifier(row["operation_id"]))
+                        except IngressError:
+                            _unavailable("task_state_invalid")
+                    if operations:
+                        slots = ",".join("?" for _ in operations)
+                        cursor = connection.execute(
+                            f"SELECT {','.join(_TASK_COLUMNS)} FROM receipts "
+                            f"WHERE operation_id IN ({slots}) ORDER BY operation_id", operations)
+                        for row in cursor:
+                            item = _task_projection(row, bindings[row["binding_id"]], self.policy,
+                                                    summary=True)
+                            result["tasks"].append(item)
                     if len(canonical_json(result).encode("utf-8")) > TASK_READ_LIMIT:
-                        raise ValueError()
-                except (IngressError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
-                    _unavailable("task_state_invalid")
+                        _unavailable("task_inventory_unavailable")
                 return result
 
     def close_admission(self):

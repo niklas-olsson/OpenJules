@@ -114,7 +114,9 @@ def test_operator_replay_lost_response_retained_result_and_static_page(tmp_path,
         assert "static status page" in page.text
         assert all(tag not in page.text for tag in ("<form", "<input", "<script"))
         assert "test-operator-value" not in page.text and "Private synthetic input" not in page.text
-        for method, url in (("GET", "/api/tasks"), ("GET", "/api/tasks/private"),
+        inventory = client.get("/api/tasks", headers=operator_headers())
+        assert inventory.status_code == 403 and inventory.json()["code"] == "scope_denied"
+        for method, url in (("GET", "/api/tasks/private"),
                             ("POST", "/api/polyphony/cohorts"), ("POST", "/api/radicle/webhook"),
                             ("OPTIONS", "/api/tasks"), ("POST", "/api/tasks/private/command")):
             response = client.request(method, url, headers=operator_headers(), content=b"private")

@@ -81,6 +81,7 @@ class StandaloneIngressGate:
         kind = scope["type"]
         supported = self.configured and (
             (scope.get("method") == "POST" and scope.get("path") in {"/api/tasks", "/api/webhook"})
+            or (scope.get("method") == "GET" and scope.get("path") == "/api/tasks")
             or (scope.get("method") == "GET" and re.fullmatch(
                 r"/api/ingress/receipts/[A-Za-z0-9_-]{1,128}", scope.get("path", "")) is not None)
             or (scope.get("method") == "GET" and re.fullmatch(
