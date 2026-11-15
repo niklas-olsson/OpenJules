@@ -87,7 +87,7 @@ contract, not just delivery of a stop request. The Docker provisioner requires
 explicitly confirmed termination, no pending execution, confirmed durable
 artifact capture, container removal and workspace removal before releasing the
 original worker record. Any incomplete or malformed cleanup result retains that
-record, including its immutable container ID and workspace path.
+record, including its original container ID and workspace path.
 `get_cleanup_result(container_id)` exposes the last returned `CleanupResult` for
 a retained worker; its facts distinguish confirmed termination from pending
 execution and retained artifacts. An exception supplies no new cleanup receipt.
@@ -96,6 +96,9 @@ The provisioner does not assert artifact capture itself. In particular, the
 current default `SandboxManager.cleanup_sandbox` call can confirm termination
 while deliberately retaining an uncaptured container and workspace. That is not
 complete cleanup and cannot produce a successful drain or replacement. The
+provisioner exposes no capture-acknowledgement input, so this default native
+stop path cannot confirm complete cleanup. A complete injected receipt in unit
+fixtures checks bookkeeping only, not a usable native completion path. The
 historical `list_active_workers` method includes all workers still in custody;
 the CLI calls this **Owned Workers**, not a liveness observation.
 
