@@ -99,9 +99,26 @@ class SwarmResourceController:
         if signal is not None:
             result["signal_id"] = signal.signal_id
         if self.reconciliation_required is not None or (signal is not None and signal.signal_id in self._attempted_signals):
+            result = {**(self.reconciliation_required or {}), **result}
             result["status"] = "RECONCILIATION_REQUIRED"
             self.reconciliation_required = result.copy()
         return result
+
+    def stop_worker(self, worker: WorkerContainerInfo) -> None:
+        """Stop under the serial controller contract, retaining uncertain custody."""
+        self.require_unpaused()
+        actor_id, container_id = worker.actor_id, worker.container_id
+        try:
+            confirmed = self.provisioner.stop_worker(container_id)
+        except Exception:
+            confirmed = False
+        if confirmed is not True:
+            self.reconciliation_required = _experimental({
+                "status": "RECONCILIATION_REQUIRED", "outcome": "UNKNOWN",
+                "reason": "worker_cleanup_not_confirmed",
+                "actor_id": actor_id, "container_id": container_id,
+            })
+            raise OutboxError(OutboxOutcome.UNKNOWN, "worker_cleanup_not_confirmed")
 
     def bootstrap_cohort(self) -> List[WorkerContainerInfo]:
         """Spawns the initial base cohort workers up to base_worker_count."""
@@ -298,14 +315,11 @@ class SwarmResourceController:
                 break
 
             self._mark_attempt(signal)
-            success = self.provisioner.stop_worker(worker.container_id)
-            if success is True:
-                drained_count += 1
-                reaped_workers.append(worker.actor_id)
-                if signal.requested_worker_delta > 0 and drained_count >= signal.requested_worker_delta:
-                    break
-            else:
-                raise OutboxError(OutboxOutcome.UNKNOWN, "worker_stop_not_confirmed")
+            self.stop_worker(worker)
+            drained_count += 1
+            reaped_workers.append(worker.actor_id)
+            if signal.requested_worker_delta > 0 and drained_count >= signal.requested_worker_delta:
+                break
 
         note = f"Reaped {drained_count} idle burst workers: {reaped_workers}"
         self._acknowledge(signal, HostSignalStatus.FULFILLED, note)

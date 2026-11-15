@@ -55,7 +55,7 @@ class WorkerHealthMonitor:
             logger.warning(
                 f"Worker {dead.actor_id} (container {dead.container_id}) failed liveness check. Reaping..."
             )
-            self.controller.provisioner.stop_worker(dead.container_id)
+            self.controller.stop_worker(dead)
             reaped_ids.append(dead.actor_id)
 
         # Respawn base workers if healthy count is below base_worker_count

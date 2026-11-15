@@ -130,7 +130,7 @@ def handle_swarm_cli(args):
     base = [worker for worker in active if not worker.is_burst]
     burst = [worker for worker in active if worker.is_burst]
     print(f"Polyphony Cohort Status: {args.swarm_id}")
-    print(f"  Active Workers: {len(active)} ({len(base)} base, {len(burst)} burst)")
+    print(f"  Owned Workers: {len(active)} ({len(base)} base, {len(burst)} burst)")
     print(f"  Metered Cost: {ctrl.internal_metered_cost:.2f} / {ctrl.config.max_host_budget:.2f}")
     if ctrl.reconciliation_required is not None:
         print(f"  Reconciliation required: {ctrl.reconciliation_required['reason']}")
