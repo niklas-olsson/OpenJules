@@ -853,9 +853,12 @@ class ReceiptStore:
                     sizes = "+".join(f"coalesce(length(CAST({name} AS BLOB)),0)"
                                      for name in _TASK_COLUMNS)
                     selected = connection.execute(
-                        f"SELECT operation_id,({sizes}) AS selected_bytes FROM receipts "
+                        "SELECT CASE WHEN typeof(operation_id)='text' "
+                        "AND length(CAST(operation_id AS BLOB))<=128 THEN operation_id END AS operation_id,"
+                        "(typeof(target_key)='text' AND substr(target_key,-11)=':task.start') AS is_task,"
+                        f"({sizes}) AS selected_bytes FROM receipts "
                         f"WHERE binding_id IN ({placeholders}) "
-                        "AND typeof(target_key)='text' AND substr(target_key,-11)=':task.start' "
+                        "AND NOT (typeof(target_key)='text' AND substr(target_key,-13)=':review.start') "
                         "ORDER BY operation_id LIMIT ?",
                         (*sorted(bindings), TASK_INVENTORY_ROWS + 1),
                     ).fetchall()
@@ -866,6 +869,8 @@ class ReceiptStore:
                     operations = []
                     for row in selected:
                         try:
+                            if row["is_task"] != 1:
+                                raise IngressError("task_state_invalid", 503)
                             operations.append(identifier(row["operation_id"]))
                         except IngressError:
                             _unavailable("task_state_invalid")
@@ -877,7 +882,8 @@ class ReceiptStore:
                         for row in cursor:
                             item = _task_projection(row, bindings[row["binding_id"]], self.policy,
                                                     summary=True)
-                            result["tasks"].append(item)
+                            result["tasks"].append({name: item[name] for name in (
+                                "operation_id", "binding_id", "repository", "task", "receipt")})
                     if len(canonical_json(result).encode("utf-8")) > TASK_READ_LIMIT:
                         _unavailable("task_inventory_unavailable")
                 return result
