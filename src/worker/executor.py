@@ -58,10 +58,10 @@ class TaskExecutor:
             return self.radicle_provider
         return self.github_provider
 
-    def post_issue_comment(self, forge_type: str, repo_name: str, issue_id: int | str, message: str) -> None:
-        """Posts a comment on the issue via the active forge provider."""
+    def post_issue_comment(self, forge_type: str, repo_name: str, issue_id: int | str, message: str) -> bool:
+        """Return the provider's comment outcome; task status messages are best effort."""
         provider = self.get_forge_provider(forge_type)
-        provider.post_issue_comment(repo_name, issue_id, message)
+        return provider.post_issue_comment(repo_name, issue_id, message)
 
     def execute_task(self, payload: TaskPayload, git_token: Optional[str] = None) -> bool:
         """Runs the complete autonomous agent lifecycle."""

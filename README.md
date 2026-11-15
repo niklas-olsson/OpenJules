@@ -465,7 +465,7 @@ for canonical managed authority:
 4. **Pluggable Forge Layer (`src/forge/` & `src/git_manager/`)**:
    - `src/forge/base.py`: Abstract `ForgeProvider` interface.
    - `src/forge/github.py`: GitHub App and PAT integration via PyGithub.
-   - `src/forge/radicle.py`: Radicle integration supporting the `rad` CLI (`rad clone`, `rad patch open`) and Radicle Node HTTP API.
+   - `src/forge/radicle.py`: Legacy Radicle repository/issue inspection. Unqualified comment and patch writes explicitly refuse; no replacement publisher is selected.
    - `src/git_manager/lifecycle.py`: Task branch management (`openjules/task-{issue_id}-{slug}`), Conventional Commits, diff calculation, and PR/Patch summary generation.
 5. **Control Plane & Background Task Workers (`src/api/` & `src/worker/`)**:
    - `src/api/webhook.py`: Harmless status/health by default. An explicitly enrolled host policy selects bounded task/review admission, scoped receipts and retained task reads; other private HTTP/WS routes refuse.
@@ -654,11 +654,18 @@ The trusted legacy executor uses repository-scoped Polyphony peer coordination:
 
 ## Radicle Integration Guide (https://radicle.dev)
 
-The explicit trusted legacy forge components support Radicle peer-to-peer code
-collaboration:
-- **Repository IDs (`rad:<rid>`)**: Clones and works on decentralized repos without a centralized server.
-- **Radicle Patches**: Changes are proposed via `rad patch open` rather than GitHub PRs.
-- **Explicit Local Polling**: `RadicleNodePoller` remains a trusted host component. The standalone `POST /api/radicle/webhook` is unavailable under the ingress boundary above.
+The trusted legacy components retain Radicle repository-ID formatting and issue
+inspection against a configured compatible node. `RadicleNodePoller` remains an
+explicit host component; the standalone `POST /api/radicle/webhook` is unavailable.
+These helpers do not qualify a current Radicle runtime or a complete coding journey.
+
+The default `RadicleProvider` refuses unqualified writes: comments return `False`
+without an HTTP request, and patch creation raises `RadiclePublicationUnsupported`
+before any CLI attempt. Previous logging and synthetic patch IDs were not evidence
+of publication. No alternate command, simulated success or replacement publisher
+is selected. The existing task executor can already have performed local work and
+a branch push before proposal refusal; it reports an error and retains uncaptured
+work. Follow the [Radicle refusal and recovery limits](docs/sandbox-recovery.md#radicle-publication-refusal).
 
 ---
 
