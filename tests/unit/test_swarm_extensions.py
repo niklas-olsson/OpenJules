@@ -124,6 +124,6 @@ def test_cli_status_describes_only_an_explicit_in_process_fixture(capsys):
     try:
         assert handle_swarm_cli(SimpleNamespace(swarm_action="status", swarm_id="cli-fixture")) == 0
         text = capsys.readouterr().out
-        assert "Polyphony Cohort Status: cli-fixture" in text and "Active Workers: 2" in text
+        assert "Polyphony Cohort Status: cli-fixture" in text and "Owned Workers: 2" in text
     finally:
         cohort_registry.remove_cohort("cli-fixture")

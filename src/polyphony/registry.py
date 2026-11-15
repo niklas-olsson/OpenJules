@@ -62,9 +62,14 @@ class SwarmCohortRegistry:
         if swarm_id in self._controllers:
             ctrl = self._controllers[swarm_id]
             ctrl.require_unpaused()
+            workers = ctrl.provisioner.list_active_workers(swarm_id=swarm_id)
+            if workers and not drain_workers:
+                return False
             if drain_workers:
-                for w in ctrl.provisioner.list_active_workers(swarm_id=swarm_id):
-                    ctrl.provisioner.stop_worker(w.container_id)
+                for worker in workers:
+                    ctrl.stop_worker(worker)
+            if ctrl.provisioner.list_active_workers(swarm_id=swarm_id):
+                return False
             del self._controllers[swarm_id]
             return True
         return False

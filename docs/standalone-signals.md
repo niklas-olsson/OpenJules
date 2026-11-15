@@ -80,6 +80,37 @@ acknowledgement. The MCP adapter therefore cannot automatically drain workers
 against the current producer. An explicit fixture may report a known count of
 zero; that is fixture evidence only.
 
+### Cleanup and retained worker custody
+
+The provisioner's `stop_worker` boolean confirms its existing stop-and-cleanup
+contract, not just delivery of a stop request. The Docker provisioner requires
+explicitly confirmed termination, no pending execution, confirmed durable
+artifact capture, container removal and workspace removal before releasing the
+original worker record. Any incomplete or malformed cleanup result retains that
+record, including its immutable container ID and workspace path.
+`get_cleanup_result(container_id)` exposes the last returned `CleanupResult` for
+a retained worker; its facts distinguish confirmed termination from pending
+execution and retained artifacts. An exception supplies no new cleanup receipt.
+
+The provisioner does not assert artifact capture itself. In particular, the
+current default `SandboxManager.cleanup_sandbox` call can confirm termination
+while deliberately retaining an uncaptured container and workspace. That is not
+complete cleanup and cannot produce a successful drain or replacement. The
+historical `list_active_workers` method includes all workers still in custody;
+the CLI calls this **Owned Workers**, not a liveness observation.
+
+Idle drain, registry removal and health healing pause the existing controller
+on any unconfirmed stop, retaining the original actor/container identity under
+`RECONCILIATION_REQUIRED`. They neither acknowledge a fulfilled drain nor proceed
+to another stop or replacement. Registry removal without draining also refuses
+while any worker remains owned. A partial removal keeps the same controller and
+remaining workers. Explicit owner safety cleanup through the original
+provisioner or sandbox manager remains available against the original resources;
+it does not automatically clear the controller's retained uncertainty. The
+[sandbox recovery contract](sandbox-recovery.md) still requires actual durable
+capture before a trusted caller can acknowledge it. No capture authorization,
+automatic cleanup retry or unpause mechanism is added here.
+
 These safeguards are in-memory correlation for the existing serial controller
 flow. They are not durable operation keys or crash recovery. Trusted callers
 must serialize bootstrap, reconciliation, health and removal operations. There

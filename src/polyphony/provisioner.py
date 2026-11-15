@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 from src.polyphony.bootstrap import WorkerBootstrapBuilder, WorkerBootstrapPackage
 from src.polyphony.models import PolyphonyCohortConfig, WorkerContainerInfo
 from src.sandbox.config import OpenJulesConfig
-from src.sandbox.docker_driver import SandboxManager
+from src.sandbox.docker_driver import CleanupResult, SandboxManager
 from src.worker.execution_context import require_legacy_execution
 
 logger = logging.getLogger(__name__)
@@ -39,12 +39,12 @@ class ContainerProvisionerProtocol(ABC):
 
     @abstractmethod
     def stop_worker(self, container_id: str) -> bool:
-        """Gracefully stops and reaps a worker container."""
+        """Confirm stop and cleanup; False retains the original worker custody."""
         pass
 
     @abstractmethod
     def list_active_workers(self, swarm_id: Optional[str] = None) -> List[WorkerContainerInfo]:
-        """Lists currently active worker containers managed by the provisioner."""
+        """List owned workers, including any whose cleanup remains incomplete."""
         pass
 
     @abstractmethod
@@ -60,6 +60,7 @@ class DockerContainerProvisioner(ContainerProvisionerProtocol):
         require_legacy_execution()
         self.sandbox_manager = sandbox_manager or SandboxManager()
         self._workers: Dict[str, WorkerContainerInfo] = {}
+        self._cleanup_results: Dict[str, CleanupResult] = {}
 
     def spawn_worker(
         self,
@@ -113,10 +114,27 @@ class DockerContainerProvisioner(ContainerProvisionerProtocol):
         require_legacy_execution()
         if container_id in self._workers:
             info = self._workers[container_id]
-            self.sandbox_manager.cleanup_sandbox(container_id, info.workspace_dir)
+            result = self.sandbox_manager.cleanup_sandbox(container_id, info.workspace_dir)
+            if not isinstance(result, CleanupResult):
+                return False
+            self._cleanup_results[container_id] = result
+            if not (
+                result.termination_confirmed is True
+                and result.execution_pending is False
+                and result.artifact_capture_confirmed is True
+                and result.container_removed is True
+                and result.workspace_removed is True
+            ):
+                return False
             del self._workers[container_id]
+            del self._cleanup_results[container_id]
             return True
         return False
+
+    def get_cleanup_result(self, container_id: str) -> Optional[CleanupResult]:
+        """Last returned cleanup facts for an original worker still in custody."""
+        require_legacy_execution()
+        return self._cleanup_results.get(container_id)
 
     def list_active_workers(self, swarm_id: Optional[str] = None) -> List[WorkerContainerInfo]:
         workers = list(self._workers.values())
