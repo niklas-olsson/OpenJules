@@ -30,7 +30,7 @@ def verify_github_signature(payload_body: bytes, signature_header: Optional[str]
     return hmac.compare_digest(expected, parts[1])
 
 
-def create_app(*, policy_path=None, task_adapter=None):
+def create_app(*, policy_path=None, task_adapter=None, review_adapter=None):
     require_legacy_execution()
     status = policy_status()
     policy, lifespan = None, None
@@ -39,10 +39,10 @@ def create_app(*, policy_path=None, task_adapter=None):
         from src.api.ingress_http import configured_lifespan
         policy = load_policy(policy_path)
         status = {"state": "configured", "policy": "selected", "reason": "standalone_ingress_operation_unsupported"}
-        lifespan = configured_lifespan(policy, task_adapter)
+        lifespan = configured_lifespan(policy, task_adapter, review_adapter)
     app = FastAPI(
         title="OpenJules standalone service", version="0.3.0",
-        description="Static status; explicitly enrolled policies select limited task ingress. Health is not admission readiness.",
+        description="Static status; explicitly enrolled policies select bounded task and review ingress. Health is not admission readiness.",
         docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan,
     )
     app.state.standalone_ingress = status

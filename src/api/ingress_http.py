@@ -18,7 +18,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
-from src.api.ingress_adapter import GitHubTaskAdapter
+from src.api.ingress_adapter import GitHubTaskAdapter, ReviewCredentialSnapshot
 from src.api.ingress_policy import IngressError, bounded_task, strict_json
 from src.api.standalone_ingress import ingress_failure
 from src.storage.ingress_receipts import ReceiptStore
@@ -206,8 +206,9 @@ def webhook_task(policy, principal, payload, event):
 class CallbackQueue:
     """Own finite local callbacks without becoming another task authority."""
 
-    def __init__(self, store, adapter):
+    def __init__(self, store, adapter, review_adapter=None):
         self.store, self.adapter = store, adapter
+        self.review_adapter = review_adapter
         self.jobs = set()
         self.semaphore = asyncio.Semaphore(CONCURRENT_CALLBACKS)
         # Threads start only upon an admitted submission. Keep their native
@@ -244,11 +245,18 @@ class CallbackQueue:
             original = self.store.claim_callback(ticket)
             if original is None:
                 return
-            outcome = self.adapter(original)
-            if type(outcome) is not bool:
-                self.store.uncertain(ticket)
+            if original.get("operation") == "review.start":
+                if self.review_adapter is None:
+                    raise IngressError("review_adapter_unavailable", 503)
+                claim = self.store.review_claim(ticket, original)
+                outcome = self.review_adapter(claim.original, claim)
+                self.store.finish_review(ticket, outcome)
             else:
-                self.store.finish(ticket, handler_return=outcome)
+                outcome = self.adapter(original)
+                if type(outcome) is not bool:
+                    self.store.uncertain(ticket)
+                else:
+                    self.store.finish(ticket, handler_return=outcome)
         except BaseException:
             try:
                 self.store.uncertain(ticket)
@@ -310,14 +318,34 @@ class CallbackQueue:
         self.store.close()
 
 
-def configured_lifespan(policy, adapter=None):
+def configured_lifespan(policy, adapter=None, review_adapter=None):
     @asynccontextmanager
     async def lifespan(app):
         require_legacy_execution()
-        selected_adapter = GitHubTaskAdapter(bindings=policy.bindings.values(),
-                                             separation_validator=policy.assert_execution_separation) if adapter is None else adapter
-        store = ReceiptStore(policy, epoch_validator=getattr(selected_adapter, "validate_epoch", None))
-        callbacks = CallbackQueue(store, selected_adapter)
+        task_bindings = tuple(binding for binding in policy.bindings.values() if any(
+            "task.start" in principal.grants.get(binding.binding_id, ())
+            for principal in policy.principals.values()
+        ))
+        selected_adapter = adapter
+        if selected_adapter is None and task_bindings:
+            selected_adapter = GitHubTaskAdapter(bindings=task_bindings,
+                separation_validator=policy.assert_execution_separation)
+        from src.storage.review_receipts import enabled_review_bindings
+        review_credentials = {binding.binding_id: ReviewCredentialSnapshot(binding, policy)
+            for binding in enabled_review_bindings(policy)}
+        selected_review = review_adapter
+        if review_credentials and selected_review is None:
+            from src.worker.standalone_review import StandaloneReviewAdapter
+            selected_review = StandaloneReviewAdapter()
+        def epoch_validator():
+            validator = getattr(selected_adapter, "validate_epoch", None)
+            if validator is not None:
+                validator()
+            for snapshot in review_credentials.values():
+                snapshot.validate_epoch()
+        store = ReceiptStore(policy, epoch_validator=epoch_validator,
+            review_credentials=review_credentials)
+        callbacks = CallbackQueue(store, selected_adapter, selected_review)
         app.state.ingress_store = store
         app.state.ingress_callbacks = callbacks
         try:
@@ -328,7 +356,7 @@ def configured_lifespan(policy, adapter=None):
 
 
 def install_routes(app, policy, verify_signature):
-    """Install only the three positively qualified route operations."""
+    """Install explicitly selected operations on the existing bounded routes."""
     @app.exception_handler(IngressError)
     async def ingress_error(_request, exc):
         return JSONResponse(status_code=exc.status,
@@ -387,6 +415,23 @@ def install_routes(app, policy, verify_signature):
         task = bounded_task({key: value for key, value in payload.items() if key not in {"binding_id", "schema_version"}})
         return dispatch(request, principal, binding, task, "operator_task", None, key)
 
+    def dispatch_review(request, principal, binding, review, actor):
+        require_legacy_execution()
+        store, callbacks = state(request)
+        available = callbacks.can_accept()
+        receipt = store.reserve_review(principal.principal_id, binding.binding_id, review, actor,
+            allow_new=available)
+        if receipt["dispatch_state"] != "reserved":
+            return JSONResponse(status_code=202, content=receipt, headers={"Cache-Control": "no-store"})
+        if not available:
+            return JSONResponse(status_code=503,
+                content=ingress_failure(503, "ingress_callbacks_unavailable", receipt),
+                headers={"Cache-Control": "no-store"})
+        ticket = store.fence(receipt["operation_id"], principal.principal_id)
+        status = 202 if ticket is None or callbacks.submit(ticket) else 503
+        receipt = store.reserve_review(principal.principal_id, binding.binding_id, review, actor)
+        return JSONResponse(status_code=status, content=receipt, headers={"Cache-Control": "no-store"})
+
     @app.post("/api/webhook")
     async def github_webhook(request: Request):
         headers = request_headers(request, policy)
@@ -396,6 +441,10 @@ def install_routes(app, policy, verify_signature):
         if not verify_signature(raw, signature, secret):
             _refuse("ingress_authentication_required", 401)
         value = strict_json(raw, BODY_LIMIT)
+        if type(value) is dict and "review" in value:
+            from src.api.review_ingress import webhook_review
+            binding, review, actor = webhook_review(policy, principal, value, headers.get("x-github-event"))
+            return dispatch_review(request, principal, binding, review, actor)
         binding, task, kind, source_id, actor = webhook_task(policy, principal, value, headers.get("x-github-event"))
         return dispatch(request, principal, binding, task, kind, source_id, None, actor)
 

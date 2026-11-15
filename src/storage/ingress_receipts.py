@@ -253,7 +253,7 @@ def _metadata(connection):
     return dict(connection.execute("SELECT name,value FROM metadata").fetchall())
 
 
-def enroll_policy(policy: Policy, activation_path=None):
+def enroll_policy(policy: Policy, activation_path=None, *, review_activation_paths=()):
     """Stopped-owner enrollment, retaining every prior identity and fence.
 
     A first activation is an attributable host assertion of isolated fresh
@@ -265,7 +265,9 @@ def enroll_policy(policy: Policy, activation_path=None):
     owner = _Owner(policy.store_path, policy.journal_id)
     try:
         with _transaction(owner) as connection:
-            repositories = {b.canonical_repository for b in policy.bindings.values()}
+            repositories = {b.canonical_repository for b in policy.bindings.values()
+                if b.review_profile is None or any("task.start" in p.grants.get(b.binding_id, ())
+                    for p in policy.principals.values())}
             existing = {row[0] for row in connection.execute("SELECT repository_key FROM activated_repositories")}
             newly_activated = repositories - existing
             if newly_activated:
@@ -306,6 +308,8 @@ def enroll_policy(policy: Policy, activation_path=None):
                 ])
             elif activation_path is not None:
                 raise IngressError("activation_already_recorded", 409)
+            from src.storage.review_receipts import enroll_review_scopes
+            enroll_review_scopes(connection, policy, review_activation_paths)
             previous = connection.execute("SELECT policy_digest FROM policy_enrollments WHERE policy_id=?", (policy.policy_id,)).fetchone()
             if previous is not None and previous[0] != policy.digest:
                 raise IngressError("policy_identity_conflict", 409)
@@ -361,7 +365,12 @@ def _projection(row):
             observed = json.loads(row["result_json"])
         except (ValueError, TypeError, RecursionError):
             _unavailable("receipt_state_invalid")
-        if type(observed) is not dict or set(observed) != {"handler_return"} or type(observed["handler_return"]) is not bool:
+        from src.storage.review_receipts import is_review, project_review_result
+        if is_review(row):
+            observed = project_review_result(row, observed)
+            if result["status"] != "unknown" and observed["status"] in {"refused", "unknown"}:
+                result["status"] = observed["status"]
+        elif type(observed) is not dict or set(observed) != {"handler_return"} or type(observed["handler_return"]) is not bool:
             _unavailable("receipt_state_invalid")
         result["result"] = observed
     return result
@@ -370,11 +379,12 @@ def _projection(row):
 class ReceiptStore:
     """One service owner; use a fresh object after a fully stopped epoch."""
 
-    def __init__(self, policy: Policy, *, epoch_validator=None):
+    def __init__(self, policy: Policy, *, epoch_validator=None, review_credentials=None):
         require_legacy_execution()
         policy.ensure_current()
         self.policy = policy
         self._epoch_validator = epoch_validator
+        self._review_credentials = dict(review_credentials or {})
         if epoch_validator is not None:
             epoch_validator()
         self._mutex = threading.RLock()
@@ -410,6 +420,8 @@ class ReceiptStore:
         metadata = _metadata(connection)
         if (metadata.get("active_policy_id"), metadata.get("active_policy_digest")) != (self.policy.policy_id, self.policy.digest):
             _unavailable("policy_not_enrolled")
+        from src.storage.review_receipts import ensure_review_scopes
+        ensure_review_scopes(connection, self.policy)
         if admission and self._epoch_validator is not None:
             self._epoch_validator()
 
@@ -426,7 +438,8 @@ class ReceiptStore:
         return row
 
     def _visible_conflict(self, row, principal_id):
-        operation = "task.start" if row["principal_id"] == principal_id else "receipt.read"
+        from src.storage.review_receipts import is_review
+        operation = ("review.start" if is_review(row) else "task.start") if row["principal_id"] == principal_id else "receipt.read"
         try:
             self.policy.require_grant(principal_id, row["binding_id"], operation)
         except IngressError:
@@ -496,6 +509,18 @@ class ReceiptStore:
                 connection.execute("INSERT INTO target_fences VALUES(?,?)", (target_key, operation_id))
                 return _projection(self._row(connection, operation_id))
 
+    def reserve_review(self, principal_id, binding_id, review, actor_id, *, allow_new=True):
+        from src.storage.review_receipts import reserve_review
+        return reserve_review(self, principal_id, binding_id, review, actor_id, allow_new=allow_new)
+
+    def review_claim(self, invocation, original):
+        from src.storage.review_receipts import make_claim
+        return make_claim(self, invocation, original)
+
+    def finish_review(self, invocation, outcome):
+        from src.storage.review_receipts import finish_review
+        return finish_review(self, invocation, outcome)
+
     def fence(self, operation_id, principal_id):
         identifier(operation_id)
         identifier(principal_id)
@@ -506,7 +531,8 @@ class ReceiptStore:
                 row = self._row(connection, operation_id)
                 if row["principal_id"] != principal_id:
                     raise IngressError("scope_denied", 403)
-                self.policy.require_grant(principal_id, row["binding_id"], "task.start")
+                from src.storage.review_receipts import is_review, bind_fence_clock
+                self.policy.require_grant(principal_id, row["binding_id"], "review.start" if is_review(row) else "task.start")
                 if row["state"] != "reserved":
                     return None
                 try:
@@ -516,6 +542,8 @@ class ReceiptStore:
                 except IngressError as exc:
                     raise IngressError(exc.code, exc.status, receipt=_projection(row)) from None
                 ticket = DispatchTicket(operation_id, self._epoch, secrets.token_hex(32))
+                if is_review(row):
+                    bind_fence_clock(self, connection, row)
                 connection.execute("UPDATE receipts SET state='may_have_started',code='dispatch_fenced',owner_epoch=?,nonce_sha256=? WHERE operation_id=? AND state='reserved'", (
                     self._epoch, hashlib.sha256(ticket._nonce.encode()).hexdigest(), operation_id,
                 ))
@@ -558,14 +586,19 @@ class ReceiptStore:
                     if not self._admitting:
                         raise IngressError("admission_closed", 503)
                     self._check_policy(connection, admission=True)
-                    binding = self.policy.require_grant(row["principal_id"], row["binding_id"], "task.start")
-                    normalized = strict_json(row["normalized_input"].encode(), 1_048_576)
-                    if digest_json(normalized) != row["request_sha256"] or normalized.get("binding") != binding.effect_input():
-                        raise IngressError("original_input_unavailable", 503)
-                    bounded_task(normalized["task"])
-                    if normalized.get("principal_id") != row["principal_id"] or normalized.get("binding_id") != row["binding_id"]:
-                        raise IngressError("original_input_unavailable", 503)
-                    self.policy.assert_no_ingress_secrets(normalized)
+                    from src.storage.review_receipts import is_review, validate_original
+                    if is_review(row):
+                        binding = self.policy.require_grant(row["principal_id"], row["binding_id"], "review.start")
+                        normalized = validate_original(self, connection, row, binding)
+                    else:
+                        binding = self.policy.require_grant(row["principal_id"], row["binding_id"], "task.start")
+                        normalized = strict_json(row["normalized_input"].encode(), 1_048_576)
+                        if digest_json(normalized) != row["request_sha256"] or normalized.get("binding") != binding.effect_input():
+                            raise IngressError("original_input_unavailable", 503)
+                        bounded_task(normalized["task"])
+                        if normalized.get("principal_id") != row["principal_id"] or normalized.get("binding_id") != row["binding_id"]:
+                            raise IngressError("original_input_unavailable", 503)
+                        self.policy.assert_no_ingress_secrets(normalized)
                 except (IngressError, LegacyExecutionRefused, KeyError, TypeError):
                     refusal = "callback_authority_revoked"
                 if refusal:
@@ -590,6 +623,9 @@ class ReceiptStore:
             ticket = invocation._ticket
             with _transaction(self._owner) as connection:
                 row = self._row(connection, ticket.operation_id)
+                from src.storage.review_receipts import is_review
+                if is_review(row):
+                    raise IngressError("invalid_handler_result", 422)
                 if self._claim_owners.get(ticket.operation_id) != invocation._invocation_id or ticket.operation_id not in self._entered or not self._matches(ticket, row) or not row["callback_entered"]:
                     raise IngressError("callback_not_owned", 409)
                 result = None if handler_return is None else canonical_json({"handler_return": handler_return})

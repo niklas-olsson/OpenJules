@@ -85,7 +85,8 @@ def handle_ingress_cli(args):
         if args.ingress_action == "init":
             result = initialize_store(args.store)
         elif args.ingress_action == "enroll-policy":
-            result = enroll_policy(load_policy(args.policy), activation_path=args.activation)
+            result = enroll_policy(load_policy(args.policy), activation_path=args.activation,
+                review_activation_paths=getattr(args, "review_activations", ()))
         else:
             return 2
     except IngressError as exc:
@@ -169,6 +170,8 @@ def main():
     ingress_enroll.add_argument("--policy", required=True)
     ingress_enroll.add_argument("--activation-declaration", "--activation", dest="activation", default=None,
                                 help="Private attributable fresh-scope declaration when required")
+    ingress_enroll.add_argument("--review-activation", dest="review_activations", action="append", default=[],
+                                help="Private canonical review-scope declaration; repeat for each newly enabled repository")
 
     # Command: polyphony
     poly_parser = subparsers.add_parser("polyphony", help="Inspect repository Polyphony swarm key and state")

@@ -36,7 +36,7 @@ _AUTH_PREFIXES = {
 }
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
-SUPPORTED_OPERATIONS = frozenset({"task.start", "receipt.read"})
+SUPPORTED_OPERATIONS = frozenset({"task.start", "review.start", "receipt.read"})
 
 
 class IngressError(ValueError):
@@ -131,6 +131,17 @@ def bounded_task(payload):
     }
 
 
+def branch_name(value):
+    """The same literal branch grammar for enrolled tasks and exact reviews."""
+    branch = bounded_text(value, 256)
+    if (branch in ("@", "HEAD") or branch.startswith(("-", "/")) or branch.endswith(("/", "."))
+            or any(x in branch for x in ("..", "@{", "//"))
+            or any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
+            or any(ord(c) < 33 or ord(c) == 127 or c in "~^:?*[\\" for c in branch)):
+        _error("invalid_branch")
+    return branch
+
+
 def absolute_path(value):
     bounded_text(value, 4096)
     path = Path(value)
@@ -204,6 +215,7 @@ class Binding:
     installation_id: int | None
     clone_url: str
     default_branch: str
+    review_profile: object | None = field(default=None, repr=False)
 
     @property
     def canonical_repository(self):
@@ -401,7 +413,7 @@ def load_policy(path, environ=None):
     if type(value["bindings"]) is not list or len(value["bindings"]) > MAX_MEMBERS:
         _error()
     for item in value["bindings"]:
-        exact_object(item, {"binding_id", "forge", "repository", "repository_id", "installation_id", "clone_url", "default_branch", "cohort_profiles"})
+        exact_object(item, {"binding_id", "forge", "repository", "repository_id", "installation_id", "clone_url", "default_branch", "cohort_profiles"}, {"standalone_review"})
         name = identifier(item["binding_id"])
         if name in bindings:
             _error("duplicate_binding")
@@ -417,13 +429,12 @@ def load_policy(path, environ=None):
         clone_url = bounded_text(item["clone_url"], 512)
         if clone_url not in (f"https://github.com/{repository}", f"https://github.com/{repository}.git"):
             _error("unsupported_clone_url", 404)
-        branch = bounded_text(item["default_branch"], 256)
-        if (branch in ("@", "HEAD") or branch.startswith(("-", "/")) or branch.endswith(("/", "."))
-                or any(x in branch for x in ("..", "@{", "//"))
-                or any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
-                or any(ord(c) < 33 or ord(c) == 127 or c in "~^:?*[\\" for c in branch)):
-            _error("invalid_branch")
-        bindings[name] = Binding(name, "github", repository, repository_id, installation, clone_url, branch)
+        branch = branch_name(item["default_branch"])
+        review_profile = None
+        if "standalone_review" in item:
+            from src.api.review_policy import parse_review_profile
+            review_profile = parse_review_profile(item["standalone_review"], installation)
+        bindings[name] = Binding(name, "github", repository, repository_id, installation, clone_url, branch, review_profile)
     principals = {}
     if type(value["principals"]) is not list or len(value["principals"]) > MAX_MEMBERS:
         _error()
@@ -477,6 +488,10 @@ def load_policy(path, environ=None):
             if len(operations) != len(set(operations)):
                 _error("duplicate_operation")
             if not set(operations) <= SUPPORTED_OPERATIONS:
+                _error("unsupported_capability", 404)
+            if "review.start" in operations and (
+                kind != "github_hmac_sha256" or bindings[binding_id].review_profile is None
+            ):
                 _error("unsupported_capability", 404)
             grants[binding_id] = frozenset(operations)
         principals[name] = Principal(name, kind, actors, MappingProxyType(grants), env_name, secret)

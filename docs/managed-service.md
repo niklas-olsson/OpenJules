@@ -282,12 +282,14 @@ reviewer, dashboard store, cohort registry/provisioner, Docker or model client,
 forge credential resolver, poller, background queue or WebSocket subscription.
 The managed installation selector remains the existing separate refusal check.
 
-The separately selected [standalone task policy](standalone-ingress.md) enables
-only authenticated GitHub issue tasks, explicit operator tasks and scoped original
-dispatch-receipt reads. It requires an explicitly initialized original journal,
-stopped-service policy enrollment and attributable fresh isolated scope. It does
-not enable review, Radicle, cohort or protected managed execution. That document
-is the canonical positive-path contract and recovery guide.
+The separately selected [standalone policy](standalone-ingress.md) enables
+authenticated GitHub issue tasks, explicit operator tasks, optional bounded
+same-repository review and scoped original dispatch receipts. It requires an
+explicitly initialized original journal and stopped-service policy enrollment.
+Task activation and review activation are separate attributable declarations;
+review additionally requires a complete finite host profile. It does not enable
+Radicle, cohorts or protected managed execution. That document is the canonical
+positive-path contract and recovery guide.
 
 Only `GET`/`HEAD` on `/`, `/health` and `/static/standalone.css` are public. The
 page contains no script, forms, credentials or retained task data. It states
@@ -313,7 +315,7 @@ outside the approved binding.
 
 | Method/path | Default status app refusal |
 | --- | --- |
-| `POST /api/webhook` | GitHub dispatch; explicit configured policy permits only the qualified issue-task forms |
+| `POST /api/webhook` | GitHub dispatch; explicit configured policy permits the documented issue-task and opt-in review forms |
 | `POST /api/radicle/webhook` | Radicle dispatch and runtime/forge effects |
 | `GET /api/tasks` | Retained task listing |
 | `POST /api/tasks` | Task execution; explicit configured policy permits the qualified operator task form |
@@ -538,13 +540,15 @@ configuration or credentials or invoking sandbox, model, commit or push operatio
 Malformed direct source values raise `ReviewSourceRejected`; missing or null
 optional PR bodies remain valid absent context.
 
-The standalone HTTP gate now refuses **all** GitHub events with HTTP 503 before
-signature checks or source parsing, including ordinary issues, general PR
-conversation commands and review events. The historical event-specific 400/409
-and ignored-event responses no longer describe that disabled interface. No
-renamed branch, erased marker or correctly signed event restores HTTP admission.
-Managed installations retain their earlier blanket legacy refusal and expose
-no legacy review route on the canonical service.
+The default standalone HTTP gate refuses GitHub events with HTTP 503 before
+signature checks or source parsing. A separate, explicitly enrolled standalone
+host policy can select the [bounded same-repository review adapter](standalone-ingress.md#optional-same-repository-review),
+with its own scope activation, original review/head binding, finite effects,
+credential-free guest and at most one host expected-head update. It shares the
+pure managed-source refusal above; a signature or erased marker grants no
+canonical authority. General PR conversation commands remain unsupported.
+Managed installations retain their blanket legacy refusal and expose no legacy
+review route on the canonical service.
 
 Ordinary generated and ad hoc standalone branches remain eligible for the
 explicit trusted direct handler. An ordinary branch with the same branch shape, or text quoting
