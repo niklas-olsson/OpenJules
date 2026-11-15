@@ -289,7 +289,17 @@ def test_queued_callback_rechecks_observed_credential_rotation_before_adapter_en
             monkeypatch.setenv("OPENJULES_INGRESS_BEARER_OPERATOR", "rotated-operator-value")
             assert client.get("/api/ingress/receipts/" + queued.json()["operation_id"], headers=operator_headers()).status_code == 503
             release.set()
-            until(lambda: any(row[1:] == ("refused_before_effect", "callback_authority_revoked") for row in rows(path)))
+            # A concurrent SQLite observer can obstruct this original writer's
+            # commit in DELETE journal mode. Observe after the actual callbacks
+            # quiesce so the fixture does not manufacture storage uncertainty.
+            until(lambda: not app.state.ingress_callbacks.jobs)
+            assert app.state.ingress_callbacks.custody_failed is False
+            with closing(sqlite3.connect(f"file:{_document['receipt_store']['path']}?mode=ro", uri=True)) as connection:
+                queued_row = connection.execute(
+                    "SELECT state,code,callback_entered FROM receipts WHERE operation_id=?",
+                    (queued.json()["operation_id"],),
+                ).fetchone()
+            assert queued_row == ("refused_before_effect", "callback_authority_revoked", 0)
             assert calls == [7]
     finally:
         release.set()
