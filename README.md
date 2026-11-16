@@ -519,6 +519,15 @@ and explicit `serve --policy /absolute/policy.json` selection.
 The full CI suite also builds managed Docker fixture images; a local unit run
 does not qualify an installed execution environment.
 
+CI routing uses only `[factory-openjules]` for public local jobs, without default
+runner labels. Trusted non-PR jobs and same-repository PR-family jobs by an
+`OWNER`, `MEMBER` or `COLLABORATOR` route locally. Fork, untrusted-author and
+missing-head PR-family jobs retain their original GitHub-hosted Ubuntu runner;
+routing does not skip them or change existing job conditions. Qualification gates
+and retained evidence are unchanged. The default branch's separate manual,
+repository-owner-only `local-runner-health.yml` checks runner health, not workload
+qualification. See [local runner details](.github/LOCAL_RUNNERS.md).
+
 ### 2. Running with Docker Compose
 
 The sole default service exposes the same harmless status page. It does not

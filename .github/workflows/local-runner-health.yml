@@ -1,0 +1,37 @@
+name: Local runner health
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: local-runner-health
+  cancel-in-progress: false
+jobs:
+  smoke:
+    if: github.repository == 'niklas-olsson/OpenJules' && github.actor == 'niklas-olsson'
+    runs-on: ["factory-openjules"]
+    timeout-minutes: 5
+    steps:
+      - name: Check isolated local execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = 'ghfactory-openjules'
+          test -z "${GH_TOKEN:-}"
+          test -z "${GITHUB_TOKEN:-}"
+          test ! -e /var/run/docker.sock
+          test ! -e /host
+          test ! -e /home/phoenix
+          python3 --version
+          git --version
+          sudo -n true
+          printf 'runner=%s os=%s arch=%s\n' "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH"
+          printf 'memory.max='; cat /sys/fs/cgroup/memory.max
+          printf 'cpu.max='; cat /sys/fs/cgroup/cpu.max
+      - name: Exercise the repository-private Docker daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DOCKER_HOST" = 'tcp://docker:2376'
+          docker info --format 'driver={{.CgroupDriver}} version={{.CgroupVersion}}'
+          docker run --rm --memory 64m --cpus 0.25 alpine@sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63 sh -c 'printf "nested memory.max="; cat /sys/fs/cgroup/memory.max; printf "nested cpu.max="; cat /sys/fs/cgroup/cpu.max; echo nested-docker-ok'

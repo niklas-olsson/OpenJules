@@ -14,7 +14,7 @@ concurrency:
 jobs:
   native-costs:
     if: github.repository == 'niklas-olsson/OpenJules' && github.event.repository.private == false && github.event.created == true && github.run_attempt == 1
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON((!startsWith(github.event_name, 'pull_request') || (github.event.pull_request.head.repo.full_name != '' && github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association))) && '["factory-openjules"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 50
     env:
       LITELLM_LOCAL_MODEL_COST_MAP: 'True'
